@@ -1,0 +1,30 @@
+# Data directory where Tor stores its state (and the auth cookie)
+DataDirectory /var/lib/tor
+
+# SOCKS Proxy for the other containers (Monero/Tari)
+# Binding to 0.0.0.0 allows other containers on 'mining_net' to connect
+SocksPort 0.0.0.0:9050
+
+# Tari uses this file to authenticate its connection to the ControlPort
+ControlPort 0.0.0.0:9051
+
+# Monero P2P Hidden Service
+HiddenServiceDir /var/lib/tor/monero/
+HiddenServicePort 18080  172.28.0.26:18084
+
+# Tari P2P Hidden Service
+HiddenServiceDir /var/lib/tor/tari/
+HiddenServicePort 18189  172.28.0.27:18189
+
+# Hidden Service for P2Pool
+HiddenServiceDir /var/lib/tor/p2pool/
+HiddenServicePort 37888 172.28.0.28:37888
+
+# Cookie Authentication
+CookieAuthentication 1
+CookieAuthFile /var/lib/tor/control_auth_cookie
+CookieAuthFileGroupReadable 1
+DataDirectoryGroupReadable 1
+
+# Standard log output to the Docker container console
+Log notice stdout

@@ -1,0 +1,145 @@
+services:
+  tor:
+    build: ./build/tor
+    container_name: tor
+    restart: unless-stopped
+    volumes:
+      - ./data/tor:/var/lib/tor
+    expose:
+      - "9050" # SOCKS port for both monero and tari
+      - "9051" # Control port for Tari
+    networks:
+      mining_net:
+        ipv4_address: 172.28.0.25
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "9050"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  monerod:
+    build: ./build/monero
+    container_name: monerod
+    restart: unless-stopped
+    stop_grace_period: 1m
+    volumes:
+      - ./data/monero:/root/.bitmonero
+      - /dev/hugepages:/dev/hugepages
+      - ./build/monero/bitmonero.conf:/root/.bitmonero/bitmonero.conf:ro
+    command:
+      - --config-file=/root/.bitmonero/bitmonero.conf
+      - --non-interactive
+    ports:
+      - "18080:18080" # Custom P2P Port
+      - "18081:18081" # Standard RPC Port
+      - "18083:18083" # ZMQ Port (for P2Pool)
+    networks:
+      mining_net:
+        ipv4_address: 172.28.0.26
+    depends_on:
+      tor:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--digest", "-u", "<your_monero_node_username>:<your_monero_node_password>", "http://localhost:18081/get_info"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  tari:
+    image: quay.io/tarilabs/minotari_node:latest-mainnet
+    environment:
+      - WAIT_FOR_TOR=1
+    container_name: tari
+    restart: unless-stopped
+    stop_grace_period: 1m
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    volumes:
+      - ./data/tari:/var/tari/node
+      - ./build/tari:/var/tari/config
+    command:
+      - --disable-splash-screen
+      - --non-interactive
+    ports:
+      - "18102:18102" # Wallet port
+      - "18142:18142" # GRPC port for p2pool
+    networks:
+      mining_net:
+        ipv4_address: 172.28.0.27
+    depends_on:
+      tor:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "ps | grep minotari_node || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  p2pool:
+    build: ./build/p2pool
+    container_name: p2pool
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - ./data/p2pool:/root
+      - ./data/p2pool/stats:/stats
+      - /dev/hugepages:/dev/hugepages
+    ports:
+      - "3333:3333" # Stratum Mining Port
+      - "3334:3334" # Local API Port
+      - "37888:37888" # P2P Sidechain Port
+    command:
+      - --host
+      - 172.28.0.26
+      - --rpc-port
+      - "18081"
+      - --rpc-login
+      - "<your_monero_node_username>:<your_monero_node_password>"
+      - --zmq-port
+      - "18083"
+      - --wallet
+      - <your_monero_wallet_address>
+      - --merge-mine
+      - tari://172.28.0.27:18142
+      - <your_tari_wallet_address>
+      - --local-api
+      - --stratum
+      - 0.0.0.0:3333
+      - --p2p
+      - 0.0.0.0:37888
+      - --data-api
+      - /stats
+      - --onion-address
+      - <your_p2pool_onion_address>
+      - --mini
+    networks:
+      mining_net:
+        ipv4_address: 172.28.0.28
+    depends_on:
+      monerod:
+        condition: service_healthy
+      tari:
+        condition: service_healthy
+
+  dashboard:
+      build: ./build/dashboard
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
+      container_name: dashboard
+      restart: unless-stopped
+      volumes:
+        - ./data/p2pool/stats:/app/stats:ro
+        - /home:/data:ro
+        - /var/run/avahi-daemon/socket:/var/run/avahi-daemon/socket
+      network_mode: "host"
+
+networks:
+  mining_net:
+    driver: bridge
+    name: mining_net
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
