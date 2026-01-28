@@ -55,7 +55,7 @@ def format_uptime(seconds):
 
 async def get_worker_live_stats(session, name, ip_with_port):
     ip = ip_with_port.split(':')[0]
-    targets = [name, ip]
+    targets = [name, name + ".local", ip]
     timeout = ClientTimeout(total=API_TIMEOUT)
     
     for target in targets:
