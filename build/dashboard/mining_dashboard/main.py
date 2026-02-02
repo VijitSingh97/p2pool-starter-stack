@@ -43,9 +43,6 @@ async def switch_miners(mode, workers):
     """
     if not workers: return
     
-    # Configuration Assumption:
-    # Pool 0: P2Pool (Local)
-    # Pool 1: XvB (Proxy/Direct)
     p2pool_state = True if mode == "P2POOL" else False
     xvb_state = True if mode == "XVB" else False
 
@@ -61,13 +58,6 @@ async def switch_miners(mode, workers):
                 f"{ip}:{XMRIG_API_PORT}"          
             ]
 
-            payload = {
-                "pools": [
-                    {"enabled": p2pool_state}, 
-                    {"enabled": xvb_state}     
-                ]
-            }
-
             # Use the worker's hostname (derived from name) as the access token
             token = name.split('+')[0].strip()
             headers = {"Authorization": f"Bearer {token}"}
@@ -79,7 +69,21 @@ async def switch_miners(mode, workers):
                 url = f"http://{target}/1/config"
                 
                 try:
-                    async with session.put(url, json=payload, headers=headers, timeout=2) as resp:
+                    # 1. Fetch current configuration
+                    async with session.get(url, headers=headers, timeout=2) as get_resp:
+                        if get_resp.status != 200:
+                            continue
+                        config_data = await get_resp.json()
+
+                    # 2. Modify pool states based on ports
+                    if "pools" in config_data and isinstance(config_data["pools"], list):
+                        for pool in config_data["pools"]:
+                            p_url = pool.get("url", "")
+                            if ":3333" in p_url: pool["enabled"] = p2pool_state
+                            elif ":3344" in p_url: pool["enabled"] = xvb_state
+
+                    # 3. Push updated configuration
+                    async with session.put(url, json=config_data, headers=headers, timeout=2) as resp:
                         if resp.status in [200, 202]:
                             switched = True
                             break 

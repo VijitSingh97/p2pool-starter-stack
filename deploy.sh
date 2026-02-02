@@ -82,7 +82,6 @@ MONERO_NODE_USERNAME=placeholder
 MONERO_NODE_PASSWORD=placeholder
 MONERO_WALLET_ADDRESS=placeholder
 TARI_WALLET_ADDRESS=placeholder
-PROXY_PORT=3344
 XVB_POOL_URL=na.xmrvsbeast.com:4247
 XVB_DONOR_ID=placeholder
 EOF
@@ -118,9 +117,6 @@ elif [ "$POOL_TYPE" == "nano" ]; then
 fi
 
 # XMRig Proxy Settings
-PROXY_PORT=$(jq -r '.xmrig_proxy.port // empty' config.json)
-[ -z "$PROXY_PORT" ] && PROXY_PORT="3344"
-
 XVB_POOL_URL=$(jq -r '.xmrig_proxy.url // empty' config.json)
 [ -z "$XVB_POOL_URL" ] && XVB_POOL_URL="na.xmrvsbeast.com:4247"
 
@@ -148,7 +144,6 @@ TARI_ONION_ADDRESS=$TARI_ONION
 P2POOL_ONION_ADDRESS=$P2POOL_ONION
 P2POOL_FLAGS=$P2POOL_FLAGS
 P2POOL_PORT=$P2POOL_PORT
-PROXY_PORT=$PROXY_PORT
 XVB_POOL_URL=$XVB_POOL_URL
 XVB_DONOR_ID=$XVB_DONOR_ID
 XVB_ENABLED=$XVB_ENABLED

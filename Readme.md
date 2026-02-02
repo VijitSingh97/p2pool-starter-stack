@@ -114,7 +114,6 @@ Create a `config.json` file in the root directory. This file drives the deployme
     "data_dir": "DYNAMIC_DATA"
   },
   "xmrig_proxy": {
-    "port": "3344",
     "enabled": true,
     "url": "na.xmrvsbeast.com:4247",
     "donor_id": "DYNAMIC_ID"

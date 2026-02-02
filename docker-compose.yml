@@ -154,7 +154,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     ports:
-      - "${PROXY_PORT}:3333"
+      - "3344:3333"
     command:
       - -o
       - ${XVB_POOL_URL}

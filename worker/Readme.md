@@ -41,8 +41,6 @@ cd p2pool-starter-stack/worker
 ### 2. Configuration
 Edit **configuration.json** to connect to your main stack.
 *   **P2POOL_NODE_HOSTNAME:** Enter the IP address or Hostname of your P2Pool Starter Stack.
-*   **P2POOL_NODE_PORT:** Default is `3333` (P2Pool Stratum).
-*   **P2POOL_PROXY_PORT:** Default is `3344` (XMRig Proxy).
 
 ### 3. Execution
 Run the deployment script. This will install dependencies, compile XMRig from source, and apply system configurations.
