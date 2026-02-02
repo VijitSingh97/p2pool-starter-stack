@@ -14,6 +14,7 @@ class StateManager:
                 "current_mode": "P2POOL",
                 "24h_avg": 0.0,
                 "1h_avg": 0.0,
+                "fail_count": 0,
                 "last_update": 0
             },
             # Initialize with defaults from config.py
@@ -66,9 +67,11 @@ class StateManager:
     def get_xvb_stats(self):
         return self.state["xvb"]
 
-    def update_xvb_stats(self, mode, donation_avg_24h, donation_avg_1h):
+    def update_xvb_stats(self, mode, donation_avg_24h, donation_avg_1h, fail_count=None):
         self.state["xvb"]["current_mode"] = mode
         self.state["xvb"]["24h_avg"] = donation_avg_24h
         self.state["xvb"]["1h_avg"] = donation_avg_1h
+        if fail_count is not None:
+            self.state["xvb"]["fail_count"] = fail_count
         self.state["xvb"]["last_update"] = time.time()
         self.save()

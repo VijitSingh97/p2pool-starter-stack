@@ -8,8 +8,8 @@ class XvbAlgorithm:
         self.logger = logging.getLogger("XvB_Algo")
         
         # Margin for 1h average (from Rust: XVB_SIDE_MARGIN_1H)
-        # Allows for 20% variance in the short term without forcing a switch
-        self.margin_1h = 0.2 
+        # Reduced to 5% to strictly adhere to "round minimum" rule
+        self.margin_1h = 0.05 
 
     def get_decision(self, current_hr, p2pool_stats, xvb_stats):
         """
@@ -21,6 +21,12 @@ class XvbAlgorithm:
         
         if shares_found == 0:
             self.logger.info("Decision: Force P2POOL (No shares in window)")
+            return "P2POOL", 0
+
+        # Safety: Check XvB Fail Count
+        fail_count = xvb_stats.get('fail_count', 0)
+        if fail_count >= 3:
+            self.logger.warning(f"Decision: Force P2POOL (XvB Fail Count too high: {fail_count})")
             return "P2POOL", 0
 
         # Determine highest qualified XvB tier

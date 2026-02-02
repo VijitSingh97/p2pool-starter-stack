@@ -41,9 +41,9 @@ async def handle_index(request):
         pool_str = w.get('active_pool', '')
         pool_badge = "Unknown"
         if any(p in pool_str for p in ['3333', '37889', '37888', '37890']):
-            pool_badge = "<span style='background:#238636; padding:2px 5px; border-radius:4px; font-size:0.8em;'>P2Pool</span>"
+            pool_badge = "<span style='background:#238636; color:white; padding:2px 5px; border-radius:4px; font-size:0.8em;'>P2Pool</span>"
         elif any(p in pool_str for p in ['3344', '4247']):
-            pool_badge = "<span style='background:#a371f7; padding:2px 5px; border-radius:4px; font-size:0.8em;'>XvB</span>"
+            pool_badge = "<span style='background:#a371f7; color:white; padding:2px 5px; border-radius:4px; font-size:0.8em;'>XvB</span>"
         
         name_display = f"{w['name']} {pool_badge}"
 
@@ -117,20 +117,50 @@ async def handle_index(request):
         xvb_1h_val = xvb.get('1h_avg', 0)
         xvb_24h_val = xvb.get('24h_avg', 0)
 
-        p2p_1h_val = max(0, total_hr_val - xvb_1h_val)
+        # Calculate P2Pool 1h from history if available (more accurate)
+        if history:
+            p2p_vals = [x.get('v_p2pool', 0) for x in history]
+            p2p_1h_val = sum(p2p_vals) / len(p2p_vals) if p2p_vals else 0
+        else:
+            p2p_1h_val = max(0, total_hr_val - xvb_1h_val)
+            
         p2p_24h_val = max(0, total_hr_val - xvb_24h_val)
 
         # New Stats Card
-        stats_card = f"""
+        mode_card = f"""
         <div class="card">
-            <h3>Mining Mode Stats</h3>
+            <h3>P2Pool Status</h3>
             <div class="stat-grid">
                 <div class="stat-card"><h5>Current Mode</h5><p style="color:{mode_color}">{current_mode}</p></div>
-                <div class="stat-card"><h5>P2Pool Est.</h5><p>{format_hashrate(p2p_1h_val)}</p></div>
-                <div class="stat-card"><h5>XvB Est.</h5><p>{format_hashrate(xvb_1h_val)}</p></div>
+                <div class="stat-card"><h5>1h Avg</h5><p>{format_hashrate(p2p_1h_val)}</p></div>
+                <div class="stat-card"><h5>24h Avg (Est.)</h5><p>{format_hashrate(p2p_24h_val)}</p></div>
+                <div class="stat-card"><h5>Total Hashrate</h5><p>{format_hashrate(total_hr_val)}</p></div>
             </div>
         </div>
         """
+
+        # Determine Tier Name based on 24h avg
+        tier_name = "Standard"
+        if xvb_24h_val >= 1_000_000: tier_name = "Mega (1 MH/s+)"
+        elif xvb_24h_val >= 100_000: tier_name = "Whale (100 kH/s+)"
+        elif xvb_24h_val >= 10_000: tier_name = "VIP (10 kH/s+)"
+        elif xvb_24h_val >= 5_000: tier_name = "MVP (5 kH/s+)"
+        elif xvb_24h_val >= 1_000: tier_name = "Donor (1 kH/s+)"
+
+        xvb_card = f"""
+        <div class="card">
+            <h3>XvB Donation Status</h3>
+            <div class="stat-grid">
+                <div class="stat-card"><h5>Donation Tier</h5><p>{tier_name}</p></div>
+                <div class="stat-card"><h5>1h Avg (Pool)</h5><p>{format_hashrate(xvb_1h_val)}</p></div>
+                <div class="stat-card"><h5>24h Avg (Pool)</h5><p>{format_hashrate(xvb_24h_val)}</p></div>
+                <div class="stat-card"><h5>Fail Count</h5><p>{xvb.get('fail_count', 0)}</p></div>
+            </div>
+            <div style="font-size:10px; color:#666; margin-top:10px;">Stats fetched from xmrvsbeast.com</div>
+        </div>
+        """
+
+        stats_card = mode_card + xvb_card
 
         with open(TEMPLATE_PATH, 'r') as f:
             template = f.read()

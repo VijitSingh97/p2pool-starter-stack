@@ -127,7 +127,8 @@ async def data_collection_loop():
                     state_manager.update_xvb_stats(
                         current_mode,
                         real_xvb_stats["24h_avg"],
-                        real_xvb_stats["1h_avg"]
+                        real_xvb_stats["1h_avg"],
+                        real_xvb_stats.get("fail_count", 0)
                     )
                     logger.info(f"XvB Stats Updated: 1h={real_xvb_stats['1h_avg']:.0f} | 24h={real_xvb_stats['24h_avg']:.0f}")
             
