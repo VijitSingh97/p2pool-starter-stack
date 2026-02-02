@@ -45,7 +45,7 @@ graph TD
 
     Workers -- "Stratum (3333)" --> P2Pool
     Workers -- "Stratum (3344)" --> Proxy
-    Dashboard -.->|API Control (8080)| Workers
+    Dashboard -.->|"API Control (8080)"| Workers
     
     Proxy -->|Donation Traffic| XvB
     
