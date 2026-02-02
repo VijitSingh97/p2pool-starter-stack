@@ -104,9 +104,9 @@ def get_stratum_stats():
         if isinstance(w_entry, str):
             parts = w_entry.split(',')
             if len(parts) >= 1:
-                ip = parts[0]
+                ip = parts[0].strip()
                 # Default to "miner" if name field (index 4) is missing
-                name = parts[4] if len(parts) >= 5 else "miner"
+                name = parts[4].strip() if len(parts) >= 5 else "miner"
                 worker_configs.append({"ip": ip, "name": name, "parts": parts})
 
     return raw, worker_configs

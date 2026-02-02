@@ -69,7 +69,7 @@ async def switch_miners(mode, workers):
             }
 
             # Use the worker's hostname (derived from name) as the access token
-            token = name.split('+')[0]
+            token = name.split('+')[0].strip()
             headers = {"Authorization": f"Bearer {token}"}
 
             switched = False

@@ -24,7 +24,7 @@ async def fetch_xmrig_summary(session, ip, name):
     timeout = ClientTimeout(total=API_TIMEOUT)
     
     # Use the worker's hostname (derived from name) as the access token
-    token = name.split('+')[0]
+    token = name.split('+')[0].strip()
     headers = {"Authorization": f"Bearer {token}"}
     
     for target in targets:
