@@ -18,6 +18,8 @@ async def handle_index(request):
     history = state_mgr.state.get('hashrate_history', [])
     chart_labels = [f"'{x['t']}'" for x in history]
     chart_values = [str(x['v']) for x in history]
+    chart_p2pool = [str(x.get('v_p2pool', 0)) for x in history]
+    chart_xvb = [str(x.get('v_xvb', 0)) for x in history]
 
     # Algo / XvB Stats
     xvb = state_mgr.get_xvb_stats()
@@ -34,14 +36,38 @@ async def handle_index(request):
     
     for w in workers:
         status_class = "status-ok" if w['status'] == 'online' else "status-bad"
+        
+        # Determine Pool Badge
+        pool_str = w.get('active_pool', '')
+        pool_badge = "Unknown"
+        if any(p in pool_str for p in ['3333', '37889', '37888', '37890']):
+            pool_badge = "<span style='background:#238636; padding:2px 5px; border-radius:4px; font-size:0.8em;'>P2Pool</span>"
+        elif any(p in pool_str for p in ['3344', '4247']):
+            pool_badge = "<span style='background:#a371f7; padding:2px 5px; border-radius:4px; font-size:0.8em;'>XvB</span>"
+        
+        name_display = f"{w['name']} {pool_badge}"
+
+        # Add data-sort attributes for client-side sorting
+        uptime_val = w.get('uptime', 0)
+        h10_val = w.get('h10', 0)
+        h60_val = w.get('h60', 0)
+        h15_val = w.get('h15', 0)
+
+        # Calculate integer value for IP sorting
+        try:
+            ip_parts = [int(part) for part in w.get('ip', '0.0.0.0').split('.')]
+            ip_sort_val = (ip_parts[0] << 24) + (ip_parts[1] << 16) + (ip_parts[2] << 8) + ip_parts[3]
+        except:
+            ip_sort_val = 0
+
         row = f"""
         <tr class="{status_class}">
-            <td>{w['name']}</td>
-            <td>{w['ip']}</td>
-            <td>{format_duration(w.get('uptime', 0))}</td>
-            <td>{format_hashrate(w.get('h10', 0))}</td>
-            <td>{format_hashrate(w.get('h60', 0))}</td>
-            <td>{format_hashrate(w.get('h15', 0))}</td>
+            <td data-sort="{w['name']}">{name_display}</td>
+            <td data-sort="{ip_sort_val}">{w['ip']}</td>
+            <td data-sort="{uptime_val}">{format_duration(uptime_val)}</td>
+            <td data-sort="{h10_val}">{format_hashrate(h10_val)}</td>
+            <td data-sort="{h60_val}">{format_hashrate(h60_val)}</td>
+            <td data-sort="{h15_val}">{format_hashrate(h15_val)}</td>
         </tr>
         """
         worker_rows += row
@@ -93,6 +119,18 @@ async def handle_index(request):
 
         p2p_1h_val = max(0, total_hr_val - xvb_1h_val)
         p2p_24h_val = max(0, total_hr_val - xvb_24h_val)
+
+        # New Stats Card
+        stats_card = f"""
+        <div class="card">
+            <h3>Mining Mode Stats</h3>
+            <div class="stat-grid">
+                <div class="stat-card"><h5>Current Mode</h5><p style="color:{mode_color}">{current_mode}</p></div>
+                <div class="stat-card"><h5>P2Pool Est.</h5><p>{format_hashrate(p2p_1h_val)}</p></div>
+                <div class="stat-card"><h5>XvB Est.</h5><p>{format_hashrate(xvb_1h_val)}</p></div>
+            </div>
+        </div>
+        """
 
         with open(TEMPLATE_PATH, 'r') as f:
             template = f.read()
@@ -160,9 +198,42 @@ async def handle_index(request):
             # --- Dynamic Components ---
             worker_rows=worker_rows,
             tari_section=tari_section,
+            stats_card=stats_card,
             chart_labels=",".join(chart_labels),
-            chart_data=",".join(chart_values)
+            chart_data=",".join(chart_values),
+            chart_p2pool=",".join(chart_p2pool),
+            chart_xvb=",".join(chart_xvb)
         )
+
+        # Inject Sorting Script
+        sorting_script = """
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const getCellValue = (tr, idx) => tr.children[idx].getAttribute('data-sort') || tr.children[idx].innerText || tr.children[idx].textContent;
+
+    const comparer = (idx, asc) => (a, b) => ((v1, v2) => 
+        v1 !== '' && v2 !== '' && !isNaN(v1) && !isNaN(v2) ? v1 - v2 : v1.toString().localeCompare(v2)
+    )(getCellValue(asc ? a : b, idx), getCellValue(asc ? b : a, idx));
+
+    document.querySelectorAll('th').forEach(th => {
+        th.style.cursor = 'pointer';
+        th.addEventListener('click', (() => {
+            const table = th.closest('table');
+            if (!table) return;
+            const tbody = table.querySelector('tbody');
+            Array.from(tbody.querySelectorAll('tr'))
+                .sort(comparer(Array.from(th.parentNode.children).indexOf(th), this.asc = !this.asc))
+                .forEach(tr => tbody.appendChild(tr) );
+        }));
+    });
+});
+</script>
+"""
+        if "</body>" in html:
+            html = html.replace("</body>", sorting_script + "</body>")
+        else:
+            html += sorting_script
+
         return web.Response(text=html, content_type='text/html')
         
     except Exception as e:

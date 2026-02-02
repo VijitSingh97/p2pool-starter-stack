@@ -108,7 +108,16 @@ async def data_collection_loop():
                 "stratum": stratum_raw
             })
             
-            state_manager.update_history(total_h15)
+            # Determine split for history based on current mode
+            current_mode = state_manager.get_xvb_stats().get("current_mode", "P2POOL")
+            p2pool_hr = 0
+            xvb_hr = 0
+            if "XVB" in current_mode:
+                xvb_hr = total_h15
+            else:
+                p2pool_hr = total_h15
+            
+            state_manager.update_history(total_h15, p2pool_hr, xvb_hr)
 
             # External XvB Check (Throttled: every 10 cycles)
             if loop_count % 10 == 0:

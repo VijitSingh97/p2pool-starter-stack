@@ -29,6 +29,7 @@ async def fetch_xmrig_summary(session, ip, name):
                     hr_total = data.get("hashrate", {}).get("total")
                     if not isinstance(hr_total, list): hr_total = [0, 0, 0]
                     
+                    active_pool = data.get("connection", {}).get("pool", "Unknown")
                     return {
                         "name": name,
                         "ip": ip, 
@@ -38,7 +39,8 @@ async def fetch_xmrig_summary(session, ip, name):
                         "h10": hr_total[0] if len(hr_total) > 0 else 0,
                         "h60": hr_total[1] if len(hr_total) > 1 else 0,
                         "h15": hr_total[2] if len(hr_total) > 2 else 0,
-                        "results": data.get("results", {})
+                        "results": data.get("results", {}),
+                        "active_pool": active_pool
                     }
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
             continue
@@ -48,7 +50,8 @@ async def fetch_xmrig_summary(session, ip, name):
         "ip": ip,
         "status": "offline",
         "uptime": 0,
-        "h10": 0, "h60": 0, "h15": 0, "results": {}
+        "h10": 0, "h60": 0, "h15": 0, "results": {},
+        "active_pool": "N/A"
     }
 
 async def get_all_workers_stats(worker_configs):

@@ -45,14 +45,16 @@ class StateManager:
         except Exception as e:
             print(f"Failed to save state: {e}")
 
-    def update_history(self, hashrate):
+    def update_history(self, hashrate, p2pool_hr=0, xvb_hr=0):
         """Adds a data point to the graph history (max 60 points)"""
         history = self.state["hashrate_history"]
         
         # Add new point
         history.append({
             "t": time.strftime('%H:%M'),
-            "v": round(hashrate, 2)
+            "v": round(hashrate, 2),
+            "v_p2pool": round(p2pool_hr, 2),
+            "v_xvb": round(xvb_hr, 2)
         })
         
         # Keep last 60 entries (approx 30 mins if updating every 30s)
