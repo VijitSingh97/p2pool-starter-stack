@@ -35,6 +35,9 @@ XVB_MIN_TIME_SEND_MS = 15000
 # Wallet address required for fetching XvB bonus history
 MONERO_WALLET_ADDRESS = os.environ.get("MONERO_WALLET_ADDRESS", "") 
 
+# Feature Flag: Enable/Disable XvB switching logic
+ENABLE_XVB = os.environ.get("XVB_ENABLED", "true").lower() == "true"
+
 # --- Donation Tier Configuration ---
 # Hashrate thresholds (H/s) for XMRvsBeast donation tiers.
 # Source: Official XvB rules (Mega=1M, Whale=100k, VIP=10k, Donor=1k)

@@ -124,6 +124,8 @@ PROXY_PORT=$(jq -r '.xmrig_proxy.port // empty' config.json)
 XVB_POOL_URL=$(jq -r '.xmrig_proxy.url // empty' config.json)
 [ -z "$XVB_POOL_URL" ] && XVB_POOL_URL="na.xmrvsbeast.com:4247"
 
+XVB_ENABLED=$(jq -r '.xmrig_proxy.enabled // "true"' config.json)
+
 # Smart Donor ID: Auto-generate from wallet if not explicitly configured
 XVB_DONOR_ID=$(jq -r '.xmrig_proxy.donor_id // empty' config.json)
 if [ -z "$XVB_DONOR_ID" ] || [ "$XVB_DONOR_ID" == "DYNAMIC_ID" ]; then
@@ -149,6 +151,7 @@ P2POOL_PORT=$P2POOL_PORT
 PROXY_PORT=$PROXY_PORT
 XVB_POOL_URL=$XVB_POOL_URL
 XVB_DONOR_ID=$XVB_DONOR_ID
+XVB_ENABLED=$XVB_ENABLED
 EOF
 
 # --- 5. Service Configuration Injection ---

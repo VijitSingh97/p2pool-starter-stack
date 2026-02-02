@@ -15,6 +15,7 @@
     },
     "xmrig_proxy": {
         "port": "3344",
+        "enabled": true,
         "url": "na.xmrvsbeast.com:4247",
         "donor_id": "DYNAMIC_ID"
     },

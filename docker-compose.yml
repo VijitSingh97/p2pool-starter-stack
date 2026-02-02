@@ -191,6 +191,7 @@ services:
       - HOST_IP=${HOST_IP:-127.0.0.1}
       - TZ=America/Chicago
       - MONERO_WALLET_ADDRESS=${MONERO_WALLET_ADDRESS}
+      - XVB_ENABLED=${XVB_ENABLED}
 
 # --- Network Configuration ---
 # Static subnet definition to ensure predictable IP assignment for Tor hidden services.

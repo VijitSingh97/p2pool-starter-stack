@@ -115,12 +115,13 @@ Create a `config.json` file in the root directory. This file drives the deployme
   },
   "xmrig_proxy": {
     "port": "3344",
+    "enabled": true,
     "url": "na.xmrvsbeast.com:4247",
     "donor_id": "DYNAMIC_ID"
   }
 }
 ```
-*Note: `DYNAMIC_DATA` defaults to `./data/<service>`. `DYNAMIC_ID` uses the first 8 chars of your Monero wallet.*
+*Note: `DYNAMIC_DATA` defaults to `./data/<service>`. `DYNAMIC_ID` uses the first 8 chars of your Monero wallet. To disable the XvB switching algorithm, set "enabled": false in the xmrig_proxy section*
 
 ### 3. Deployment
 1.  **Initialize:** Run the deployment script. This handles directory permissions, Tor service provisioning, and kernel tuning.

@@ -1,6 +1,6 @@
 import math
 import logging
-from config import XVB_TIME_ALGO_MS, XVB_MIN_TIME_SEND_MS
+from config import XVB_TIME_ALGO_MS, XVB_MIN_TIME_SEND_MS, ENABLE_XVB
 
 class XvbAlgorithm:
     """
@@ -29,6 +29,11 @@ class XvbAlgorithm:
         Returns:
             tuple: (Mode String ["P2POOL"|"XVB"|"SPLIT"], Duration in ms)
         """
+        # Feature Flag: Check if XvB switching is globally disabled
+        if not ENABLE_XVB:
+            self.logger.info("Decision Strategy: Force P2POOL (XvB Switching Disabled)")
+            return "P2POOL", 0
+
         # Constraint: Enforce P2Pool mode if no shares have been found recently.
         # This prevents potential revenue loss during low-luck periods.
         shares_found = p2pool_stats.get('shares_found', 0)
