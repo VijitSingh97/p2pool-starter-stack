@@ -62,12 +62,19 @@
             </div>
             
             <div style="margin-top: 8px; font-size: 13px;">
-                <span class="{hp_class}" style="margin-right: 15px;">Huge Pages: {hp_status} ({hp_val})</span>
-                
-                <span style="color: #8b949e;">Disk: {disk_used:.1f} / {disk_total:.1f} GB ({disk_p})</span>
-                <div style="width: 200px; display: inline-block; vertical-align: middle; margin-left: 5px;">
-                    <div class="progress-bg">
-                        <div class="progress-fill {disk_fill_class}" style="width: {disk_width}"></div>
+                <div style="margin-bottom: 4px;">
+                    <span style="color: #8b949e;">CPU: {cpu_percent} (Load: {cpu_load})</span>
+                </div>
+                <div style="margin-bottom: 4px;">
+                    <span style="color: #8b949e; margin-right: 15px;">RAM: {mem_used} / {mem_total} GB ({mem_p})</span>
+                    <span class="{hp_class}">Huge Pages: {hp_status} ({hp_val})</span>
+                </div>
+                <div>
+                    <span style="color: #8b949e;">Disk: {disk_used:.1f} / {disk_total:.1f} GB ({disk_p})</span>
+                    <div style="width: 200px; display: inline-block; vertical-align: middle; margin-left: 5px;">
+                        <div class="progress-bg">
+                            <div class="progress-fill {disk_fill_class}" style="width: {disk_width}"></div>
+                        </div>
                     </div>
                 </div>
             </div>

@@ -4,6 +4,8 @@ from config import DISK_PATH
 
 BYTES_IN_GB = 1024 ** 3
 
+_last_cpu_times = None
+
 def get_disk_usage():
     """
     Calculates storage utilization for the configured data directory.
@@ -65,6 +67,39 @@ def get_load_average():
         return f"{load[0]:.2f} {load[1]:.2f} {load[2]:.2f}"
     except Exception:
         return "0.00 0.00 0.00"
+
+def get_cpu_usage():
+    """
+    Calculates CPU usage percentage using /proc/stat.
+    Returns string "XX.X%".
+    """
+    global _last_cpu_times
+    try:
+        with open('/proc/stat', 'r') as f:
+            line = f.readline()
+        
+        parts = line.split()
+        # cpu user nice system idle iowait irq softirq steal
+        if len(parts) < 5: return "0.0%"
+        
+        # Sum all fields for total time
+        values = [int(x) for x in parts[1:]]
+        total = sum(values)
+        # Idle is idle + iowait
+        idle = values[3] + (values[4] if len(values) > 4 else 0)
+        
+        usage = 0.0
+        if _last_cpu_times:
+            prev_total, prev_idle = _last_cpu_times
+            delta_total = total - prev_total
+            delta_idle = idle - prev_idle
+            if delta_total > 0:
+                usage = ((delta_total - delta_idle) / delta_total) * 100
+        
+        _last_cpu_times = (total, idle)
+        return f"{usage:.1f}%"
+    except Exception:
+        return "0.0%"
 
 def get_hugepages_status():
     """

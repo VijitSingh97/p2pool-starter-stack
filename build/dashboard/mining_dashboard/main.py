@@ -9,7 +9,7 @@ from algo import XvbAlgorithm
 from web.server import create_app
 from collectors.miners import get_all_workers_stats
 from collectors.pools import get_p2pool_stats, get_network_stats, get_stratum_stats, get_tari_stats
-from collectors.system import get_disk_usage, get_hugepages_status, get_memory_usage, get_load_average
+from collectors.system import get_disk_usage, get_hugepages_status, get_memory_usage, get_load_average, get_cpu_usage
 from collectors.xvb import fetch_xvb_stats 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -134,7 +134,8 @@ async def data_collection_loop():
                 "disk": get_disk_usage(),
                 "hugepages": get_hugepages_status(),
                 "memory": get_memory_usage(),
-                "load": get_load_average()
+                "load": get_load_average(),
+                "cpu_percent": get_cpu_usage()
             }
             
             LATEST_DATA.update({

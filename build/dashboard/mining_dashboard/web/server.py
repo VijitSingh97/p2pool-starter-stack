@@ -131,6 +131,7 @@ async def handle_index(request):
     
     mem_usage = data.get('system', {}).get('memory', {})
     load_avg = data.get('system', {}).get('load', "0.00")
+    cpu_percent = data.get('system', {}).get('cpu_percent', "0.0%")
     
     hugepages_info = data.get('system', {}).get('hugepages', ["Disabled", "status-bad", "0/0"])
     hp_status, hp_class, hp_val = hugepages_info
@@ -228,6 +229,7 @@ async def handle_index(request):
             mem_used=f"{mem_usage.get('used_gb', 0):.1f}",
             mem_total=f"{mem_usage.get('total_gb', 0):.1f}",
             cpu_load=load_avg,
+            cpu_percent=cpu_percent,
 
             # --- Stratum Pool ---
             strat_h15=format_hashrate(stratum_stats.get('hashrate_15m', 0)),
