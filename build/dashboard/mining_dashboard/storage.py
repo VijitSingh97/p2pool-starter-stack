@@ -16,6 +16,7 @@ class StateManager:
         self.filepath = STATE_FILE_PATH
         self.state = {
             "hashrate_history": [],
+            "known_workers": {}, # Persist worker IPs by name to prevent loss during XvB switching
             "xvb": {
                 "total_donated_time": 0,
                 "current_mode": "P2POOL",
@@ -45,6 +46,9 @@ class StateManager:
                     if "hashrate_history" in data:
                         self.state["hashrate_history"] = data["hashrate_history"]
                     
+                    if "known_workers" in data:
+                        self.state["known_workers"] = data["known_workers"]
+
                     if "xvb" in data:
                         # Only update keys that exist in the loaded data, preserving defaults for others
                         self.state["xvb"].update(data["xvb"])
@@ -124,3 +128,27 @@ class StateManager:
             self.state["xvb"]["last_update"] = time.time()
             
         self.save()
+
+    def update_known_workers(self, workers_list):
+        """
+        Updates the list of known workers.
+        
+        Args:
+            workers_list (list): List of dicts [{'name': '...', 'ip': '...'}, ...]
+        """
+        changed = False
+        for w in workers_list:
+            name = w.get('name')
+            ip = w.get('ip')
+            if name and ip:
+                # Update if new or IP changed
+                if name not in self.state["known_workers"] or self.state["known_workers"][name] != ip:
+                    self.state["known_workers"][name] = ip
+                    changed = True
+        
+        if changed:
+            self.save()
+
+    def get_known_workers(self):
+        """Returns a list of worker dicts for the collector."""
+        return [{"name": k, "ip": v} for k, v in self.state["known_workers"].items()]

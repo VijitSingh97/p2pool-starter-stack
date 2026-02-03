@@ -117,7 +117,13 @@ async def data_collection_loop():
         try:
             # 1. Collect Local Statistics (High Frequency)
             stratum_raw, worker_configs = get_stratum_stats()
-            workers_stats = await get_all_workers_stats(worker_configs)
+            
+            # Update persistent state with currently visible workers
+            state_manager.update_known_workers(worker_configs)
+            
+            # Query ALL known workers (even those temporarily missing from P2Pool stats)
+            all_known_workers = state_manager.get_known_workers()
+            workers_stats = await get_all_workers_stats(all_known_workers)
             
             # Aggregate 15-minute average hashrate for stable algorithmic input
             total_h15 = sum(w['h15'] for w in workers_stats if w['status'] == 'online')
