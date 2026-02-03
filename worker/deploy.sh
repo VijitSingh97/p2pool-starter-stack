@@ -41,6 +41,13 @@ ACCESS_TOKEN=$(jq -r '.ACCESS_TOKEN // empty' "$CONFIG_JSON")
 if [ -z "$ACCESS_TOKEN" ]; then
     ACCESS_TOKEN=$(hostname)
 fi
+
+# Smart Address Handling: Only append .local if it looks like a short hostname (no dots)
+if [[ "$P2POOL_NODE_HOSTNAME" != *.* ]]; then
+    P2POOL_NODE_ADDRESS="${P2POOL_NODE_HOSTNAME}.local"
+else
+    P2POOL_NODE_ADDRESS="$P2POOL_NODE_HOSTNAME"
+fi
 TEMPLATE_CONFIG="$SCRIPT_DIR/$WORKER_CONFIG_FILE"
 
 # --- 2. Workspace Preparation ---
@@ -126,8 +133,8 @@ fi
 FULL_USER="$(hostname)+${DIFFICULTY}"
 
 # Generate config.json via jq
-jq --arg url "$P2POOL_NODE_HOSTNAME.local:3333" \
-   --arg proxy_url "$P2POOL_NODE_HOSTNAME.local:3344" \
+jq --arg url "$P2POOL_NODE_ADDRESS:3333" \
+   --arg proxy_url "$P2POOL_NODE_ADDRESS:3344" \
    --arg user "$FULL_USER" \
    --arg access_token "$ACCESS_TOKEN" \
    --arg log "$LOG_FILE_PATH" \

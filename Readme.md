@@ -17,7 +17,7 @@ The stack orchestrates six primary services via Docker Compose:
 1.  **Monerod:** The Monero daemon (Full Node). Configured for restricted RPC and Tor transaction broadcasting.
 2.  **P2Pool:** Decentralized mining sidechain. Supports Main, Mini, and Nano chains.
 3.  **Tari Base Node:** Minotari node configured for merge mining with Monero.
-4.  **XMRig Proxy:** Aggregates downstream workers to optimize difficulty and connection management.
+4.  **XMRig Proxy:** Aggregates downstream workers for the XMRvsBeast bonus pool connection.
 5.  **Tor:** Centralized anonymity layer providing SOCKS5 proxies and Hidden Services for all containers.
 6.  **Dashboard:** Web-based monitoring UI.
 
@@ -120,7 +120,7 @@ Create a `config.json` file in the root directory. This file drives the deployme
   }
 }
 ```
-*Note: `DYNAMIC_DATA` defaults to `./data/<service>`. `DYNAMIC_ID` uses the first 8 chars of your Monero wallet. To disable the XvB switching algorithm, set "enabled": false in the xmrig_proxy section*
+*Note: `DYNAMIC_DATA` defaults to `./data/<service>`. `DYNAMIC_ID` uses the first 8 chars of your Monero wallet. To disable the XvB switching algorithm, set "enabled": false in the xmrig_proxy section. **Important:** You must register your wallet at [XMRvsBeast](https://xmrvsbeast.com/cgi-bin/p2pool_bonus_submit.cgi) to participate in bonus rounds.*
 
 ### 3. Deployment
 1.  **Initialize:** Run the deployment script. This handles directory permissions, Tor service provisioning, and kernel tuning.
