@@ -1,7 +1,7 @@
 import os
 import time
 from aiohttp import web
-from config import HOST_IP, BLOCK_PPLNS_WINDOW_MAIN
+from config import HOST_IP, BLOCK_PPLNS_WINDOW_MAIN, ENABLE_XVB
 from utils import format_hashrate, format_duration, format_time_abs
 
 # Path to the template file
@@ -58,6 +58,9 @@ async def handle_index(request):
     mode_color = "#238636"  # Default color (Green)
     if "XVB" in current_mode: mode_color = "#a371f7"
     if "Split" in current_mode: mode_color = "#58a6ff"
+
+    if not ENABLE_XVB:
+        current_mode = "P2POOL (XvB Disabled)"
 
     # --- Worker Status & Table Generation ---
     worker_rows = ""
@@ -190,18 +193,28 @@ async def handle_index(request):
         elif xvb_24h_val >= 5_000: tier_name = "MVP (5 kH/s+)"
         elif xvb_24h_val >= 1_000: tier_name = "Donor (1 kH/s+)"
 
-        xvb_card = f"""
-        <div class="card">
-            <h3>XvB Donation Status</h3>
-            <div class="stat-grid">
-                <div class="stat-card"><h5>Donation Tier</h5><p>{tier_name}</p></div>
-                <div class="stat-card"><h5>1h Avg (Pool)</h5><p>{format_hashrate(xvb_1h_val)}</p></div>
-                <div class="stat-card"><h5>24h Avg (Pool)</h5><p>{format_hashrate(xvb_24h_val)}</p></div>
-                <div class="stat-card"><h5>Fail Count</h5><p>{xvb_stats.get('fail_count', 0)}</p></div>
+        if ENABLE_XVB:
+            xvb_card = f"""
+            <div class="card">
+                <h3>XvB Donation Status</h3>
+                <div class="stat-grid">
+                    <div class="stat-card"><h5>Donation Tier</h5><p>{tier_name}</p></div>
+                    <div class="stat-card"><h5>1h Avg (Pool)</h5><p>{format_hashrate(xvb_1h_val)}</p></div>
+                    <div class="stat-card"><h5>24h Avg (Pool)</h5><p>{format_hashrate(xvb_24h_val)}</p></div>
+                    <div class="stat-card"><h5>Fail Count</h5><p>{xvb_stats.get('fail_count', 0)}</p></div>
+                </div>
+                <div style="font-size:10px; color:#666; margin-top:10px;">Stats fetched from xmrvsbeast.com</div>
             </div>
-            <div style="font-size:10px; color:#666; margin-top:10px;">Stats fetched from xmrvsbeast.com</div>
-        </div>
-        """
+            """
+        else:
+            xvb_card = f"""
+            <div class="card">
+                <h3>XvB Donation Status</h3>
+                <div style="padding: 20px; text-align: center; color: #888;">
+                    <em>Feature Disabled in Configuration</em>
+                </div>
+            </div>
+            """
 
         stats_card = mode_card + xvb_card
 
