@@ -72,7 +72,7 @@ async def handle_index(request):
         
         # Identify and assign pool badge based on port
         active_pool = worker.get('active_pool', '')
-        pool_badge = "Unknown"
+        pool_badge = "<span style='background:#96211e; color:white; padding:2px 5px; border-radius:4px; font-size:0.8em;'>Unknown</span>"
         if any(p in active_pool for p in ['3333', '37889', '37888', '37890']):
             pool_badge = "<span style='background:#238636; color:white; padding:2px 5px; border-radius:4px; font-size:0.8em;'>P2Pool</span>"
         elif any(p in active_pool for p in ['3344', '4247']):
@@ -261,12 +261,12 @@ async def handle_index(request):
             strat_h15=format_hashrate(stratum_stats.get('hashrate_15m', 0)),
             strat_h1h=format_hashrate(stratum_stats.get('hashrate_1h', 0)),
             strat_h24h=format_hashrate(stratum_stats.get('hashrate_24h', 0)),
-            strat_shares=f"{stratum_stats.get('shares_valid',0)} / {stratum_stats.get('shares_invalid',0)}",
-            strat_effort=f"{stratum_stats.get('block_effort', 0):.1f}%",
-            strat_total_shares=stratum_stats.get('total_shares', 0),
-            strat_reward_pct=f"{stratum_stats.get('reward_share_pct', 0):.4f}%",
+            strat_shares=f"{stratum_stats.get('shares_found',0)} / {stratum_stats.get('shares_failed',0)}",
+            strat_effort=f"{stratum_stats.get('current_effort', 0):.1f}%",
+            strat_total_shares=stratum_stats.get('total_stratum_shares', 0),
+            strat_reward_pct=f"{stratum_stats.get('block_reward_share_percent', 0):.4f}%",
             strat_conns=stratum_stats.get('connections', 0),
-            strat_last_share=format_time_abs(stratum_stats.get('last_share_ts', 0)),
+            strat_last_share=format_time_abs(stratum_stats.get('last_share_found_time', 0)),
             strat_total_hashes=stratum_stats.get('total_hashes', 0),
             strat_wallet=stratum_stats.get('wallet', 'Unknown'),
 

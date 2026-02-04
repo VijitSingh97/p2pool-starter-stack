@@ -43,13 +43,14 @@ def get_p2pool_stats():
     """Aggregates P2Pool local statistics and P2P network health data."""
     raw_p2p = _read_json(P2P_STATS_PATH)
     raw_pool = _read_json(POOL_STATS_PATH)
+    raw_stratum = _read_json(STRATUM_STATS_PATH)
     pool_stats = raw_pool.get("pool_statistics", {})
     
     stats = {
         "p2p": {
             "type": detect_pool_type(raw_p2p.get("peers", [])),
-            "connections": raw_p2p.get("connections", 0),
-            "incoming": raw_p2p.get("incoming_connections", 0),
+            "out_peers": raw_p2p.get("connections", 0),
+            "in_peers": raw_p2p.get("incoming_connections", 0),
             "peers_count": raw_p2p.get("peer_list_size", 0),
             "uptime": raw_p2p.get("uptime", 0),
             "zmq_active": raw_p2p.get("zmq_last_active", 0)
@@ -65,7 +66,7 @@ def get_p2pool_stats():
             "pplns_window": pool_stats.get("pplnsWindowSize", 0),
             "difficulty": pool_stats.get("sidechainDifficulty", 0),
             "total_hashes": pool_stats.get("totalHashes", 0),
-            "shares_found": pool_stats.get("sharesFound", 0), # Critical metric for Algo switching
+            "shares_found": raw_stratum.get("shares_found", 0), # Critical metric for Algo switching
         }
     }
     return stats
@@ -104,7 +105,7 @@ def get_stratum_stats():
         if isinstance(w_entry, str):
             parts = w_entry.split(',')
             if len(parts) >= 1:
-                ip = parts[0].strip()
+                ip = parts[0].split(':')[0].strip()
                 # Default to "miner" if name field (index 4) is missing
                 name = parts[4].strip() if len(parts) >= 5 else "miner"
                 worker_configs.append({"ip": ip, "name": name, "parts": parts})
