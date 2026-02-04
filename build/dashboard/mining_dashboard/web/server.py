@@ -313,7 +313,7 @@ async def handle_index(request):
             pool_miners=local_pool.get('miners', 0),
             pplns_win=f"{local_pool.get('pplns_window', 0)} ({format_duration(local_pool.get('pplns_window', 0) * 10)})",
             pplns_wgt=local_pool.get('pplns_weight', 0),
-            pool_shares_window=local_pool.get('shares_in_window', 0),
+            pool_shares_window=f"<span class='status-ok'>True</span>" if local_pool.get('shares_in_window', 0) > 0 else f"<span class='status-bad'>False</span>",
             pool_blocks=local_pool.get('blocks_found', 0),
             pool_last_blk=format_time_abs(local_pool.get('last_block_ts', 0)),
             p2p_peers=f"{p2p_stats.get('out_peers',0)} / {p2p_stats.get('in_peers',0)}",
