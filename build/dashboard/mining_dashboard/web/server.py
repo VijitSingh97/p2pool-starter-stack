@@ -2,7 +2,7 @@ import os
 import time
 from aiohttp import web
 from config import HOST_IP, BLOCK_PPLNS_WINDOW_MAIN, ENABLE_XVB, UPDATE_INTERVAL
-from utils import format_hashrate, format_duration, format_time_abs
+from utils import format_hashrate, format_duration, format_time_abs, get_tier_info
 
 # Path to the template file
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "templates", "index.html")
@@ -206,20 +206,21 @@ async def handle_index(request):
         </div>
         """
 
+        tiers = state_mgr.state.get("tiers", {})
         # Determine Donation Tier based on 24h average hashrate
-        tier_name = "Standard"
-        if xvb_24h_val >= 1_000_000: tier_name = "Mega (1 MH/s+)"
-        elif xvb_24h_val >= 100_000: tier_name = "Whale (100 kH/s+)"
-        elif xvb_24h_val >= 10_000: tier_name = "VIP (10 kH/s+)"
-        elif xvb_24h_val >= 5_000: tier_name = "MVP (5 kH/s+)"
-        elif xvb_24h_val >= 1_000: tier_name = "Donor (1 kH/s+)"
+        tier_name, _ = get_tier_info(xvb_24h_val, tiers)
+
+        # Determine Target Tier based on current capacity (with safety margin)
+        safe_capacity = total_hr_val * 0.85
+        target_tier_name, _ = get_tier_info(safe_capacity, tiers)
 
         if ENABLE_XVB:
             xvb_card = f"""
             <div class="card">
                 <h3>XvB Donation Status</h3>
                 <div class="stat-grid">
-                    <div class="stat-card"><h5>Donation Tier</h5><p>{tier_name}</p></div>
+                    <div class="stat-card"><h5>Current Donation Tier</h5><p>{tier_name}</p></div>
+                    <div class="stat-card"><h5>Target Donation Tier</h5><p>{target_tier_name}</p></div>
                     <div class="stat-card"><h5>1h Avg (Pool)</h5><p>{format_hashrate(xvb_1h_val)}</p></div>
                     <div class="stat-card"><h5>24h Avg (Pool)</h5><p>{format_hashrate(xvb_24h_val)}</p></div>
                     <div class="stat-card"><h5>Fail Count</h5><p>{xvb_stats.get('fail_count', 0)}</p></div>

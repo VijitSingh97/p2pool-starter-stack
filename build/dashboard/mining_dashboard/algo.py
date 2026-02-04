@@ -1,6 +1,7 @@
 import math
 import logging
 from config import XVB_TIME_ALGO_MS, XVB_MIN_TIME_SEND_MS, ENABLE_XVB
+from utils import get_tier_info
 
 class XvbAlgorithm:
     """
@@ -89,28 +90,10 @@ class XvbAlgorithm:
         P2Pool stability before committing to a higher tier.
         """
         safe_capacity = current_hr * 0.85 
-        
-        # Retrieve tier thresholds from state configuration
         tiers = self.state_manager.state.get("tiers", {})
-        limit_mega = tiers.get("donor_mega", 0)
-        limit_whale = tiers.get("donor_whale", 0)
-        limit_vip = tiers.get("donor_vip", 0)
-        limit_mvp = tiers.get("mvp", 0)
-        limit_donor = tiers.get("donor", 0)
         
-        # Evaluate tiers in descending order of requirement
-        if limit_mega > 0 and safe_capacity >= limit_mega:
-            return float(limit_mega)
-        elif limit_whale > 0 and safe_capacity >= limit_whale:
-            return float(limit_whale)
-        elif limit_vip > 0 and safe_capacity >= limit_vip:
-            return float(limit_vip)
-        elif limit_mvp > 0 and safe_capacity >= limit_mvp:
-            return float(limit_mvp)
-        elif limit_donor > 0 and safe_capacity >= limit_donor:
-            return float(limit_donor)
-            
-        return 0.0
+        _, threshold = get_tier_info(safe_capacity, tiers)
+        return threshold
 
     def _get_needed_time(self, current_hr, target_hr):
         """

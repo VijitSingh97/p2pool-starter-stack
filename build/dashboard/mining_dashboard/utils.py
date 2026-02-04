@@ -1,4 +1,5 @@
 import time
+from config import TIER_DEFAULTS
 
 def parse_hashrate(val_str, unit_str=None):
     """
@@ -101,3 +102,25 @@ def format_time_abs(timestamp):
         return time.strftime('%H:%M:%S', time.localtime(timestamp))
     except (ValueError, OSError):
         return "Invalid Time"
+
+def get_tier_info(hashrate, tiers=None):
+    """
+    Determines the donation tier based on hashrate.
+    Returns (tier_name, tier_threshold).
+    """
+    if tiers is None:
+        tiers = TIER_DEFAULTS
+
+    limit_mega = tiers.get("donor_mega", 0)
+    limit_whale = tiers.get("donor_whale", 0)
+    limit_vip = tiers.get("donor_vip", 0)
+    limit_mvp = tiers.get("mvp", 0)
+    limit_donor = tiers.get("donor", 0)
+
+    if limit_mega > 0 and hashrate >= limit_mega: return "Mega (1 MH/s+)", float(limit_mega)
+    if limit_whale > 0 and hashrate >= limit_whale: return "Whale (100 kH/s+)", float(limit_whale)
+    if limit_vip > 0 and hashrate >= limit_vip: return "VIP (10 kH/s+)", float(limit_vip)
+    if limit_mvp > 0 and hashrate >= limit_mvp: return "MVP (5 kH/s+)", float(limit_mvp)
+    if limit_donor > 0 and hashrate >= limit_donor: return "Donor (1 kH/s+)", float(limit_donor)
+
+    return "Standard", 0.0
