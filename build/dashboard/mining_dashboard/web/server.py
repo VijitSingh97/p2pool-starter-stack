@@ -26,6 +26,9 @@ def get_cached_template():
             # Inject CPU/Mem cards before Disk if missing
             if "{cpu_load}" not in content and "<h5>Disk</h5>" in content:
                 content = content.replace("<h5>Disk</h5>", "<h5>CPU Load</h5><p>{cpu_load}</p></div><div class=\"stat-card\"><h5>Memory</h5><p>{mem_p}</p></div><div class=\"stat-card\"><h5>Disk</h5>")
+            
+            if "{chart_controls}" not in content and "<canvas" in content:
+                content = content.replace("<canvas", "{chart_controls}<canvas")
             _TEMPLATE_CACHE = content
             _TEMPLATE_MTIME = mtime
     except Exception as e:
@@ -241,8 +244,8 @@ async def handle_index(request):
             return base + " background-color:#222; color:#aaa;"
 
         chart_controls = f"""
-        <div class="card" style="text-align:center; margin-top:10px; padding:10px;">
-            <div style="margin-bottom:8px; font-weight:bold; color:#888; font-size:0.9em;">Chart History Range</div>
+        <div style="display:flex; justify-content:center; align-items:center; gap:5px; margin-bottom:15px;">
+            <span style="font-weight:bold; color:#888; font-size:0.9em;">Range:</span>
             <a href="?range=1h" style="{_btn_style('1h')}">1 Hr</a>
             <a href="?range=24h" style="{_btn_style('24h')}">24 Hr</a>
             <a href="?range=1w" style="{_btn_style('1w')}">1 Wk</a>
@@ -251,7 +254,7 @@ async def handle_index(request):
         </div>
         """
 
-        stats_card = mode_card + xvb_card + chart_controls
+        stats_card = mode_card + xvb_card
 
         template = get_cached_template()
 
@@ -330,6 +333,7 @@ async def handle_index(request):
             worker_rows=worker_rows,
             tari_section=tari_section,
             stats_card=stats_card,
+            chart_controls=chart_controls,
             chart_labels=",".join(chart_labels),
             chart_data=",".join(chart_values),
             chart_p2pool=",".join(chart_p2pool),
