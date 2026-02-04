@@ -111,14 +111,13 @@ def get_tier_info(hashrate, tiers=None):
     if tiers is None:
         tiers = TIER_DEFAULTS
 
-    limit_mega = tiers.get("donor_mega", 0)
-    limit_whale = tiers.get("donor_whale", 0)
-    limit_vip = tiers.get("donor_vip", 0)
-    limit_donor = tiers.get("donor", 0)
+    # Sort tiers by threshold descending to find the highest matching tier first
+    sorted_tiers = sorted(tiers.items(), key=lambda x: x[1], reverse=True)
 
-    if limit_mega > 0 and hashrate >= limit_mega: return "Mega (1 MH/s+)", float(limit_mega)
-    if limit_whale > 0 and hashrate >= limit_whale: return "Whale (100 kH/s+)", float(limit_whale)
-    if limit_vip > 0 and hashrate >= limit_vip: return "VIP (10 kH/s+)", float(limit_vip)
-    if limit_donor > 0 and hashrate >= limit_donor: return "Donor (1 kH/s+)", float(limit_donor)
+    for key, threshold in sorted_tiers:
+        if threshold > 0 and hashrate >= threshold:
+            # Format key for display (e.g., "donor_mega" -> "Mega")
+            display_name = key.replace("donor_", "").replace("_", " ").title()
+            return f"{display_name} ({format_hashrate(threshold)}+)", float(threshold)
 
-    return "Standard", 0.0
+    return "None", 0.0
