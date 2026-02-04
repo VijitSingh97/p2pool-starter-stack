@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import time
-from config import STATE_FILE_PATH, TIER_DEFAULTS
+from config import STATE_FILE_PATH, TIER_DEFAULTS, HISTORY_MAX_ENTRIES
 
 class StateManager:
     """
@@ -75,19 +75,19 @@ class StateManager:
             self.logger.error(f"State Persistence Error: Failed to save state: {e}")
 
     def update_history(self, hashrate, p2pool_hr=0, xvb_hr=0):
-        """Appends a new hashrate data point to the history buffer (capped at 60 entries)."""
+        """Appends a new hashrate data point to the history buffer (capped at HISTORY_MAX_ENTRIES)."""
         history = self.state["hashrate_history"]
         
         # Append new data point with timestamp
         history.append({
-            "t": time.strftime('%H:%M'),
+            "t": time.strftime('%Y-%m-%d %H:%M'),
             "v": round(hashrate, 2),
             "v_p2pool": round(p2pool_hr, 2),
             "v_xvb": round(xvb_hr, 2)
         })
         
-        # Enforce rolling window size (Max 60 entries)
-        if len(history) > 60:
+        # Enforce rolling window size
+        if len(history) > HISTORY_MAX_ENTRIES:
             history.pop(0)
             
         self.save()

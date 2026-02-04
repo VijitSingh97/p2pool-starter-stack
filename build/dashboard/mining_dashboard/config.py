@@ -24,6 +24,7 @@ HOST_IP = os.environ.get("HOST_IP", "Unknown Host")
 XMRIG_API_PORT = 8080
 API_TIMEOUT = 1         # Connection timeout in seconds
 UPDATE_INTERVAL = 30    # Main data collection loop interval in seconds
+HISTORY_MAX_ENTRIES = 86400 # 4 weeks of history (14 days * 24h * 120 entries/h)
 
 # --- XvB Algorithm Constants ---
 # Cycle length for the donation switching algorithm (60 seconds)
@@ -52,4 +53,10 @@ TIER_DEFAULTS = {
 # --- P2Pool Protocol Constants ---
 # Parameters for PPLNS (Pay Per Last N Shares) window calculation
 BLOCK_PPLNS_WINDOW_MAIN = 2160  # Window size in blocks
-SECOND_PER_BLOCK_MAIN = 120     # Target block time in seconds
+BLOCK_PPLNS_WINDOW_MINI = 2160
+BLOCK_PPLNS_WINDOW_NANO = 2160
+
+SECOND_PER_BLOCK_MAIN = 120          # Monero Target block time in seconds
+SECOND_PER_BLOCK_P2POOL_MAIN = 10    # P2Pool Main Block Time
+SECOND_PER_BLOCK_P2POOL_MINI = 10    # P2Pool Mini Block Time
+SECOND_PER_BLOCK_P2POOL_NANO = 30    # P2Pool Nano Block Time

@@ -1,7 +1,7 @@
 import os
 import time
 from aiohttp import web
-from config import HOST_IP, BLOCK_PPLNS_WINDOW_MAIN, ENABLE_XVB
+from config import HOST_IP, BLOCK_PPLNS_WINDOW_MAIN, ENABLE_XVB, UPDATE_INTERVAL
 from utils import format_hashrate, format_duration, format_time_abs
 
 # Path to the template file
@@ -46,10 +46,27 @@ async def handle_index(request):
     
     # Historical Data
     history = state_mgr.state.get('hashrate_history', [])
-    chart_labels = [f"'{x['t']}'" for x in history]
-    chart_values = [str(x['v']) for x in history]
-    chart_p2pool = [str(x.get('v_p2pool', 0)) for x in history]
-    chart_xvb = [str(x.get('v_xvb', 0)) for x in history]
+
+    # --- Chart Range Filtering ---
+    range_arg = request.query.get('range', 'all')
+    filtered_history = history
+    
+    if range_arg != 'all':
+        target_seconds = 0
+        if range_arg == '1h': target_seconds = 3600
+        elif range_arg == '24h': target_seconds = 86400
+        elif range_arg == '1w': target_seconds = 604800
+        elif range_arg == '1m': target_seconds = 2592000 # 30 Days
+        
+        if target_seconds > 0:
+            entries_needed = int(target_seconds / UPDATE_INTERVAL)
+            if entries_needed < len(history):
+                filtered_history = history[-entries_needed:]
+
+    chart_labels = [f"'{x['t']}'" for x in filtered_history]
+    chart_values = [str(x['v']) for x in filtered_history]
+    chart_p2pool = [str(x.get('v_p2pool', 0)) for x in filtered_history]
+    chart_xvb = [str(x.get('v_xvb', 0)) for x in filtered_history]
 
     # --- Algorithm & XvB Statistics ---
     xvb_stats = state_mgr.get_xvb_stats() or {}
@@ -216,7 +233,25 @@ async def handle_index(request):
             </div>
             """
 
-        stats_card = mode_card + xvb_card
+        # --- Chart Controls ---
+        def _btn_style(target):
+            base = "display:inline-block; padding:4px 12px; margin:0 2px; border-radius:4px; text-decoration:none; font-size:0.85em; border:1px solid #444;"
+            if target == range_arg:
+                return base + " background-color:#238636; color:#fff; border-color:#238636;"
+            return base + " background-color:#222; color:#aaa;"
+
+        chart_controls = f"""
+        <div class="card" style="text-align:center; margin-top:10px; padding:10px;">
+            <div style="margin-bottom:8px; font-weight:bold; color:#888; font-size:0.9em;">Chart History Range</div>
+            <a href="?range=1h" style="{_btn_style('1h')}">1 Hr</a>
+            <a href="?range=24h" style="{_btn_style('24h')}">24 Hr</a>
+            <a href="?range=1w" style="{_btn_style('1w')}">1 Wk</a>
+            <a href="?range=1m" style="{_btn_style('1m')}">1 Mo</a>
+            <a href="?range=all" style="{_btn_style('all')}">All</a>
+        </div>
+        """
+
+        stats_card = mode_card + xvb_card + chart_controls
 
         template = get_cached_template()
 
@@ -278,7 +313,7 @@ async def handle_index(request):
             pool_miners=local_pool.get('miners', 0),
             pplns_win=f"{local_pool.get('pplns_window', 0)} ({format_duration(local_pool.get('pplns_window', 0) * 10)})",
             pplns_wgt=local_pool.get('pplns_weight', 0),
-            pool_shares_window=local_pool.get('shares_found', 0),
+            pool_shares_window=local_pool.get('shares_in_window', 0),
             pool_blocks=local_pool.get('blocks_found', 0),
             pool_last_blk=format_time_abs(local_pool.get('last_block_ts', 0)),
             p2p_peers=f"{p2p_stats.get('out_peers',0)} / {p2p_stats.get('in_peers',0)}",

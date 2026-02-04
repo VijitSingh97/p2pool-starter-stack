@@ -36,8 +36,8 @@ class XvbAlgorithm:
 
         # Constraint: Enforce P2Pool mode if no shares have been found recently.
         # This prevents potential revenue loss during low-luck periods.
-        shares_found = p2pool_stats.get('shares_found', 0)
-        if shares_found == 0:
+        shares_in_window = p2pool_stats.get('shares_in_window', 0)
+        if shares_in_window == 0:
             self.logger.info("Decision Strategy: Force P2POOL (Zero shares in window)")
             return "P2POOL", 0
 

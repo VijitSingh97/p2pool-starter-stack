@@ -1,8 +1,11 @@
 import json
 import os
+import time
 from config import (
     P2P_STATS_PATH, POOL_STATS_PATH, NETWORK_STATS_PATH, 
-    STRATUM_STATS_PATH, TARI_STATS_PATH, SECOND_PER_BLOCK_MAIN
+    STRATUM_STATS_PATH, TARI_STATS_PATH, SECOND_PER_BLOCK_MAIN,
+    BLOCK_PPLNS_WINDOW_MAIN, BLOCK_PPLNS_WINDOW_MINI, BLOCK_PPLNS_WINDOW_NANO,
+    SECOND_PER_BLOCK_P2POOL_MAIN, SECOND_PER_BLOCK_P2POOL_MINI, SECOND_PER_BLOCK_P2POOL_NANO
 )
 
 def _read_json(path):
@@ -46,9 +49,29 @@ def get_p2pool_stats():
     raw_stratum = _read_json(STRATUM_STATS_PATH)
     pool_stats = raw_pool.get("pool_statistics", {})
     
+    pool_type = detect_pool_type(raw_p2p.get("peers", []))
+
+    # Determine Window Duration based on Chain Type
+    window_blocks = BLOCK_PPLNS_WINDOW_MAIN
+    block_time = SECOND_PER_BLOCK_P2POOL_MAIN
+    
+    if pool_type == "Nano":
+        window_blocks = BLOCK_PPLNS_WINDOW_NANO
+        block_time = SECOND_PER_BLOCK_P2POOL_NANO
+    elif pool_type == "Mini":
+        window_blocks = BLOCK_PPLNS_WINDOW_MINI
+        block_time = SECOND_PER_BLOCK_P2POOL_MINI
+    
+    window_duration = window_blocks * block_time
+    
+    # Calculate Shares in Window
+    last_share_time = raw_stratum.get("last_share_found_time", 0)
+    shares_total = raw_stratum.get("shares_found", 0)
+    shares_in_window = 1 if (shares_total > 0 and (time.time() - last_share_time) < window_duration) else 0
+
     stats = {
         "p2p": {
-            "type": detect_pool_type(raw_p2p.get("peers", [])),
+            "type": pool_type,
             "out_peers": raw_p2p.get("connections", 0),
             "in_peers": raw_p2p.get("incoming_connections", 0),
             "peers_count": raw_p2p.get("peer_list_size", 0),
@@ -66,7 +89,8 @@ def get_p2pool_stats():
             "pplns_window": pool_stats.get("pplnsWindowSize", 0),
             "difficulty": pool_stats.get("sidechainDifficulty", 0),
             "total_hashes": pool_stats.get("totalHashes", 0),
-            "shares_found": raw_stratum.get("shares_found", 0), # Critical metric for Algo switching
+            "shares_found": shares_total,
+            "shares_in_window": shares_in_window, # Critical metric for Algo switching
         }
     }
     return stats
