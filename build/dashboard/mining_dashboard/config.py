@@ -36,8 +36,20 @@ XVB_MIN_TIME_SEND_MS = 15000
 # Wallet address required for fetching XvB bonus history
 MONERO_WALLET_ADDRESS = os.environ.get("MONERO_WALLET_ADDRESS", "") 
 
+# Donor ID for XMRvsBeast pool
+XVB_DONOR_ID = os.environ.get("XVB_DONOR_ID", "")
+
 # Feature Flag: Enable/Disable XvB switching logic
 ENABLE_XVB = os.environ.get("XVB_ENABLED", "true").lower() == "true"
+
+# --- Upstream Pool Configuration ---
+P2POOL_URL = os.environ.get("P2POOL_URL", "")
+XVB_POOL_URL = os.environ.get("XVB_POOL_URL", "")
+
+# --- Proxy API Configuration ---
+PROXY_AUTH_TOKEN = os.environ.get("PROXY_AUTH_TOKEN", "")
+PROXY_HOST = os.environ.get("HOST_IP", "127.0.0.1")
+PROXY_API_PORT = int(os.environ.get("PROXY_API_PORT", 3344))
 
 # --- Algorithm Safety Margins ---
 # Safety margin (5%) to ensure the 1h average strictly meets the tier requirement

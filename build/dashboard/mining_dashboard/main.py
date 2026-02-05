@@ -1,22 +1,38 @@
 import asyncio
 import logging
 import time
-from aiohttp import web, ClientSession
+from aiohttp import web
 
-from config import UPDATE_INTERVAL, HOST_IP, XMRIG_API_PORT, XVB_TIME_ALGO_MS
+from config import (
+    UPDATE_INTERVAL, 
+    XVB_TIME_ALGO_MS, 
+    MONERO_WALLET_ADDRESS, 
+    XVB_DONOR_ID,
+    P2POOL_URL,
+    XVB_POOL_URL,
+    PROXY_AUTH_TOKEN,
+    PROXY_HOST,
+    PROXY_API_PORT
+)
 from storage import StateManager
 from algo import XvbAlgorithm
 from web.server import create_app
-from collectors.miners import get_all_workers_stats
+from client.xmrig_proxy_client import XMRigProxyClient
+from client.xvb_client import XvbClient
 from collectors.pools import get_p2pool_stats, get_network_stats, get_stratum_stats, get_tari_stats
 from collectors.system import get_disk_usage, get_hugepages_status, get_memory_usage, get_load_average, get_cpu_usage
-from collectors.xvb import fetch_xvb_stats 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("Main")
 
 state_manager = StateManager()
 algorithm = XvbAlgorithm(state_manager)
+
+# Initialize Proxy Client
+proxy_client = XMRigProxyClient(host=PROXY_HOST, port=PROXY_API_PORT, access_token=PROXY_AUTH_TOKEN)
+
+# Initialize XvB Client
+xvb_client = XvbClient(wallet_address=MONERO_WALLET_ADDRESS)
 
 # Global shared state for the latest aggregated metrics
 DEFAULT_DATA = {
@@ -38,85 +54,33 @@ else:
     LATEST_DATA = DEFAULT_DATA.copy()
 
 
-async def switch_worker(session, worker, p2pool_state, xvb_state):
-    """Helper to switch a single worker's configuration."""
-    name = worker.get('name', '')
-    ip = worker.get('ip', '')
-    
-    # Connection Strategy: Hostname -> mDNS -> IP
-    targets = [
-        f"{name}:{XMRIG_API_PORT}",       
-        f"{name}.local:{XMRIG_API_PORT}", 
-        f"{ip}:{XMRIG_API_PORT}"          
-    ]
-
-    # Use the worker's hostname (derived from name) as the access token
-    token = name.split('+')[0].strip()
-    headers = {"Authorization": f"Bearer {token}"}
-
-    switched = False
-    for target in targets:
-        if target.startswith(":"): continue 
-
-        url = f"http://{target}/1/config"
-        
-        try:
-            # 1. Fetch current configuration
-            async with session.get(url, headers=headers, timeout=2) as get_resp:
-                if get_resp.status != 200:
-                    continue
-                config_data = await get_resp.json()
-            
-            if not isinstance(config_data, dict):
-                continue
-
-            # 2. Modify pool states based on ports
-            needs_update = False
-            if "pools" in config_data and isinstance(config_data["pools"], list):
-                for pool in config_data["pools"]:
-                    p_url = pool.get("url", "")
-                    target_state = None
-                    if ":3333" in p_url: target_state = p2pool_state
-                    elif ":3344" in p_url: target_state = xvb_state
-                    
-                    if target_state is not None and pool.get("enabled") != target_state:
-                        pool["enabled"] = target_state
-                        needs_update = True
-
-            if not needs_update:
-                switched = True
-                break
-
-            # 3. Push updated configuration
-            async with session.put(url, json=config_data, headers=headers, timeout=2) as resp:
-                if resp.status in [200, 202, 204]:
-                    switched = True
-                    break 
-        except Exception:
-            continue
-    
-    if not switched:
-        logger.warning(f"Worker Control Error: Failed to switch {name} (Targets attempted: {', '.join(targets)})")
-
-async def switch_miners(mode, workers):
+async def switch_miners(mode):
     """
-    Configures the upstream pool priority for all active XMRig workers.
-    
-    Iterates through the provided worker list and updates their configuration
-    via the XMRig HTTP API to prioritize either P2Pool or the XvB proxy.
+    Configures the upstream pool priority for the XMRig Proxy.
     
     Args:
         mode (str): The target mining mode ("P2POOL" or "XVB").
-        workers (list): A list of worker dictionaries containing 'ip' and 'name'.
     """
-    if not workers: return
-    
-    p2pool_state = True if mode == "P2POOL" else False
-    xvb_state = True if mode == "XVB" else False
 
-    async with ClientSession() as session:
-        tasks = [switch_worker(session, w, p2pool_state, xvb_state) for w in workers]
-        await asyncio.gather(*tasks)
+    # Construct pool configuration based on mode
+    # Note: The first pool in the list is the primary.
+    if mode == "P2POOL":
+        pools = [
+            {"url": P2POOL_URL, "user": MONERO_WALLET_ADDRESS, "pass": "x", "enabled": True, "coin": "monero"},
+            {"url": XVB_POOL_URL, "user": XVB_DONOR_ID, "pass": "x", "enabled": False, "coin": "monero"}
+        ]
+    else:
+        pools = [
+            {"url": XVB_POOL_URL, "user": XVB_DONOR_ID, "pass": "x", "enabled": True, "coin": "monero"},
+            {"url": P2POOL_URL, "user": MONERO_WALLET_ADDRESS, "pass": "x", "enabled": False, "coin": "monero"}
+        ]
+
+    try:
+        # Execute update via Proxy Client (running in thread to avoid blocking async loop)
+        await asyncio.to_thread(proxy_client.update_config, {"pools": pools})
+        logger.info(f"Switched Proxy to mode: {mode}")
+    except Exception as e:
+        logger.error(f"Failed to switch proxy mode: {e}")
 
 
 async def data_collection_loop():
@@ -133,12 +97,25 @@ async def data_collection_loop():
             # 1. Collect Local Statistics (High Frequency)
             stratum_raw, worker_configs = get_stratum_stats()
             
-            # Update persistent state with currently visible workers
-            await asyncio.to_thread(state_manager.update_known_workers, worker_configs)
-            
-            # Query ALL known workers (even those temporarily missing from P2Pool stats)
-            all_known_workers = state_manager.get_known_workers()
-            workers_stats = await get_all_workers_stats(all_known_workers)
+            # Fetch workers from Proxy
+            try:
+                proxy_data = await asyncio.to_thread(proxy_client.get_workers)
+                workers_stats = []
+                if proxy_data and "workers" in proxy_data:
+                    for w in proxy_data["workers"]:
+                        hr = w.get("hashrate", [0, 0, 0])
+                        workers_stats.append({
+                            "name": w.get("id", "Unknown"),
+                            "ip": w.get("ip", "0.0.0.0"),
+                            "status": "online",
+                            "h10": hr[0] if len(hr) > 0 else 0,
+                            "h60": hr[1] if len(hr) > 1 else 0,
+                            "h15": hr[2] if len(hr) > 2 else 0,
+                            "uptime": w.get("uptime", 0)
+                        })
+            except Exception as e:
+                logger.error(f"Proxy Data Fetch Error: {e}")
+                workers_stats = []
             
             # Aggregate 15-minute average hashrate for stable algorithmic input
             total_h15 = sum(w.get('h15', 0) for w in workers_stats if w.get('status') == 'online')
@@ -181,7 +158,7 @@ async def data_collection_loop():
 
             # 3. External API Sync (Throttled: Every 5 minutes / 10 cycles)
             if iteration_count % 10 == 0:
-                real_xvb_stats = await fetch_xvb_stats()
+                real_xvb_stats = await asyncio.to_thread(xvb_client.get_stats)
                 if real_xvb_stats:
                     await asyncio.to_thread(state_manager.update_xvb_stats,
                         donation_avg_24h=real_xvb_stats["24h_avg"],
@@ -214,28 +191,27 @@ async def algo_control_loop():
             
             # Execute decision logic
             decision, xvb_duration = algorithm.get_decision(current_hr, p2pool_stats, xvb_stats)
-            workers = LATEST_DATA.get("workers", [])
             
             if decision == "P2POOL":
                 await asyncio.to_thread(state_manager.update_xvb_stats, mode="P2POOL")
-                await switch_miners("P2POOL", workers)
+                await switch_miners("P2POOL")
                 await asyncio.sleep(XVB_TIME_ALGO_MS / 1000)
                 
             elif decision == "XVB":
                 await asyncio.to_thread(state_manager.update_xvb_stats, mode="XVB")
-                await switch_miners("XVB", workers)
+                await switch_miners("XVB")
                 await asyncio.sleep(XVB_TIME_ALGO_MS / 1000)
                 
             elif decision == "SPLIT":
                 # Split Mode: Allocate time slice to XvB, remainder to P2Pool
                 await asyncio.to_thread(state_manager.update_xvb_stats, mode="XVB (Split)")
-                await switch_miners("XVB", workers)
+                await switch_miners("XVB")
                 await asyncio.sleep(xvb_duration / 1000)
                 
                 remainder = (XVB_TIME_ALGO_MS - xvb_duration) / 1000
                 if remainder > 0:
                     await asyncio.to_thread(state_manager.update_xvb_stats, mode="P2POOL (Split)")
-                    await switch_miners("P2POOL", workers)
+                    await switch_miners("P2POOL")
                     await asyncio.sleep(remainder)
 
         except Exception as e:

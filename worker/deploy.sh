@@ -136,7 +136,6 @@ FULL_USER="$(hostname)+${DIFFICULTY}"
 
 # Generate config.json via jq
 jq --arg url "$P2POOL_NODE_ADDRESS:3333" \
-   --arg proxy_url "$P2POOL_NODE_ADDRESS:3344" \
    --arg user "$FULL_USER" \
    --arg access_token "$ACCESS_TOKEN" \
    --arg log "$LOG_FILE_PATH" \
@@ -151,8 +150,8 @@ jq --arg url "$P2POOL_NODE_ADDRESS:3333" \
    --argjson avx2 "$INIT_AVX2" \
    '.pools[0].url = $url | 
     .pools[0].user = $user | 
-    .pools[1] = .pools[0] |
-    .pools[1].url = $proxy_url |
+    .pools[0].enabled = true |
+    .pools = [.pools[0]] |
     ."log-file" = $log | 
     .cpu.yield = $yield | 
     .cpu.priority = $prio | 

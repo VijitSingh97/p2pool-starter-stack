@@ -33,13 +33,6 @@
             "pass": "x",
             "keepalive": true,
             "tls": false
-        },
-        {
-            "url": "",
-            "user": "",
-            "pass": "x",
-            "keepalive": true,
-            "tls": false
         }
     ],
     "http": {
