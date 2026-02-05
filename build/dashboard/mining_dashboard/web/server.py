@@ -78,42 +78,46 @@ async def handle_index(request):
     workers.sort(key=lambda x: (x['status'] != 'online', x['name']))
     
     for worker in workers:
-        status_class = "status-ok" if worker['status'] == 'online' else "status-bad"
-        
-        # Identify and assign pool badge based on port
-        active_pool = worker.get('active_pool', '')
-        pool_badge = "<span style='background:#96211e; color:white; padding:2px 5px; border-radius:4px; font-size:0.8em;'>Unknown</span>"
-        if any(p in active_pool for p in ['3333', '37889', '37888', '37890']):
-            pool_badge = "<span style='background:#238636; color:white; padding:2px 5px; border-radius:4px; font-size:0.8em;'>P2Pool</span>"
-        elif any(p in active_pool for p in ['3344', '4247']):
-            pool_badge = "<span style='background:#a371f7; color:white; padding:2px 5px; border-radius:4px; font-size:0.8em;'>XvB</span>"
-        
-        name_display = f"{html.escape(worker['name'])} {pool_badge}"
-
-        # Add data-sort attributes for client-side sorting
-        uptime_val = worker.get('uptime', 0)
-        h10_val = worker.get('h10', 0)
-        h60_val = worker.get('h60', 0)
-        h15_val = worker.get('h15', 0)
-
-        # Convert IP address to integer for sorting purposes
         try:
-            ip_parts = [int(part) for part in worker.get('ip', '0.0.0.0').split('.')]
-            ip_sort_val = (ip_parts[0] << 24) + (ip_parts[1] << 16) + (ip_parts[2] << 8) + ip_parts[3]
-        except:
-            ip_sort_val = 0
+            status_class = "status-ok" if worker['status'] == 'online' else "status-bad"
+            
+            # Identify and assign pool badge based on port
+            active_pool = worker.get('active_pool', '')
+            pool_badge = "<span style='background:#96211e; color:white; padding:2px 5px; border-radius:4px; font-size:0.8em;'>Unknown</span>"
+            if any(p in active_pool for p in ['3333', '37889', '37888', '37890']):
+                pool_badge = "<span style='background:#238636; color:white; padding:2px 5px; border-radius:4px; font-size:0.8em;'>P2Pool</span>"
+            elif any(p in active_pool for p in ['3344', '4247']):
+                pool_badge = "<span style='background:#a371f7; color:white; padding:2px 5px; border-radius:4px; font-size:0.8em;'>XvB</span>"
+            
+            name_display = f"{html.escape(worker['name'])} {pool_badge}"
 
-        row = f"""
-        <tr class="{status_class}">
-            <td data-sort="{html.escape(worker['name'])}">{name_display}</td>
-            <td data-sort="{ip_sort_val}">{html.escape(worker['ip'])}</td>
-            <td data-sort="{uptime_val}">{format_duration(uptime_val)}</td>
-            <td data-sort="{h10_val}">{format_hashrate(h10_val)}</td>
-            <td data-sort="{h60_val}">{format_hashrate(h60_val)}</td>
-            <td data-sort="{h15_val}">{format_hashrate(h15_val)}</td>
-        </tr>
-        """
-        worker_rows += row
+            # Add data-sort attributes for client-side sorting
+            uptime_val = worker.get('uptime', 0)
+            h10_val = worker.get('h10', 0)
+            h60_val = worker.get('h60', 0)
+            h15_val = worker.get('h15', 0)
+
+            # Convert IP address to integer for sorting purposes
+            try:
+                ip_parts = [int(part) for part in worker.get('ip', '0.0.0.0').split('.')]
+                ip_sort_val = (ip_parts[0] << 24) + (ip_parts[1] << 16) + (ip_parts[2] << 8) + ip_parts[3]
+            except:
+                ip_sort_val = 0
+
+            row = f"""
+            <tr class="{status_class}">
+                <td data-sort="{html.escape(worker['name'])}">{name_display}</td>
+                <td data-sort="{ip_sort_val}">{html.escape(worker['ip'])}</td>
+                <td data-sort="{uptime_val}">{format_duration(uptime_val)}</td>
+                <td data-sort="{h10_val}">{format_hashrate(h10_val)}</td>
+                <td data-sort="{h60_val}">{format_hashrate(h60_val)}</td>
+                <td data-sort="{h15_val}">{format_hashrate(h15_val)}</td>
+            </tr>
+            """
+            worker_rows += row
+        except Exception as e:
+            print(f"Error processing worker {worker.get('name', 'unknown')}: {e}")
+            continue
 
     # --- Tari Merge Mining Section ---
     tari_stats = data.get('tari', {})
@@ -212,7 +216,7 @@ async def handle_index(request):
         if len(net_hash_val) > 20:
             net_hash_val = f"{net_hash_val[:8]}...{net_hash_val[-8:]}"
 
-        html = template.format(
+        response_html = template.format(
             host_ip=HOST_IP,
 
             # --- Header & Algo ---
@@ -320,12 +324,12 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 """
-        if "</body>" in html:
-            html = html.replace("</body>", sorting_script + "</body>")
+        if "</body>" in response_html:
+            response_html = response_html.replace("</body>", sorting_script + "</body>")
         else:
-            html += sorting_script
+            response_html += sorting_script
 
-        return web.Response(text=html, content_type='text/html')
+        return web.Response(text=response_html, content_type='text/html')
         
     except Exception as e:
         # Handle rendering errors gracefully
