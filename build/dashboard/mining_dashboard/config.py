@@ -48,7 +48,7 @@ XVB_POOL_URL = os.environ.get("XVB_POOL_URL", "")
 
 # --- Proxy API Configuration ---
 PROXY_AUTH_TOKEN = os.environ.get("PROXY_AUTH_TOKEN", "")
-PROXY_HOST = os.environ.get("HOST_IP", "127.0.0.1")
+PROXY_HOST = os.environ.get("PROXY_HOST", "127.0.0.1")
 PROXY_API_PORT = int(os.environ.get("PROXY_API_PORT", 3344))
 
 # --- Algorithm Safety Margins ---

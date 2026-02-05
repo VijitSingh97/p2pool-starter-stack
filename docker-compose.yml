@@ -201,6 +201,7 @@ services:
       - XVB_DONOR_ID=${XVB_DONOR_ID}
       - PROXY_AUTH_TOKEN=${PROXY_AUTH_TOKEN}
       - PROXY_API_PORT=${PROXY_API_PORT}
+      - PROXY_HOST=127.0.0.1
 
 # --- Network Configuration ---
 # Static subnet definition to ensure predictable IP assignment for Tor hidden services.
