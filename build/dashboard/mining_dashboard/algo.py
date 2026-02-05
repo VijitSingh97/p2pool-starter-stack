@@ -1,6 +1,6 @@
 import math
 import logging
-from config import XVB_TIME_ALGO_MS, XVB_MIN_TIME_SEND_MS, ENABLE_XVB
+from config import XVB_TIME_ALGO_MS, XVB_MIN_TIME_SEND_MS, ENABLE_XVB, ALGO_MARGIN_1H
 from utils import get_tier_info
 
 class XvbAlgorithm:
@@ -16,7 +16,7 @@ class XvbAlgorithm:
         
         # Safety margin (5%) to ensure the 1h average strictly meets the tier requirement
         # despite network fluctuations.
-        self.margin_1h = 0.05 
+        self.margin_1h = ALGO_MARGIN_1H
 
     def get_decision(self, current_hr, p2pool_stats, xvb_stats):
         """
@@ -90,7 +90,7 @@ class XvbAlgorithm:
         P2Pool stability before committing to a higher tier.
         """
         safe_capacity = current_hr * 0.85 
-        tiers = self.state_manager.state.get("tiers", {})
+        tiers = self.state_manager.get_tiers()
         
         _, threshold = get_tier_info(safe_capacity, tiers)
         return threshold

@@ -1,5 +1,6 @@
 import os
 import time
+import html
 from aiohttp import web
 from config import HOST_IP, BLOCK_PPLNS_WINDOW_MAIN, ENABLE_XVB, UPDATE_INTERVAL
 from utils import format_hashrate, format_duration, format_time_abs, get_tier_info
@@ -38,7 +39,7 @@ async def handle_index(request):
     state_mgr = app['state_manager']
     
     # Historical Data
-    history = state_mgr.state.get('hashrate_history', [])
+    history = state_mgr.get_history()
 
     # --- Chart Range Filtering ---
     range_arg = request.query.get('range', 'all')
@@ -52,9 +53,8 @@ async def handle_index(request):
         elif range_arg == '1m': target_seconds = 2592000 # 30 Days
         
         if target_seconds > 0:
-            entries_needed = int(target_seconds / UPDATE_INTERVAL)
-            if entries_needed < len(history):
-                filtered_history = history[-entries_needed:]
+            cutoff_timestamp = time.time() - target_seconds
+            filtered_history = [x for x in history if x['timestamp'] >= cutoff_timestamp]
 
     chart_labels = [f"'{x['t']}'" for x in filtered_history]
     chart_values = [str(x['v']) for x in filtered_history]
@@ -88,7 +88,7 @@ async def handle_index(request):
         elif any(p in active_pool for p in ['3344', '4247']):
             pool_badge = "<span style='background:#a371f7; color:white; padding:2px 5px; border-radius:4px; font-size:0.8em;'>XvB</span>"
         
-        name_display = f"{worker['name']} {pool_badge}"
+        name_display = f"{html.escape(worker['name'])} {pool_badge}"
 
         # Add data-sort attributes for client-side sorting
         uptime_val = worker.get('uptime', 0)
@@ -105,8 +105,8 @@ async def handle_index(request):
 
         row = f"""
         <tr class="{status_class}">
-            <td data-sort="{worker['name']}">{name_display}</td>
-            <td data-sort="{ip_sort_val}">{worker['ip']}</td>
+            <td data-sort="{html.escape(worker['name'])}">{name_display}</td>
+            <td data-sort="{ip_sort_val}">{html.escape(worker['ip'])}</td>
             <td data-sort="{uptime_val}">{format_duration(uptime_val)}</td>
             <td data-sort="{h10_val}">{format_hashrate(h10_val)}</td>
             <td data-sort="{h60_val}">{format_hashrate(h60_val)}</td>
@@ -164,14 +164,19 @@ async def handle_index(request):
 
         # Derive P2Pool 1h average from history for improved accuracy
         if history:
-            p2p_vals = [x.get('v_p2pool', 0) for x in history]
-            p2p_1h_val = sum(p2p_vals) / len(p2p_vals) if p2p_vals else 0
+            cutoff_1h = time.time() - 3600
+            recent_p2p = [x.get('v_p2pool', 0) for x in history if x.get('timestamp', 0) > cutoff_1h]
+            
+            if recent_p2p:
+                p2p_1h_val = sum(recent_p2p) / len(recent_p2p)
+            else:
+                p2p_1h_val = max(0, total_hr_val - xvb_1h_val)
         else:
             p2p_1h_val = max(0, total_hr_val - xvb_1h_val)
             
         p2p_24h_val = max(0, total_hr_val - xvb_24h_val)
 
-        tiers = state_mgr.state.get("tiers", {})
+        tiers = state_mgr.get_tiers()
         # Determine Donation Tier based on 24h average hashrate
         tier_name, _ = get_tier_info(xvb_24h_val, tiers)
 
