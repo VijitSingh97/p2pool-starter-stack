@@ -33,9 +33,9 @@ fi
 # Parse Configuration
 RAW_HOME=$(jq -r '.HOME_DIR // "DYNAMIC_HOME"' "$CONFIG_JSON")
 if [ "$RAW_HOME" == "DYNAMIC_HOME" ]; then
-    HOME_DIR=$HOME
+    WORKER_ROOT="$SCRIPT_DIR/data/worker"
 else
-    HOME_DIR=$RAW_HOME
+    WORKER_ROOT="$RAW_HOME/worker"
 fi
 DONATION=$(jq -r .DONATION "$CONFIG_JSON")
 WORKER_CONFIG_FILE=$(jq -r .WORKER_CONFIG_FILE "$CONFIG_JSON")
@@ -54,7 +54,6 @@ fi
 TEMPLATE_CONFIG="$SCRIPT_DIR/$WORKER_CONFIG_FILE"
 
 # --- 2. Workspace Preparation ---
-WORKER_ROOT="$HOME_DIR/worker"
 mkdir -p "$WORKER_ROOT"
 cd "$WORKER_ROOT"
 
