@@ -183,7 +183,7 @@ services:
       logging: *default-logging
       network_mode: "host" # Critical for mDNS/Avahi discovery
       volumes:
-        - ${P2POOL_DATA_DIR}/stats:/app/stats:ro # Read-only access to P2Pool stats
+        - ${P2POOL_DATA_DIR}/stats:/app/mining_dashboard/stats:ro # Read-only access to P2Pool stats
         - ${DASHBOARD_DATA_DIR}:/data
         - /var/run/dbus:/var/run/dbus:ro
         - /var/run/avahi-daemon/socket:/var/run/avahi-daemon/socket
