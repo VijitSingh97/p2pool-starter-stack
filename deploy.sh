@@ -66,6 +66,9 @@ sudo chown -R "$REAL_USER":"$REAL_USER" "$MONERO_DIR" "$TARI_DIR" "$P2POOL_DIR"
 mkdir -p "$P2POOL_DIR/stats"
 sudo chmod -R 755 "$P2POOL_DIR/stats"
 
+# Generate a secure token for Proxy API authentication
+PROXY_AUTH_TOKEN=$(openssl rand -hex 12)
+
 # Generate preliminary .env file
 # This is required to start the Tor service and generate Onion addresses before the full stack launches.
 cat <<EOF > .env
@@ -87,7 +90,7 @@ XVB_DONOR_ID=placeholder
 XVB_ENABLED=true
 P2POOL_URL=172.28.0.28:3333
 PROXY_API_PORT=3344
-PROXY_AUTH_TOKEN=$(openssl rand -hex 12)
+PROXY_AUTH_TOKEN=$PROXY_AUTH_TOKEN
 EOF
 
 # --- 3. Tor Hidden Service Provisioning ---
