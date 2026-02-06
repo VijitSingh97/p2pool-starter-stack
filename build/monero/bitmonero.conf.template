@@ -4,6 +4,10 @@ data-dir=/root/.bitmonero
 log-file=/root/.bitmonero/bitmonero.log
 log-level=0
 
+# --- Blockchain Pruning ---
+prune-blockchain=${MONERO_PRUNE}
+sync-pruned-blocks=${MONERO_PRUNE}
+
 # --- Network Interface Binding ---
 # Bind to all interfaces (0.0.0.0) to allow communication with P2Pool and Tari containers
 p2p-bind-ip=0.0.0.0

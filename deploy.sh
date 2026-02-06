@@ -91,6 +91,7 @@ XVB_ENABLED=true
 P2POOL_URL=172.28.0.28:3333
 PROXY_API_PORT=3344
 PROXY_AUTH_TOKEN=$PROXY_AUTH_TOKEN
+MONERO_PRUNE=1
 EOF
 
 # --- 3. Tor Hidden Service Provisioning ---
@@ -110,6 +111,14 @@ MONERO_USER=$(jq -r .monero.node_username config.json)
 MONERO_PASS=$(jq -r .monero.node_password config.json)
 MONERO_WALLET=$(jq -r .monero.wallet_address config.json)
 TARI_WALLET=$(jq -r .tari.wallet_address config.json)
+
+# Pruning Configuration
+MONERO_PRUNE_BOOL=$(jq -r '.monero.prune // "true"' config.json)
+if [ "$MONERO_PRUNE_BOOL" == "true" ]; then
+    MONERO_PRUNE=1
+else
+    MONERO_PRUNE=0
+fi
 
 # P2Pool Network Configuration (Main/Mini/Nano)
 POOL_TYPE=$(jq -r '.p2pool.pool // "main"' config.json)
@@ -157,6 +166,7 @@ XVB_ENABLED=$XVB_ENABLED
 P2POOL_URL=172.28.0.28:3333
 PROXY_API_PORT=3344
 PROXY_AUTH_TOKEN=$PROXY_AUTH_TOKEN
+MONERO_PRUNE=$MONERO_PRUNE
 EOF
 
 # --- 5. Service Configuration Injection ---

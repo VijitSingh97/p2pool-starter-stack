@@ -3,7 +3,8 @@
         "wallet_address": "your_monero_wallet_address",
         "node_username": "create_a_username_for_node",
         "node_password": "create_a_password_for_node",
-        "data_dir": "DYNAMIC_DATA"
+        "data_dir": "DYNAMIC_DATA",
+        "pruned": true
     },
     "tari": {
         "wallet_address": "your_tari_wallet_address",
