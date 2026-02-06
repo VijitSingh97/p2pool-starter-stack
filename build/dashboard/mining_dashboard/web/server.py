@@ -169,6 +169,9 @@ def _get_pool_network_context(data):
     s_addr = stratum_stats.get('wallet', 'Unknown')
     s_short = s_addr if len(s_addr) <= 16 else f"{s_addr[:8]}...{s_addr[-8:]}"
 
+    workers_list = data.get('workers', [])
+    proxy_count = sum(1 for w in workers_list if w.get('status') == 'online')
+
     return {
         'strat_h15': format_hashrate(stratum_stats.get('hashrate_15m', 0)),
         'strat_h1h': format_hashrate(stratum_stats.get('hashrate_1h', 0)),
@@ -182,6 +185,7 @@ def _get_pool_network_context(data):
         'strat_total_hashes': stratum_stats.get('total_hashes', 0),
         'strat_wallet': s_addr,
         'strat_wallet_short': s_short,
+        'proxy_workers': proxy_count,
         'p2p_type': p2p_stats.get('type', 'Unknown'),
         'pool_height': local_pool.get('height', 0),
         'pool_diff': f"{local_pool.get('difficulty', 0)/1e6:.2f} M",
