@@ -102,6 +102,8 @@ class DataService:
                                 w['h10'] = hr_total[0] if hr_total[0] is not None else 0
                                 w['h60'] = hr_total[1] if hr_total[1] is not None else 0
                                 w['h15'] = hr_total[2] if hr_total[2] is not None else 0
+                        else:
+                            w['status'] = 'unreachable'
                         
                         w['active_pool'] = active_pool_port
                         final_workers.append(w)
