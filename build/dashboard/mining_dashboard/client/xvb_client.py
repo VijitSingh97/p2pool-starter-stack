@@ -24,7 +24,7 @@ class XvbClient:
         Retrieves bonus history statistics from the XMRvsBeast service.
         
         Returns:
-            dict or None: A dictionary containing 'fail_count', '1h_avg', and '24h_avg' 
+            dict or None: A dictionary containing 'fail_count', 'avg_1h', and 'avg_24h' 
                           if successful, otherwise None.
         """
         if not self.wallet_address or self.wallet_address == "placeholder":
@@ -54,8 +54,8 @@ class XvbClient:
         try:
             stats = {
                 "fail_count": 0,
-                "1h_avg": 0.0,
-                "24h_avg": 0.0
+                "avg_1h": 0.0,
+                "avg_24h": 0.0
             }
 
             # Extract Fail Count
@@ -68,10 +68,10 @@ class XvbClient:
             hr24_match = self.REGEX_HR_24H.search(html_text)
 
             if hr1_match:
-                stats["1h_avg"] = parse_hashrate(hr1_match.group(1), hr1_match.group(2))
+                stats["avg_1h"] = parse_hashrate(hr1_match.group(1), hr1_match.group(2))
             
             if hr24_match:
-                stats["24h_avg"] = parse_hashrate(hr24_match.group(1), hr24_match.group(2))
+                stats["avg_24h"] = parse_hashrate(hr24_match.group(1), hr24_match.group(2))
 
             if not fail_match and not hr1_match:
                 self.logger.warning("Parsing Warning: Critical stats not found in XvB response. HTML structure may have changed.")
