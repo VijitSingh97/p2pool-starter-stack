@@ -219,4 +219,4 @@ networks:
     name: mining_net
     ipam:
       config:
-        - subnet: 172.28.0.0/241
+        - subnet: 172.28.0.0/24
