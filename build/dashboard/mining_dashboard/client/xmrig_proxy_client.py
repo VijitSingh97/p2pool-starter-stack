@@ -1,6 +1,8 @@
 import requests
 import json
 import logging
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 class XMRigProxyClient:
     def __init__(self, host="127.0.0.1", port=8080, access_token=None):
@@ -13,9 +15,20 @@ class XMRigProxyClient:
         """
         self.logger = logging.getLogger("ProxyClient")
         self.base_url = f"http://{host}:{port}"
-        self.headers = {}
+        
+        # Configure Session with Retries
+        self.session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1, # Wait 1s, 2s, 4s between retries
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "PUT", "OPTIONS"]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("http://", adapter)
+        
         if access_token:
-            self.headers["Authorization"] = f"Bearer {access_token}"
+            self.session.headers.update({"Authorization": f"Bearer {access_token}"})
 
     def get_summary(self):
         """
@@ -41,7 +54,7 @@ class XMRigProxyClient:
         }
         """
         url = f"{self.base_url}/1/summary"
-        response = requests.get(url, headers=self.headers)
+        response = self.session.get(url, timeout=5)
         response.raise_for_status()
         return response.json()
 
@@ -80,7 +93,7 @@ class XMRigProxyClient:
         }
         """
         url = f"{self.base_url}/1/workers"
-        response = requests.get(url, headers=self.headers)
+        response = self.session.get(url, timeout=5)
         response.raise_for_status()
         return response.json()
 
@@ -115,7 +128,7 @@ class XMRigProxyClient:
         }
         """
         url = f"{self.base_url}/1/config"
-        response = requests.get(url, headers=self.headers)
+        response = self.session.get(url, timeout=5)
         response.raise_for_status()
         return response.json()
 
@@ -140,7 +153,7 @@ class XMRigProxyClient:
         }
         """
         url = f"{self.base_url}/1/config"
-        response = requests.put(url, headers=self.headers, json=config_data)
+        response = self.session.put(url, json=config_data, timeout=5)
         response.raise_for_status()
         return response.json()
 

@@ -155,6 +155,9 @@ services:
     ports:
       - "3333:3333"
       - "${PROXY_API_PORT}:${PROXY_API_PORT}" # API Port
+    environment:
+      - PROXY_API_PORT=${PROXY_API_PORT}
+      - PROXY_AUTH_TOKEN=${PROXY_AUTH_TOKEN}
     command:
       - -o
       - ${P2POOL_URL}
@@ -167,13 +170,18 @@ services:
       - --coin
       - monero
       - --verbose
-      - --http-host=0.0.0.0
-      - --http-port=${PROXY_API_PORT}
-      - --http-access-token=${PROXY_AUTH_TOKEN}
+      - --http-host
+      - 0.0.0.0
+      - --http-port
+      - ${PROXY_API_PORT}
+      - --http-access-token
+      - ${PROXY_AUTH_TOKEN}
       - --http-no-restricted
     networks:
       mining_net:
         ipv4_address: 172.28.0.29
+    depends_on:
+      - p2pool
 
   # --- Monitoring Dashboard ---
   # Web interface for stack management.
@@ -194,14 +202,14 @@ services:
       environment:
       - HOST_IP=${HOST_IP:-127.0.0.1}
       - TZ=America/Chicago
+      - P2POOL_URL=${P2POOL_URL}
       - MONERO_WALLET_ADDRESS=${MONERO_WALLET_ADDRESS}
       - XVB_ENABLED=${XVB_ENABLED}
       - XVB_POOL_URL=${XVB_POOL_URL}
-      - P2POOL_URL=${P2POOL_URL}
       - XVB_DONOR_ID=${XVB_DONOR_ID}
-      - PROXY_AUTH_TOKEN=${PROXY_AUTH_TOKEN}
+      - PROXY_HOST=172.28.0.29
       - PROXY_API_PORT=${PROXY_API_PORT}
-      - PROXY_HOST=127.0.0.1
+      - PROXY_AUTH_TOKEN=${PROXY_AUTH_TOKEN}
 
 # --- Network Configuration ---
 # Static subnet definition to ensure predictable IP assignment for Tor hidden services.
@@ -211,4 +219,4 @@ networks:
     name: mining_net
     ipam:
       config:
-        - subnet: 172.28.0.0/24
+        - subnet: 172.28.0.0/241
