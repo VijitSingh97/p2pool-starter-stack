@@ -111,13 +111,16 @@ def _get_tari_context(data):
     """Extracts Tari specific metrics."""
     tari_stats = data.get('tari', {})
     tari_active = tari_stats.get('active', False)
+    t_addr = tari_stats.get('address', 'Unknown')
+    t_short = t_addr if len(t_addr) <= 16 else f"{t_addr[:8]}...{t_addr[-8:]}"
     return {
         'tari_status': tari_stats.get('status', 'Waiting...') if tari_active else 'Waiting...',
         'tari_status_class': "status-ok" if tari_active else "",
         'tari_reward': f"{tari_stats.get('reward', 0):.2f} TARI",
         'tari_height': str(tari_stats.get('height', 0)),
         'tari_diff': f"{int(tari_stats.get('difficulty', 0)):,}",
-        'tari_wallet': tari_stats.get('address', 'Unknown')
+        'tari_wallet': t_addr,
+        'tari_wallet_short': t_short
     }
 
 def _get_system_context(data):
@@ -163,6 +166,9 @@ def _get_pool_network_context(data):
     if len(net_hash_val) > 20:
         net_hash_val = f"{net_hash_val[:8]}...{net_hash_val[-8:]}"
 
+    s_addr = stratum_stats.get('wallet', 'Unknown')
+    s_short = s_addr if len(s_addr) <= 16 else f"{s_addr[:8]}...{s_addr[-8:]}"
+
     return {
         'strat_h15': format_hashrate(stratum_stats.get('hashrate_15m', 0)),
         'strat_h1h': format_hashrate(stratum_stats.get('hashrate_1h', 0)),
@@ -174,7 +180,8 @@ def _get_pool_network_context(data):
         'strat_conns': stratum_stats.get('connections', 0),
         'strat_last_share': format_time_abs(stratum_stats.get('last_share_found_time', 0)),
         'strat_total_hashes': stratum_stats.get('total_hashes', 0),
-        'strat_wallet': stratum_stats.get('wallet', 'Unknown'),
+        'strat_wallet': s_addr,
+        'strat_wallet_short': s_short,
         'p2p_type': p2p_stats.get('type', 'Unknown'),
         'pool_height': local_pool.get('height', 0),
         'pool_diff': f"{local_pool.get('difficulty', 0)/1e6:.2f} M",

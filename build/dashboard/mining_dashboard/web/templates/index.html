@@ -6,6 +6,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mining Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // Apply view mode immediately to prevent flash
+        if (localStorage.getItem('dashboardView') === 'advanced') { document.documentElement.classList.add('mode-advanced'); }
+    </script>
     <style>
         :root {{ 
             --bg: #0d1117; --card: #161b22; --border: #30363d; 
@@ -69,6 +73,20 @@
         .btn-range:hover {{ border-color: var(--text-muted); color: var(--text); }}
         .btn-range.active {{ background-color: var(--ok); color: #fff; border-color: var(--ok); }}
 
+        /* View Toggle */
+        .view-controls {{ display: flex; justify-content: flex-end; margin-bottom: 15px; }}
+        .toggle-group {{ display: inline-flex; background: var(--card); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }}
+        .btn-toggle {{ background: transparent; border: none; color: var(--text-muted); padding: 6px 16px; cursor: pointer; font-size: 0.85rem; transition: all 0.2s; }}
+        .btn-toggle:hover {{ color: var(--text); background: rgba(255,255,255,0.05); }}
+        .btn-toggle.active {{ background: var(--accent); color: #fff; font-weight: 600; }}
+
+        /* View Modes */
+        .card-advanced {{ display: none !important; }}
+        .card-simple {{ display: flex !important; }}
+        
+        .mode-advanced .card-advanced {{ display: flex !important; }}
+        .mode-advanced .card-simple {{ display: none !important; }}
+
         /* Utilities */
         .flex {{ display: flex; }}
         .items-center {{ align-items: center; }}
@@ -118,6 +136,13 @@
         </div>
     </div>
 
+    <div class="view-controls">
+        <div class="toggle-group">
+            <button id="btn-simple" class="btn-toggle active" onclick="setView('simple')">Simple</button>
+            <button id="btn-advanced" class="btn-toggle" onclick="setView('advanced')">Advanced</button>
+        </div>
+    </div>
+
     <div class="grid">
         <div class="card">
             <div class="chart-controls">
@@ -127,12 +152,32 @@
                 <a href="?range=1w" class="btn-range {cls_1w}">1 Wk</a>
                 <a href="?range=1m" class="btn-range {cls_1m}">1 Mo</a>
             </div>
-            <div style="position: relative; height: 300px; width: 100%; overflow: hidden;">
+            <div style="position: relative; flex-grow: 1; min-height: 300px; width: 100%; overflow: hidden;">
                 <canvas id="hChart"></canvas>
             </div>
         </div>
         
-        <div class="card">
+        <!-- Simple Stats Card -->
+        <div class="card card-simple">
+            <h3>Overview</h3>
+            <div class="stat-grid">
+                <div class="stat-card"><h5>Mining Mode</h5><p style="color:{mode_color}">{mode_name}</p></div>
+                <div class="stat-card"><h5>Total Hashrate</h5><p class="text-accent">{total_hr}</p></div>
+                <div class="stat-card"><h5>Share In Window</h5><p>{pool_shares_window}</p></div>
+                <div class="stat-card"><h5>Last Share</h5><p>{strat_last_share}</p></div>
+                <div class="stat-card"><h5>P2Pool 1h Avg</h5><p>{p2p_1h}</p></div>
+                <div class="stat-card"><h5>P2Pool 24h Avg</h5><p>{p2p_24h}</p></div>
+                <div class="stat-card"><h5>XvB 24h Avg</h5><p>{xvb_24h}</p></div>
+                <div class="stat-card"><h5>Workers Active</h5><p>{strat_conns}</p></div>
+                <div class="stat-card"><h5>Current Tier</h5><p>{tier_name}</p></div>
+                <div class="stat-card"><h5>Target Tier</h5><p>{target_tier_name}</p></div>
+                <div class="stat-card col-span-2"><h5>Tari Mining</h5><p>{tari_status}</p></div>
+                <div class="stat-card col-span-2"><h5>Wallet XMR</h5><p class="font-mono text-xs">{strat_wallet_short}</p></div>
+                <div class="stat-card col-span-2"><h5>Wallet TARI</h5><p class="font-mono text-xs">{tari_wallet_short}</p></div>
+            </div>
+        </div>
+
+        <div class="card card-advanced">
             <h3>My P2Pool Node Stats</h3>
             <div class="stat-grid">
                 <div class="stat-card"><h5>Mining Mode</h5><p style="color:{mode_color}">{mode_name}</p></div>
@@ -155,7 +200,7 @@
             <div class="wallet-text">Wallet: {strat_wallet}</div>
         </div>
 
-        <div class="card">
+        <div class="card card-advanced">
             <h3>Global P2Pool Stats</h3>
             <div class="stat-grid">
                 <div class="stat-card"><h5>Pool Hashrate</h5><p>{pool_hr}</p></div>
@@ -173,7 +218,7 @@
             </div>
         </div>
 
-        <div class="card">
+        <div class="card card-advanced">
             <h3>XvB Donation Stats</h3>
             <div class="stat-grid">
                 <div class="stat-card"><h5>Current Tier</h5><p>{tier_name}</p></div>
@@ -185,7 +230,7 @@
             <div class="text-xs text-muted" style="margin-top:10px;">Stats fetched from xmrvsbeast.com (Updated: {xvb_updated})</div>
         </div>
 
-        <div class="card">
+        <div class="card card-advanced">
             <h3>XMR Network</h3>
             <div class="stat-grid">
                 <div class="stat-card"><h5>Block Height</h5><p>{net_height}</p></div>
@@ -199,7 +244,7 @@
             </div>
         </div>
         
-        <div class="card">
+        <div class="card card-advanced">
             <h3>Tari Merge Mining</h3>
             <div class="stat-grid">
                 <div class="stat-card"><h5>Status</h5><p class="{tari_status_class}">{tari_status}</p></div>
@@ -273,6 +318,30 @@
                     .forEach(tr => tbody.appendChild(tr) );
             }}));
         }});
+
+        // View Toggle Logic
+        const btnSimple = document.getElementById('btn-simple');
+        const btnAdvanced = document.getElementById('btn-advanced');
+
+        function setView(mode) {{
+            if (mode === 'advanced') {{
+                document.documentElement.classList.add('mode-advanced');
+                btnAdvanced.classList.add('active');
+                btnSimple.classList.remove('active');
+                localStorage.setItem('dashboardView', 'advanced');
+            }} else {{
+                document.documentElement.classList.remove('mode-advanced');
+                btnSimple.classList.add('active');
+                btnAdvanced.classList.remove('active');
+                localStorage.setItem('dashboardView', 'simple');
+            }}
+        }}
+        
+        // Initialize button state based on current class
+        if (document.documentElement.classList.contains('mode-advanced')) {{
+            btnAdvanced.classList.add('active');
+            btnSimple.classList.remove('active');
+        }}
     }});
 </script>
 </body>
