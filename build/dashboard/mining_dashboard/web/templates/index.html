@@ -19,7 +19,7 @@
         /* Layout & Grid */
         .header {{ display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 20px; }}
         .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; margin-bottom: 20px; }}
-        .card {{ background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 20px; display: flex; flex-direction: column; }}
+        .card {{ background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 20px; display: flex; flex-direction: column; min-width: 0; }}
         
         /* Typography */
         h2 {{ margin: 0; font-size: 1.5rem; font-weight: 600; }}
@@ -127,7 +127,7 @@
                 <a href="?range=1w" class="btn-range {cls_1w}">1 Wk</a>
                 <a href="?range=1m" class="btn-range {cls_1m}">1 Mo</a>
             </div>
-            <div style="position: relative; height: 300px; width: 100%;">
+            <div style="position: relative; height: 300px; width: 100%; overflow: hidden;">
                 <canvas id="hChart"></canvas>
             </div>
         </div>

@@ -208,13 +208,9 @@ def _get_algo_context(data, state_mgr, history):
     xvb_1h_val = xvb_stats.get('avg_1h', 0)
     xvb_24h_val = xvb_stats.get('avg_24h', 0)
 
-    if history:
-        cutoff_1h = time.time() - 3600
-        recent_p2p = [x.get('v_p2pool', 0) for x in history if x.get('timestamp', 0) > cutoff_1h]
-        p2p_1h_val = sum(recent_p2p) / len(recent_p2p) if recent_p2p else max(0, total_hr_val - xvb_1h_val)
-    else:
-        p2p_1h_val = max(0, total_hr_val - xvb_1h_val)
-    p2p_24h_val = max(0, total_hr_val - xvb_24h_val)
+    stratum_stats = data.get('stratum', {})
+    p2p_1h_val = stratum_stats.get('hashrate_1h', 0)
+    p2p_24h_val = stratum_stats.get('hashrate_24h', 0)
 
     tiers = state_mgr.get_tiers()
     tier_name, _ = get_tier_info(xvb_24h_val, tiers)
