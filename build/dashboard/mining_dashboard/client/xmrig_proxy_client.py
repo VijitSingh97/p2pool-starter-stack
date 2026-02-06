@@ -155,6 +155,9 @@ class XMRigProxyClient:
         url = f"{self.base_url}/1/config"
         response = self.session.put(url, json=config_data, timeout=5)
         response.raise_for_status()
+        # Handle 204 No Content or empty responses which cause JSON decode errors
+        if response.status_code == 204 or not response.content:
+            return {}
         return response.json()
 
 if __name__ == "__main__":
