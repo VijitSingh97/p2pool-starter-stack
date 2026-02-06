@@ -170,8 +170,8 @@ async def handle_index(request):
     try:
         # --- Split Mining Calculations ---
         total_hr_val = data.get('total_live_h15', 0)
-        xvb_1h_val = xvb_stats.get('1h_avg', 0)
-        xvb_24h_val = xvb_stats.get('24h_avg', 0)
+        xvb_1h_val = xvb_stats.get('avg_1h', 0)
+        xvb_24h_val = xvb_stats.get('avg_24h', 0)
 
         # Derive P2Pool 1h average from history for improved accuracy
         if history:

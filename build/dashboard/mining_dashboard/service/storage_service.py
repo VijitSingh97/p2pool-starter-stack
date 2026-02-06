@@ -24,8 +24,8 @@ class StateManager:
             "xvb": {
                 "total_donated_time": 0,
                 "current_mode": "P2POOL",
-                "24h_avg": 0.0,
-                "1h_avg": 0.0,
+                "avg_24h": 0.0,
+                "avg_1h": 0.0,
                 "fail_count": 0,
                 "last_update": 0
             },
@@ -117,13 +117,17 @@ class StateManager:
                         key = row["key"].replace("xvb_", "")
                         val = row["value"]
                         
+                        # Migration: Handle legacy keys from previous versions
+                        if key == "1h_avg": key = "avg_1h"
+                        if key == "24h_avg": key = "avg_24h"
+
                         # Enforce schema: Ignore keys not present in the default state
                         if key not in self.state["xvb"]:
                             continue
 
                         try:
                             # Simple type restoration
-                            if key in ["24h_avg", "1h_avg", "last_update", "total_donated_time"]:
+                            if key in ["avg_24h", "avg_1h", "last_update", "total_donated_time"]:
                                 val = float(val)
                             elif key == "fail_count":
                                 val = int(val)
@@ -179,7 +183,7 @@ class StateManager:
         with self._lock:
             return self.state["xvb"].copy()
 
-    def update_xvb_stats(self, mode=None, donation_avg_24h=None, donation_avg_1h=None, fail_count=None):
+    def update_xvb_stats(self, mode=None, avg_24h=None, avg_1h=None, fail_count=None, **kwargs):
         """
         Updates specific fields within the XvB statistics state.
         
@@ -187,9 +191,10 @@ class StateManager:
         
         Args:
             mode (str, optional): The current mining mode (e.g., "P2POOL", "XVB").
-            donation_avg_24h (float, optional): 24-hour average hashrate on XvB.
-            donation_avg_1h (float, optional): 1-hour average hashrate on XvB.
+            avg_24h (float, optional): 24-hour average hashrate on XvB.
+            avg_1h (float, optional): 1-hour average hashrate on XvB.
             fail_count (int, optional): Consecutive failure count for XvB endpoint.
+            **kwargs: Catch-all for unexpected arguments to prevent TypeErrors.
         """
         updates = {}
         with self._lock:
@@ -198,14 +203,14 @@ class StateManager:
                 updates["xvb_current_mode"] = mode
 
             stats_updated = False
-            if donation_avg_24h is not None:
-                self.state["xvb"]["24h_avg"] = donation_avg_24h
-                updates["xvb_24h_avg"] = donation_avg_24h
+            if avg_24h is not None:
+                self.state["xvb"]["avg_24h"] = avg_24h
+                updates["xvb_avg_24h"] = avg_24h
                 stats_updated = True
                 
-            if donation_avg_1h is not None:
-                self.state["xvb"]["1h_avg"] = donation_avg_1h
-                updates["xvb_1h_avg"] = donation_avg_1h
+            if avg_1h is not None:
+                self.state["xvb"]["avg_1h"] = avg_1h
+                updates["xvb_avg_1h"] = avg_1h
                 stats_updated = True
             if fail_count is not None:
                 self.state["xvb"]["fail_count"] = fail_count

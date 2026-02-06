@@ -92,8 +92,8 @@ class AlgoService:
 
         # Verify if donation targets are currently satisfied
         # Criteria: 24h Avg >= Target AND 1h Avg >= (Target - Margin)
-        avg_24h = xvb_stats.get('24h_avg', 0)
-        avg_1h = xvb_stats.get('1h_avg', 0)
+        avg_24h = xvb_stats.get('avg_24h', 0)
+        avg_1h = xvb_stats.get('avg_1h', 0)
 
         is_fulfilled = (avg_24h >= target_hr) and (avg_1h >= (target_hr * (1.0 - self.margin_1h)))
 

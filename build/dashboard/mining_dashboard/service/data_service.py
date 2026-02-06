@@ -138,7 +138,7 @@ class DataService:
                         real_xvb_stats = await asyncio.to_thread(self.xvb_client.get_stats)
                         if real_xvb_stats:
                             await asyncio.to_thread(self.state_manager.update_xvb_stats, **real_xvb_stats)
-                            logger.info(f"External Sync: XvB Stats Updated (1h={real_xvb_stats['1h_avg']:.0f} H/s)")
+                            logger.info(f"External Sync: XvB Stats Updated (1h={real_xvb_stats['avg_1h']:.0f} H/s)")
                     
                     iteration_count += 1
                 except Exception as e:
