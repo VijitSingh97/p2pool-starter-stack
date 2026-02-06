@@ -127,10 +127,10 @@
         <div style="text-align: right;">
             <div class="text-accent font-bold" style="font-size: 24px;">{total_hr}</div>
             <div class="text-muted text-xs">Last Update: {last_update}</div>
-            <div class="text-muted text-xs" style="margin-top: 5px;">
+            <div class="text-xs" style="margin-top: 5px; color: {p2p_color}">
                 P2Pool: {p2p_1h} (1h) / {p2p_24h} (24h)
             </div>
-            <div class="text-xs" style="margin-top: 2px; color: {mode_color}">
+            <div class="text-xs" style="margin-top: 2px; color: {xvb_color}">
                 XvB: {xvb_1h} (1h) / {xvb_24h} (24h)
             </div>
         </div>
@@ -138,8 +138,8 @@
 
     <div class="view-controls">
         <div class="toggle-group">
-            <button id="btn-simple" class="btn-toggle active" onclick="setView('simple')">Simple</button>
-            <button id="btn-advanced" class="btn-toggle" onclick="setView('advanced')">Advanced</button>
+            <button id="btn-simple" class="btn-toggle active">Simple</button>
+            <button id="btn-advanced" class="btn-toggle">Advanced</button>
         </div>
     </div>
 
@@ -167,13 +167,14 @@
                 <div class="stat-card"><h5>Last Share</h5><p>{strat_last_share}</p></div>
                 <div class="stat-card"><h5>P2Pool 1h Avg</h5><p>{p2p_1h}</p></div>
                 <div class="stat-card"><h5>P2Pool 24h Avg</h5><p>{p2p_24h}</p></div>
+                <div class="stat-card"><h5>XvB 1h Avg</h5><p>{xvb_1h}</p></div>
                 <div class="stat-card"><h5>XvB 24h Avg</h5><p>{xvb_24h}</p></div>
-                <div class="stat-card"><h5>Workers Active</h5><p>{strat_conns}</p></div>
                 <div class="stat-card"><h5>Current Tier</h5><p>{tier_name}</p></div>
                 <div class="stat-card"><h5>Target Tier</h5><p>{target_tier_name}</p></div>
-                <div class="stat-card col-span-2"><h5>Tari Mining</h5><p>{tari_status}</p></div>
-                <div class="stat-card col-span-2"><h5>Wallet XMR</h5><p class="font-mono text-xs">{strat_wallet_short}</p></div>
-                <div class="stat-card col-span-2"><h5>Wallet TARI</h5><p class="font-mono text-xs">{tari_wallet_short}</p></div>
+                <div class="stat-card"><h5>Tari Mining</h5><p class="{tari_status_class}">{tari_status}</p></div>
+                <div class="stat-card"><h5>Workers Active</h5><p>{strat_conns}</p></div>
+                <div class="stat-card"><h5>Wallet XMR</h5><p class="font-mono text-xs">{strat_wallet_short}</p></div>
+                <div class="stat-card"><h5>Wallet TARI</h5><p class="font-mono text-xs">{tari_wallet_short}</p></div>
             </div>
         </div>
 
@@ -322,6 +323,9 @@
         // View Toggle Logic
         const btnSimple = document.getElementById('btn-simple');
         const btnAdvanced = document.getElementById('btn-advanced');
+
+        btnSimple.addEventListener('click', () => setView('simple'));
+        btnAdvanced.addEventListener('click', () => setView('advanced'));
 
         function setView(mode) {{
             if (mode === 'advanced') {{

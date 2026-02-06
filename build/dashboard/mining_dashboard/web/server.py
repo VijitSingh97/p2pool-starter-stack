@@ -206,10 +206,29 @@ def _get_algo_context(data, state_mgr, history):
     """Calculates algorithm switching logic, tiers, and hashrate averages."""
     xvb_stats = state_mgr.get_xvb_stats() or {}
     current_mode = xvb_stats.get('current_mode', 'P2POOL')
-    mode_color = "#238636"
-    if "XVB" in current_mode: mode_color = "#a371f7"
-    if "Split" in current_mode: mode_color = "#58a6ff"
-    if not ENABLE_XVB: current_mode = "P2POOL (XvB Disabled)"
+    
+    # Colors
+    c_green = "#238636"
+    c_purple = "#a371f7"
+    c_blue = "#58a6ff"
+    c_muted = "#8b949e"
+
+    mode_color = c_green
+    p2p_color = c_green
+    xvb_color = c_muted
+
+    if "XVB" in current_mode: 
+        mode_color = c_purple
+        p2p_color = c_muted
+        xvb_color = c_purple
+    if "Split" in current_mode: 
+        mode_color = c_blue
+        p2p_color = c_green
+        xvb_color = c_purple
+    if not ENABLE_XVB: 
+        current_mode = "P2POOL (XvB Disabled)"
+        p2p_color = c_green
+        xvb_color = c_muted
 
     total_hr_val = data.get('total_live_h15', 0)
     xvb_1h_val = xvb_stats.get('avg_1h', 0)
@@ -231,6 +250,8 @@ def _get_algo_context(data, state_mgr, history):
     return {
         'mode_name': current_mode,
         'mode_color': mode_color,
+        'p2p_color': p2p_color,
+        'xvb_color': xvb_color,
         'total_hr': format_hashrate(total_hr_val),
         'last_update': format_time_abs(time.time()),
         'xvb_updated': format_time_abs(xvb_stats.get('last_update', 0)),
