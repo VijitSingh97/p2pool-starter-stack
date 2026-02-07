@@ -113,13 +113,34 @@ class DataService:
                     # Aggregate 15-minute average hashrate
                     total_h15 = sum(w.get('h15', 0) for w in final_workers if w.get('status') == 'online')
                     
+                    # Fetch stats for sync logic
+                    network_stats = get_network_stats()
+                    tari_stats = get_tari_stats()
+                    monero_sync = await get_monero_sync_status()
+
+                    # Determine effective Tari status (matching UI logic)
+                    tari_active = tari_stats.get('active', False)
+                    tari_status_str = tari_stats.get('status', 'Waiting...') if tari_active else 'Waiting...'
+
+                    # Apply Sync Logic Overrides
+                    if network_stats.get('height', 0) == 0:
+                        monero_sync['is_syncing'] = True
+                        if 'percent' not in monero_sync:
+                            monero_sync.update({'percent': 0, 'current': 0, 'target': 1})
+                    elif tari_status_str == 'Waiting...':
+                        monero_sync['is_syncing'] = True
+                        # If Monero logs don't indicate syncing, assume Monero is synced
+                        if 'percent' not in monero_sync:
+                            h = network_stats.get('height', 1)
+                            monero_sync.update({'percent': 100, 'current': h, 'target': h})
+
                     self.latest_data.update({
                         "workers": final_workers,
                         "total_live_h15": total_h15,
                         "pool": get_p2pool_stats(),
-                        "network": get_network_stats(),
-                        "tari": get_tari_stats(),
-                        "monero_sync": await get_monero_sync_status(),
+                        "network": network_stats,
+                        "tari": tari_stats,
+                        "monero_sync": monero_sync,
                         "system": {
                             "disk": get_disk_usage(),
                             "hugepages": get_hugepages_status(),
