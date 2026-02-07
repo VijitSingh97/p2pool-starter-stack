@@ -6,6 +6,7 @@ from aiohttp import ClientSession, TCPConnector
 from config.config import UPDATE_INTERVAL
 from client.xmrig_client import XMRigWorkerClient
 from collector.pools import get_p2pool_stats, get_network_stats, get_stratum_stats, get_tari_stats
+from collector.logs import get_monero_sync_status
 from collector.system import get_disk_usage, get_hugepages_status, get_memory_usage, get_load_average, get_cpu_usage
 
 logger = logging.getLogger("DataService")
@@ -24,6 +25,7 @@ class DataService:
             "system": {},
             "tari": {},
             "stratum": {},
+            "monero_sync": {},
             "timestamp": 0
         }
         
@@ -117,6 +119,7 @@ class DataService:
                         "pool": get_p2pool_stats(),
                         "network": get_network_stats(),
                         "tari": get_tari_stats(),
+                        "monero_sync": await get_monero_sync_status(),
                         "system": {
                             "disk": get_disk_usage(),
                             "hugepages": get_hugepages_status(),

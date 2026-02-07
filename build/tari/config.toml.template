@@ -6,11 +6,10 @@
 base_path = "/var/tari/node"
 
 [p2p.seeds]
-# DNS seeds using DNS-over-HTTPS for censorship resistance
 dns_seed_name_servers = [
-    "1.1.1.1:853/cloudflare-dns.com",
-    "8.8.8.8:853/dns.google"
+    "127.0.0.11:53"
 ]
+dns_seeds_use_dnssec = false
 
 [mainnet.p2p.seeds]
 # List of hardcoded peer seeds to facilitate initial network entry

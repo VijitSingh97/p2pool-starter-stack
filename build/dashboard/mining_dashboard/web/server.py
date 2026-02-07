@@ -280,6 +280,18 @@ async def handle_index(request):
     try:
         history = state_mgr.get_history()
         range_arg = request.query.get('range', 'all')
+        
+        # Prepare Sync Context
+        monero_sync = data.get('monero_sync', {})
+        is_syncing = monero_sync.get('is_syncing', False)
+        sync_ctx = {
+            'sync_class': 'mode-sync' if is_syncing else '',
+            'page_title': 'Mining Dashboard - Syncing' if is_syncing else 'Mining Dashboard',
+            'sync_percent': monero_sync.get('percent', 0),
+            'sync_current': monero_sync.get('current', 0),
+            'sync_target': monero_sync.get('target', 0),
+            'sync_remaining': monero_sync.get('target', 0) - monero_sync.get('current', 0)
+        }
 
         # Build Contexts
         chart_ctx = _get_chart_context(history, range_arg)
@@ -296,6 +308,7 @@ async def handle_index(request):
         response_html = template.format(
             host_ip=HOST_IP,
             worker_rows=worker_rows,
+            **sync_ctx,
             **algo_ctx,
             **system_ctx,
             **pool_net_ctx,

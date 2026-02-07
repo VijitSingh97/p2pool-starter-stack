@@ -65,7 +65,7 @@ services:
   # --- Tari Base Node ---
   # Merge mining node. Connects to Tor for privacy.
   tari:
-    image: quay.io/tarilabs/minotari_node:latest-mainnet
+    image: quay.io/tarilabs/minotari_node:v4.10.0-mainnet
     container_name: tari
     restart: unless-stopped
     stop_grace_period: 1m
@@ -73,6 +73,9 @@ services:
     dns:
       - 1.1.1.1
       - 8.8.8.8
+    dns_search: .
+    dns_opt:
+      - use-vc
     environment:
       - WAIT_FOR_TOR=1
     volumes:
@@ -211,6 +214,19 @@ services:
       - PROXY_HOST=172.28.0.29
       - PROXY_API_PORT=${PROXY_API_PORT}
       - PROXY_AUTH_TOKEN=${PROXY_AUTH_TOKEN}
+      - DOCKER_PROXY_URL=tcp://172.28.0.30:2375
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy
+    container_name: docker-proxy
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro # Read-only mount
+    environment:
+      - CONTAINERS=1 # Allow listing containers
+      - LOGS=1       # Allow reading logs
+    networks:
+      mining_net:
+        ipv4_address: 172.28.0.30
 
 # --- Network Configuration ---
 # Static subnet definition to ensure predictable IP assignment for Tor hidden services.
