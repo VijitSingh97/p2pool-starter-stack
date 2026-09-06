@@ -4,6 +4,9 @@ from copy import deepcopy
 
 _XVB_ALIASES = ("enabled", "url", "donor_id")
 _WORKER_FIELDS = {"name", "host", "port", "control_port", "token", "watts"}
+# A missing config means a genuinely new machine. Tari is opt-in there, while the reference
+# remains ``local`` so an older config that never carried the switch keeps merge-mining.
+NEW_MACHINE_ANSWERS = {"local_miner": {"enabled": True}, "tari": {"mode": "off"}}
 
 
 def _change(changes: list[str], path: str, replacement: str | None = None) -> None:
