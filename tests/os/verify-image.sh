@@ -31,23 +31,8 @@ rigforge_ref_matches() { # <image-root> <dockerfile> — 0 iff the recorded ref 
     pin=$(sed -n 's/^ARG RIGFORGE_REF=\([^ ]*\).*/\1/p' "$2" 2>/dev/null)
     [ -n "$rec" ] && [ "$rec" = "$pin" ]
 }
-# compose_reference (#1215): write to <out-file> the compose file the shipped one must equal, as
-# named by the image's own COMPOSE_SOURCE stamp — the tree's copy for `tree`, or the staged commit's
-# copy for `tag NAME SHA`. Non-zero when the stamp is missing or malformed, names a tag other than
-# the shipped VERSION's, or names a commit this checkout does not hold: each of those is a reason
-# the comparison cannot be trusted, and a comparison that cannot run must read as a failure.
-compose_reference() { # <image-root> <out-file>
-    local kind tag sha extra trailing
-    {
-        read -r kind tag sha extra || return 1
-        if IFS= read -r trailing || [ -n "$trailing" ]; then return 1; fi
-    } 2>/dev/null <"$1/opt/pithead/COMPOSE_SOURCE" || return 1
-    case "$kind" in
-    tree) [ -z "$tag$sha$extra" ] && cp ./docker-compose.yml "$2" || return 1 ;;
-    tag) [ -n "$sha" ] && [ -z "$extra" ] && [ "$tag" = "v$(tr -d ' \t\r\n' <"$1/opt/pithead/VERSION")" ] && git show "$sha:docker-compose.yml" >"$2" 2>/dev/null || return 1 ;;
-    *) return 1 ;;
-    esac
-}
+# shellcheck source=tests/os/verify-image-artifact-helpers.sh
+. "$SCRIPT_DIR/verify-image-artifact-helpers.sh"
 # Sourcing defines the helpers and runs nothing, so the self-tests drive the REAL comparisons.
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then return 0; fi
 
@@ -164,6 +149,8 @@ chk "data-reset unit enabled (local-fs transaction)" 'test -L "$ROOT/etc/systemd
 chk "data-reset script present and executable" 'test -x "$ROOT/usr/local/sbin/pithead-data-reset"'
 chk "data-reset ordered before /data mounts (a mounted partition cannot be reformatted)" \
     'grep -q "^Before=data.mount local-fs.target" "$ROOT/etc/systemd/system/pithead-data-reset.service"'
+chk "data-reset's repair tools are baked (e2fsck + mkfs.ext4, #1069 W11)" \
+    'data_reset_repair_tools_present "$ROOT"'
 # Hugepages: the sysctl the Dockerfile calls load-bearing for the memory caps.
 chk "hugepage reservation baked (RandomX dataset must land in hugetlbfs)" 'grep -q "vm.nr_hugepages=3072" "$ROOT/etc/sysctl.d/99-pithead-hugepages.conf"'
 # The low-RAM sizing that corrects that sysctl at boot: without it a small machine gets the
