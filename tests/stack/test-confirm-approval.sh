@@ -255,8 +255,6 @@ run_pending >/dev/null
 assert_eq "approved worker repoint applies" "$(jq -r '.status' "$RESULTS/$UUID3.json")" "applied"
 assert_eq "approved worker host landed" "$(jq -r '.workers.list[0].host' "$C/config.json")" "192.168.1.51"
 assert_contains "worker repoint audit names workers.list" "$(grep '"action":"commit-approved","status":"applied"' "$AUDIT" | tail -n 1)" "workers.list"
-
-# A remote-worker append needs the same host approval and must remain a supported operation.
 APPEND_UUID="44444444-4444-4444-8444-444444444444"
 jq -n --slurpfile live "$C/config.json" --arg id "$APPEND_UUID" '{id:$id,action:"preview",actor:"admin",config:($live[0] | .workers.list += [{name:"rig-2",host:"192.168.1.52",control_port:8082,token:"another-token"}])}' >"$REQS/$APPEND_UUID.json"
 run_pending >/dev/null
