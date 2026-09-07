@@ -1,23 +1,16 @@
-// Service Diagnostics card (#913 doctor detail, #943 log tail): the POST + poll flow, the
-// doctor-document mapping, and the render states.
-//
-// The mapping tests are the load-bearing ones. doctor --json's shape is fixed by doctor_json in
-// lib/pithead/06-doctor.sh — {version, exit, summary:{ok,warn,fail}, checks:[{status, message}]},
-// where each check is a report line split on a TAB, so a check has a status and a message and NO
-// name. These tests pin that shape, so a card written against a guessed one fails here instead of
-// rendering a column of placeholders to an operator with no other way to look.
-//
-// Run with Node's built-in test runner:
-//     node --test dashboard/tests/frontend/*.test.mjs
+// Service Diagnostics card (#1961): one doctor request, all service/machine groups, on-demand
+// per-service logs, and truthful wait/failure states from the diagnostics control contract.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
   DIAG_CONTAINERS,
+  DIAG_SERVICES,
   DiagnosticsPanel,
   doctorRows,
   doctorSummary,
+  groupDoctorRows,
   runDiag,
 } from "../../mining_dashboard/web/static/diagview.mjs";
 import { renderToString } from "./helpers/render.mjs";
@@ -41,176 +34,243 @@ async function withFastPoll(fetchStub, fn) {
   }
 }
 
-// --- the real doctor --json shape -------------------------------------------------------------
+function inst(props = { enabled: true }, state = {}) {
+  const panel = new DiagnosticsPanel(props);
+  panel.props = props;
+  panel.state = { ...panel.state, ...state };
+  panel.setState = (next) => {
+    const patch = typeof next === "function" ? next(panel.state, panel.props) : next;
+    panel.state = { ...panel.state, ...patch };
+  };
+  return panel;
+}
+
+function vnodeFacts(root) {
+  const tags = [];
+  const text = [];
+  const visit = (node) => {
+    if (node == null || node === false) return;
+    if (typeof node === "string" || typeof node === "number") {
+      text.push(String(node));
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child);
+      return;
+    }
+    if (typeof node === "object") {
+      if (typeof node.type === "string") tags.push(node.type);
+      visit(node.props && node.props.children);
+    }
+  };
+  visit(root);
+  return { tags, text };
+}
 
 const DOCTOR_DOC = {
-  version: "1.19.3",
+  version: "2.0.0",
   exit: 2,
   summary: { ok: 3, warn: 1, fail: 2 },
   checks: [
-    { status: "ok", message: "docker compose is installed" },
-    { status: "fail", message: "monerod is not answering on 18081" },
-    { status: "warn", message: "tari is 400 blocks behind" },
-    { status: "ok", message: "tor control port responds" },
-    { status: "fail", message: "p2pool exited 3 minutes ago" },
-    { status: "ok", message: "config.json parses" },
+    { status: "fail", message: "monerod is not answering — restart monerod." },
+    { status: "warn", message: "Tor egress firewall is missing — run apply." },
+    { status: "ok", message: "Dashboard answers through Caddy." },
+    { status: "ok", message: "Free RAM: 8192 MiB available." },
+    { status: "fail", message: "p2pool is down — inspect its recent log." },
+    { status: "ok", message: "System clock is NTP-synchronized." },
   ],
 };
 
-test("doctorRows keeps status+message and carries no invented per-check name", () => {
+test("doctor rows preserve the host's status/message contract and failure-first order", () => {
   const rows = doctorRows(DOCTOR_DOC);
-  assert.equal(rows.length, 6);
-  for (const r of rows) {
-    assert.deepEqual(Object.keys(r).sort(), ["message", "status"]);
-    assert.ok(r.message.length > 0);
-  }
+  assert.deepEqual(rows.map((row) => row.status), ["fail", "fail", "warn", "ok", "ok", "ok"]);
+  for (const row of rows) assert.deepEqual(Object.keys(row).sort(), ["message", "status"]);
+  assert.match(rows[0].message, /restart monerod/);
+  assert.equal(doctorSummary(DOCTOR_DOC), "2 failing, 1 warning, 3 ok");
 });
 
-test("doctorRows sorts fail, then warn, then ok", () => {
-  const got = doctorRows(DOCTOR_DOC).map((r) => r.status);
-  assert.deepEqual(got, ["fail", "fail", "warn", "ok", "ok", "ok"]);
-});
-
-test("doctorRows preserves the message text verbatim", () => {
-  const rows = doctorRows(DOCTOR_DOC);
-  assert.deepEqual(
-    rows.filter((r) => r.status === "fail").map((r) => r.message).sort(),
-    ["monerod is not answering on 18081", "p2pool exited 3 minutes ago"],
-  );
-});
-
-test("doctorRows yields no rows for a document of another shape, and never throws", () => {
-  for (const doc of [null, undefined, {}, { checks: null }, { checks: "nope" }, { results: [] }]) {
-    assert.deepEqual(doctorRows(doc), [], JSON.stringify(doc));
-  }
-});
-
-test("doctorRows tolerates a malformed check without dropping the good ones", () => {
-  const rows = doctorRows({ checks: [null, "x", { status: "fail" }, { message: "m" }] });
-  assert.deepEqual(rows, [
+test("doctor rows tolerate another document shape without dropping valid siblings", () => {
+  for (const doc of [null, {}, { checks: null }, { results: [] }]) assert.deepEqual(doctorRows(doc), []);
+  assert.deepEqual(doctorRows({ checks: [null, "x", { status: "fail" }, { message: "m" }] }), [
     { status: "fail", message: "" },
     { status: "", message: "m" },
   ]);
 });
 
-test("doctorSummary reports the host's own counts, and null when there are none", () => {
-  assert.equal(doctorSummary(DOCTOR_DOC), "2 failing, 1 warning, 3 ok");
-  assert.equal(doctorSummary({}), null);
-  assert.equal(doctorSummary(null), null);
-  assert.equal(doctorSummary({ summary: {} }), "0 failing, 0 warning, 0 ok");
+test("one doctor document becomes every service plus remaining machine checks", () => {
+  const grouped = groupDoctorRows(DOCTOR_DOC);
+  assert.deepEqual(grouped.services.map(({ name }) => name), DIAG_SERVICES);
+  assert.equal(grouped.services.find(({ name }) => name === "monerod").status, "fail");
+  assert.equal(grouped.services.find(({ name }) => name === "tor").status, "warn");
+  assert.equal(grouped.services.find(({ name }) => name === "p2pool").status, "fail");
+  assert.equal(grouped.services.find(({ name }) => name === "tari").status, "not checked");
+  assert.deepEqual(grouped.machine.map(({ message }) => message), [
+    "Free RAM: 8192 MiB available.",
+    "System clock is NTP-synchronized.",
+  ]);
 });
 
-// --- the submit + poll flow ---------------------------------------------------------------
+test("an empty doctor report remains explicit instead of claiming every check was grouped", () => {
+  const out = renderToString(
+    inst(
+      { enabled: true },
+      {
+        healthPhase: "done",
+        healthResult: {
+          status: "applied",
+          doctor: { summary: { ok: 0, warn: 0, fail: 0 }, checks: [] },
+        },
+      },
+    ).render(),
+  );
+  assert.match(out, /host returned a report with no checks/);
+  assert.match(out, /No machine check returned/);
+  assert.doesNotMatch(out, /Every returned check was service-specific/);
+});
 
-test("runDiag posts the intent, skips 'running', and returns the terminal result", async () => {
-  let posted = null;
+test("a slow diagnostics request is submitted once and waits through pending to its result", async () => {
+  let posts = 0;
+  let polls = 0;
   const fetchStub = async (url, opts) => {
-    if (url === "/api/control/diag-logs") {
-      posted = { headers: opts.headers, body: JSON.parse(opts.body) };
+    if (url === "/api/control/diag-doctor") {
+      posts++;
+      assert.equal(opts.headers["X-Pithead-Control"], "1");
       return { status: 202, ok: false, json: async () => ({ id: ID }) };
     }
-    assert.match(url, new RegExp(`/api/control/result\\?id=${ID}`));
-    return posted.seen
-      ? okResult({ status: "applied", container: "tor", lines: "a\nb" })
-      : ((posted.seen = true), okResult({ status: "running" }));
+    polls++;
+    if (polls === 1) return { status: 202, ok: false, json: async () => ({ status: "pending" }) };
+    if (polls === 2) throw new TypeError("temporary disconnect");
+    return okResult({ status: "applied", doctor: DOCTOR_DOC });
   };
-  const out = await withFastPoll(fetchStub, () => runDiag("diag-logs", { container: "tor" }));
-  assert.equal(out.status, "applied");
-  assert.equal(out.lines, "a\nb");
-  assert.equal(posted.headers["X-Pithead-Control"], "1");
-  assert.deepEqual(posted.body, { container: "tor" });
+  const panel = inst();
+  await withFastPoll(fetchStub, () => panel.runHealth());
+  assert.equal(posts, 1);
+  assert.equal(panel.state.healthPhase, "done");
+  assert.equal(panel.state.healthResult.doctor, DOCTOR_DOC);
 });
 
-test("runDiag throws on a non-202 error status rather than polling a request it never made", async () => {
-  const fetchStub = async () => ({ status: 403, ok: false, json: async () => ({}) });
+test("a terminal host failure is a failed health check with the host's reason", async () => {
+  const fetchStub = async (url) =>
+    url === "/api/control/diag-doctor"
+      ? { status: 202, ok: false, json: async () => ({ id: ID }) }
+      : okResult({ status: "failed", error: "doctor did not return a readable report on this host." });
+  const panel = inst();
+  await withFastPoll(fetchStub, () => panel.runHealth());
+  assert.equal(panel.state.healthPhase, "failed");
+  assert.match(renderToString(panel.render()), /doctor did not return a readable report/);
+});
+
+test("a wait expiry keeps queued-vs-running unknown and does not invent a wedged runner", async () => {
+  const fetchStub = async (url) =>
+    url === "/api/control/diag-logs"
+      ? { status: 202, ok: false, json: async () => ({ id: ID }) }
+      : { status: 202, ok: false, json: async () => ({ status: "pending" }) };
+  const panel = inst();
+  await withFastPoll(fetchStub, () => panel.runLogs("tor"));
+  const message = panel.state.logs.tor.result.error;
+  assert.match(message, /tor's recent log/);
+  assert.match(message, /may still be queued or running/);
+  assert.match(message, /does not show that the control runner is stuck/);
+  assert.doesNotMatch(message, /version|upgrade|slow connection|wedged/i);
+});
+
+test("submission and result HTTP failures name the diagnostics request", async () => {
   await assert.rejects(
-    () => withFastPoll(fetchStub, () => runDiag("diag-doctor", {})),
-    /HTTP 403/,
+    () => withFastPoll(async () => ({ status: 403, ok: false }), () => runDiag("diag-doctor", {}, "the health check")),
+    /Could not submit the health check: HTTP 403/,
+  );
+  let first = true;
+  await assert.rejects(
+    () =>
+      withFastPoll(
+        async () => {
+          if (first) {
+            first = false;
+            return { status: 202, ok: false, json: async () => ({ id: ID }) };
+          }
+          return { status: 500, ok: false };
+        },
+        () => runDiag("diag-logs", { container: "tor" }, "tor's recent log"),
+      ),
+    /Could not read tor's recent log: HTTP 500/,
   );
 });
 
-// --- render states --------------------------------------------------------------------------
+test("the idle card shows all services and offers logs only where the host can redact them", () => {
+  const out = renderToString(inst().render());
+  assert.equal((out.match(/Run health check/g) || []).length, 1);
+  assert.equal((out.match(/<summary>Recent log<\/summary>/g) || []).length, DIAG_CONTAINERS.length);
+  assert.equal((out.match(/Show recent log/g) || []).length, DIAG_CONTAINERS.length);
+  for (const service of DIAG_SERVICES) assert.match(out, new RegExp(`<h4>${service}`));
+  assert.equal((out.match(/owner-only support bundle/g) || []).length, 2);
+});
 
-// Same shape backupview.test.mjs uses: the constructor sets state, but `props` has to be assigned
-// because renderToString walks a vnode, not a mounted component.
-function inst(props, state) {
-  const c = new DiagnosticsPanel(props);
-  c.props = props;
-  if (state) c.state = { ...c.state, ...state };
-  return c;
-}
+test("the health result renders service and machine failures with remedies, escaped", () => {
+  const hostile = {
+    ...DOCTOR_DOC,
+    checks: [...DOCTOR_DOC.checks, { status: "fail", message: "<script>machine failed</script> — fix it." }],
+  };
+  const view = inst(
+    { enabled: true },
+    { healthPhase: "done", healthResult: { status: "applied", doctor: hostile } },
+  ).render();
+  const out = renderToString(view);
+  const facts = vnodeFacts(view);
+  assert.match(out, /monerod is not answering — restart monerod/);
+  assert.match(out, /<h4>Machine checks<\/h4>/);
+  assert.ok(facts.text.includes("<script>machine failed</script> — fix it."));
+  assert.ok(!facts.tags.includes("script"));
+});
 
-test("the card explains how to turn the control channel on when it is off", () => {
+test("a service log remains per-service, uses contextual waiting copy, and escapes output", () => {
+  const waiting = renderToString(
+    inst({ enabled: true }, { logs: { tor: { phase: "waiting", result: null } } }).render(),
+  );
+  assert.match(waiting, /Waiting for the host to return tor's recent log/);
+  assert.doesNotMatch(waiting, /version|upgrade|slow connection/i);
+  const done = inst(
+    { enabled: true },
+    { logs: { tor: { phase: "done", result: { status: "applied", lines: "<token>\nready" } } } },
+  ).render();
+  const facts = vnodeFacts(done);
+  assert.ok(facts.text.includes("<token>\nready"));
+  assert.ok(!facts.tags.includes("token"));
+});
+
+test("two service log disclosures keep both results", async () => {
+  const fetchStub = async (url, opts) => {
+    if (url === "/api/control/diag-logs") {
+      const { container } = JSON.parse(opts.body);
+      return {
+        status: 202,
+        ok: false,
+        json: async () => ({ id: container === "tor" ? ID : ID.replace(/2/g, "3") }),
+      };
+    }
+    const container = url.includes(ID) ? "tor" : "monerod";
+    return okResult({ status: "applied", container, lines: `${container} ready` });
+  };
+  const panel = inst();
+  await withFastPoll(fetchStub, () => Promise.all([panel.runLogs("tor"), panel.runLogs("monerod")]));
+  assert.equal(panel.state.logs.tor.result.lines, "tor ready");
+  assert.equal(panel.state.logs.monerod.result.lines, "monerod ready");
+});
+
+test("the card explains how to enable diagnostics when the control channel is off", () => {
   const out = renderToString(inst({ enabled: false }).render());
   assert.match(out, /dashboard\.control\.enabled/);
   assert.doesNotMatch(out, /Run health check/);
 });
 
-test("the idle card offers both actions and every container the host allowlists", () => {
-  const out = renderToString(inst({ enabled: true }).render());
-  assert.match(out, /Run health check/);
-  assert.match(out, /Show recent log/);
-  for (const c of DIAG_CONTAINERS) assert.match(out, new RegExp(`<option value="${c}"`));
-});
-
-test("the picker's container list has not drifted from the host's allowlist (#1731)", () => {
-  // DIAG_CONTAINERS is a second copy of the host's PITHEAD_DIAG_CONTAINERS and this test is the
-  // only thing holding them together. Drift is not a security hole — the host still decides, and
-  // its refusal reaches the panel verbatim — but it offers an operator a service the host will
-  // refuse, or hides one it would serve, and both read as a dashboard bug.
-  //
-  // Read from the built `pithead` rather than lib/pithead/46a-control-diagnostics.sh, matching the
-  // editable/confirm drift tests in test_control_service.py. lint-pithead-parity is what makes the
-  // built file a faithful stand-in for the slice it was concatenated from.
+test("the browser service list has not drifted from the host's allowlist", () => {
   const pithead = readFileSync(new URL("../../../pithead", import.meta.url), "utf8");
-  const m = /readonly PITHEAD_DIAG_CONTAINERS="([^"]*)"/.exec(pithead);
-  assert.ok(m, "could not find PITHEAD_DIAG_CONTAINERS in pithead");
-  const hostList = m[1].split(/\s+/).filter(Boolean);
-  // The deepEqual below would also fail on an empty list, so this guard is here for its MESSAGE,
-  // not for the detection: it names the shape of the failure instead of printing a nine-element
-  // array against an empty one. It is reachable only when the regex matched an empty capture —
-  // the no-match case is already taken by the assertion above — so it does not say "the regex
-  // stopped matching", which would be false in the one case that can reach it.
-  assert.ok(
-    hostList.length > 0,
-    "the host allowlist parsed as empty — PITHEAD_DIAG_CONTAINERS was emptied, or the regex no longer captures its value",
-  );
-  // Membership, not order: the host tests the requested name for exact membership in a
-  // whitespace-separated list, so a reordering there is harmless and must not red this.
-  assert.deepEqual([...DIAG_CONTAINERS].sort(), [...hostList].sort());
-});
-
-test("the picker offers neither wallet daemon — the host refuses both", () => {
-  // Not cosmetic: bundle_redact_log is keyed to the launch-line leak class, and the wallet
-  // daemons are the two whose ordinary output most easily carries key material outside it.
+  const match = /readonly PITHEAD_DIAG_CONTAINERS="([^"]*)"/.exec(pithead);
+  assert.ok(match, "could not find PITHEAD_DIAG_CONTAINERS in pithead");
+  const hostList = match[1].split(/\s+/).filter(Boolean);
+  assert.ok(hostList.length > 0, "the host diagnostics allowlist parsed as empty");
+  assert.deepEqual([...DIAG_CONTAINERS].sort(), hostList.sort());
+  assert.ok(DIAG_SERVICES.includes("wallet-rpc"));
+  assert.ok(DIAG_SERVICES.includes("tari-wallet"));
   assert.ok(!DIAG_CONTAINERS.includes("wallet-rpc"));
   assert.ok(!DIAG_CONTAINERS.includes("tari-wallet"));
-});
-
-test("a rendered log tail shows the host's note rather than an empty box", () => {
-  const out = renderToString(
-    inst(
-      { enabled: true },
-      {
-        phase: "done",
-        mode: "logs",
-        result: { status: "applied", container: "tor", lines: "", note: "No log output — not running." },
-      },
-    ).render(),
-  );
-  assert.match(out, /No log output/);
-});
-
-test("a failed run surfaces the host's own reason, not a generic one", () => {
-  const out = renderToString(
-    inst(
-      { enabled: true },
-      {
-        phase: "failed",
-        mode: "logs",
-        result: { status: "rejected", error: "not a container this dashboard may read logs for." },
-      },
-    ).render(),
-  );
-  assert.match(out, /not a container this dashboard may read logs for/);
 });
