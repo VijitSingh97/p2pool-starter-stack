@@ -57,7 +57,7 @@ const UPGRADE_POLL_MAX = 1350;
 // project down and back up — so a fetch here can transiently fail: a dropped connection (proxy
 // down too, for backup) or a 502/503/504 (proxy up, upstream mid-restart, #622). Ride both out
 // and keep polling until the result file answers.
-export async function pollResult(id, skip, max = POLL_MAX) {
+export async function pollResult(id, skip, max = POLL_MAX, timeoutMessage) {
   for (let i = 0; i < max; i++) {
     await new Promise((r) => setTimeout(r, POLL_MS));
     let res;
@@ -82,7 +82,8 @@ export async function pollResult(id, skip, max = POLL_MAX) {
   // check a control channel that was healthy, and invited a re-click that only met the 10-minute
   // throttle. Say what is actually known instead.
   throw new Error(
-    "Stopped waiting — this can take longer than expected on a slow connection. The host keeps going and finishes on its own; reload in a few minutes to see the result. If the version is unchanged after that, check that dashboard.control is enabled and the pithead-control unit is running.",
+    timeoutMessage ||
+      "Stopped waiting — this can take longer than expected on a slow connection. The host keeps going and finishes on its own; reload in a few minutes to see the result. If the version is unchanged after that, check that dashboard.control is enabled and the pithead-control unit is running.",
   );
 }
 
