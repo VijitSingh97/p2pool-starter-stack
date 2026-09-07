@@ -872,18 +872,18 @@ class StateManager(TelemetryStoreMixin, WorkerConfigStoreMixin):
     def add_audit_event(
         self, id: str, ts: str, source: str, actor: str, action: str, status: str, keys: str
     ) -> None:
-        """Record one audit-trail row (#530, #1551) — mirrored from the #33 control.log
-        (``source`` = "control", the log's own ``id`` reused as the primary key) or detected
-        out-of-band ("host-edit" / "rig-edit" / "rig-drift"). ``INSERT OR IGNORE`` makes every kind
-        idempotent: a re-mirrored control.log row and a re-detected out-of-band event are no-ops. ``keys`` is names only —
-        the caller is responsible for the same no-values contract the log itself holds to."""
+        """Store an audit row; a terminal control result replaces its same-id preview (#530).
+        Deterministic host/rig edit ids stay first-write idempotent. Values never enter ``keys``."""
         try:
             with self._db_lock:
                 if not self._conn:
                     return
                 self._conn.execute(
-                    "INSERT OR IGNORE INTO audit_events "
-                    "(id, ts, source, actor, action, status, keys) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO audit_events "
+                    "(id, ts, source, actor, action, status, keys) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET ts=excluded.ts, source=excluded.source, "
+                    "actor=excluded.actor, action=excluded.action, status=excluded.status, keys=excluded.keys "
+                    "WHERE excluded.source='control' AND audit_events.source='control'",
                     (id, ts, source, actor, action, status, keys),
                 )
                 self._conn.commit()

@@ -224,12 +224,20 @@ To point it at a differently-configured fleet, set
 
 Only the worker's validated IP is ever contacted; a miner-controlled worker name is never used as a
 request host (the SSRF guard). If a probe fails, the worker isn't dropped: it keeps its
-proxy-reported hashrate and is flagged `api ⚠` on the dashboard, with a single log line naming the
-URL, status, and likely fix, so a misconfigured API reads differently from an offline miner.
+proxy-reported hashrate and is badged on the dashboard, with a single log line naming the URL,
+status, and likely fix, so a misconfigured API reads differently from an offline miner. Which badge
+depends on whether the rig is *adopted* — whether its [`workers.list`](#per-worker-overrides) entry
+carries a control token:
+
+| Rig | Badge | Meaning |
+|---|---|---|
+| adopted | `api ⚠` | the configured probe failed — check `workers.api_auth` / `api_port`, or the miner's xmrig `http` settings |
+| not adopted | `not adopted` | the probe failed and the dashboard holds no control token for the rig. A rig the setup wizard set up needs adopting from [Worker Inspect](dashboard.md#worker-inspect); a miner you configured yourself needs the same check as the row above |
 
 > Upgrading? Earlier builds provisioned each miner with `access-token = <worker name>`. If your
 > miners still carry a token, set `workers.api_auth: name`, otherwise the new no-auth default probe
-> gets `401` and every worker shows `api ⚠`. (Reprovisioning the miners to drop the token is the
+> gets `401` and every worker is badged — `api ⚠` if adopted, `not adopted` if not; both tooltips
+> name this key. (Reprovisioning the miners to drop the token is the
 > other option; new RigForge workers ship open by default.)
 
 #### Per-worker overrides
@@ -290,7 +298,7 @@ enabled` and `control: enabled` with `api_allow_from` set to that Pithead's IPv4
 RigForge's upgrade path. The token is shown once, on the setup page's rig card, beside the rig's
 address. Until you adopt the rig — paste both into Worker Inspect's adopt form, or add its
 `host` + `token` entry to `workers.list[]` by hand — the dashboard's probe is refused (the feed
-wants the token) and the rig's row reads as an API error, though it mines all the while. A rig
+wants the token) and the rig's row is badged `not adopted`, though it mines all the while. A rig
 pointed at a pool with no IPv4 address (an onion address) renders with control off and the feed
 on. The appliance's built-in miner (the **Pithead + RigForge** choice) still ships without
 control: it sits on the same machine as the dashboard.
@@ -330,6 +338,13 @@ the same response. The dashboard then shows a RigForge version badge and health/
 chips for that rig (see [Dashboard › Workers Alive](dashboard.md#workers-alive)). A plain-xmrig rig
 on `8080` sends no `rigforge` block and reads exactly as before — no chips, no error. Auth is
 unchanged: send the rig's `token` only if it sets an `ACCESS_TOKEN` (the read API is open otherwise).
+
+Current RigForge feeds stamp each response with UTC `generated_at`. Pithead ages that producer stamp,
+not the HTTP fetch: cached bytes can still arrive successfully after the refresh job freezes. Reports
+over a minute old show only their age; reports from older RigForge versions without the stamp show
+**agent freshness unknown**. In either case Pithead hides the report's miner state, version, health,
+power and temperature until a current stamped payload arrives. The proxy's connection and accepted
+shares remain the source for whether the worker is online and for worker-offline alerts.
 
 If the block also carries a `control` object — `{change_id, status, reason}`, mirroring the rig's
 own control-API `/status` response read-only — the dashboard reconciles it against the [Worker

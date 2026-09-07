@@ -1,8 +1,7 @@
 # shellcheck shell=bash
 : "${STACK_SUITE:?is unset: this file is a tests/stack/run.sh fragment, not a script — run tests/stack/run.sh}"
 # The approval gate (#33): the control channel's default-deny on security-sensitive changes,
-# reunited into one file (#1105 R13), together with workers.list[]'s add-only exception (#893's
-# click-to-adopt) and the #122 SSRF floor on what a newly-appended entry may point at
+# reunited into one file (#1105 R13), with workers.list[] approval and its #122 SSRF floor
 # (_control_host_is_internal). The gate's own contract is stated at its section header below.
 #
 # WHY ONE FILE. The add-only/SSRF battery was split out of the approval-gate section for the
@@ -27,11 +26,9 @@
 # outlive the source as they outlived the old in-run.sh position: the editable-allowlist domain file
 # run.sh sources next reads both, as test-spool-audit.sh reuses $UUID5. Hence the stanza stays put.
 #
-# MUTATION PROOF: reverting pithead's add-only prefix check back to "refuse any workers.list
-# diff" turns the ADD-ONLY-append assertion red; reverting _control_host_is_internal's
-# trailing-dot strip or narrowing its alias set back to bare "localhost" turns the
-# corresponding assert_new_worker_host_refused case red (each names which). Round 5's
-# resolve-and-check battery (below) names its own mutation kills at each assertion.
+# MUTATION PROOF: bypassing worker approval turns the safe unapproved-append assertions red;
+# weakening _control_host_is_internal changes unsafe refusals from the host boundary to approval.
+# Round 5's resolve-and-check battery (below) names its own mutation kills.
 
 build_control_sandbox
 REQS="$C/data/control/requests"
@@ -77,7 +74,7 @@ assert_eq "auth-disable previews destructive:false (DEST alone would allow it)" 
 printf '{"id":"%s","action":"commit","actor":"admin"}\n' "$UUID5" >"$REQS/$UUID5.json"
 run_pending >/dev/null
 assert_eq "dashboard-login disable commit is refused" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "rejected"
-assert_contains "auth-disable refusal names the sensitive-key gate" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "security-sensitive"
+assert_contains "auth-disable refusal names the physical-presence path" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "configuration stick"
 assert_eq "config.json keeps the dashboard password" "$(jq -r '.dashboard.auth.password' "$C/config.json")" "a control passphrase"
 assert_eq "config.json keeps control enabled" "$(jq -r '.dashboard.control.enabled' "$C/config.json")" "true"
 
@@ -124,13 +121,12 @@ gate_try "$C/cand.json"
 assert_eq "healthchecks ping-url repoint commit is refused" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "rejected"
 assert_eq "config.json keeps healthchecks unset" "$(jq -r '.healthchecks.ping_url // "unset"' "$C/config.json")" "unset"
 # The #719 perimeter, named explicitly: disabling the Tor egress firewall would let containers dial
-# clearnet — it is NOT in the confirm-gated set and stays host-only. Commit WITH a valid APPLY token
-# to prove the typed confirmation does not unlock the perimeter — the refusal fires before the token
-# is ever examined, so it stays refused just as it does token-less (#719).
+# clearnet. Commit WITH a valid APPLY token to prove typed confirmation alone does not satisfy the
+# separate host-verified approval gate.
 jq '.network={tor_egress_firewall:false}' "$C/config.json" >"$C/cand.json"
 gate_try "$C/cand.json" APPLY
 assert_eq "tor-egress-firewall disable commit is refused even with the APPLY token" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "rejected"
-assert_contains "tor-egress refusal is a host-only gate (the APPLY token did not unlock it)" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "security-sensitive"
+assert_contains "tor-egress refusal still requires host-verified approval after APPLY" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "Telegram approval"
 assert_eq "config.json keeps the tor egress firewall unset (defaults on)" "$(jq -r '.network.tor_egress_firewall // "unset"' "$C/config.json")" "unset"
 # Setting a Monero view key (the #381 payout-confirm secret) reveals every incoming amount — a
 # secret, host-only, never confirm-gated. Commit WITH a valid APPLY token: the perimeter gate must
@@ -165,15 +161,14 @@ assert_contains "the refusal names dashboard.workers as a schema-unknown key" "$
 assert_contains "the refusal is the closed-schema door, not the descriptor door" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "not in the schema"
 assert_eq "config.json keeps no worker descriptors" "$(jq -r '.dashboard.workers // "unset"' "$C/config.json")" "unset"
 
-# workers.list[] (#506): the same descriptors, but with ONE add-only
-# exception — a commit may APPEND a new descriptor; every live entry must reappear byte-for-byte.
+# workers.list[] (#506): descriptor mutations change remote trust and require host approval.
+# Host validation still rejects unsafe targets before that approval can be requested.
 # Seed one from the host CLI (never the gate) as the baseline to protect.
 jq '.workers.list=[{name:"rig1",host:"10.0.0.9",control_port:8082,token:"tok_rig1"}]' "$C/config.json" >"$C/cand.json" && mv "$C/cand.json" "$C/config.json"
 (cd "$C" && DOCKER_LOG="$CTRL_LOG" PATH="$C/bin:$PATH" ./pithead apply -y >/dev/null 2>&1)
 assert_eq "workers.list seed applies from the host CLI" "$(jq -r '.workers.list[0].token' "$C/config.json")" "tok_rig1"
 
-# REPOINT (the #122-class escalation add-only must never permit) and REMOVAL are both refused;
-# APPEND of a brand-new second entry, rig1 byte-for-byte unchanged, is the one shape now allowed.
+# REPOINT, REMOVAL and safe APPEND refuse without approval; test-confirm-approval covers approval.
 jq '.workers.list=[{name:"rig1",host:"attacker.example",token:"stolen"}]' "$C/config.json" >"$C/cand.json"
 gate_try "$C/cand.json"
 assert_eq "workers.list REPOINT of an existing entry is refused" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "rejected"
@@ -183,20 +178,24 @@ gate_try "$C/cand.json"
 assert_eq "workers.list REMOVAL of an existing entry is refused" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "rejected"
 jq '.workers.list += [{name:"rig2",host:"192.168.1.50",control_port:8082,token:"tok_rig2"}]' "$C/config.json" >"$C/cand.json"
 gate_try "$C/cand.json"
-assert_eq "workers.list ADD-ONLY append of a new rig is allowed" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "applied"
-assert_eq "config.json keeps rig1 and gains rig2" "$(jq -c '[.workers.list[].host]' "$C/config.json")" '["10.0.0.9","192.168.1.50"]'
+assert_eq "workers.list append without host approval is refused" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "rejected"
+assert_contains "safe worker append names the approval gate" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "Telegram approval"
+assert_eq "config.json keeps only rig1 after the unapproved append" "$(jq -c '[.workers.list[].host]' "$C/config.json")" '["10.0.0.9"]'
 
 # NEGATIVE — the #122 SSRF floor on a NEWLY appended entry (_control_host_is_internal): a
 # compromised dashboard could otherwise append a phantom descriptor at this host's own loopback or
 # a sibling container, then dial it (attacker bearer) via worker-apply/worker-upgrade, which
-# resolves strictly from THIS config.json. A rejection never touches config.json, so rig1+rig2
-# stays the baseline below — including the "localhost" family (a bare-string check misses the
+# resolves strictly from THIS config.json. The unsafe-host refusal must fire before the general
+# approval gate, and a rejection never touches config.json, so rig1 stays the baseline below —
+# including the "localhost" family (a bare-string check misses the
 # /etc/hosts aliases + root-terminated spelling; curl-verified to resolve to loopback here) and a
 # numeric encoding curl's own address parser accepts identically to dotted-decimal.
 assert_new_worker_host_refused() { # <host> <label>
     jq --arg h "$1" '.workers.list += [{name:"evil",host:$h,control_port:8000,token:"attacker"}]' "$C/config.json" >"$C/cand.json"
     gate_try "$C/cand.json"
     assert_eq "new-rig append pointed at $2 is refused" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "rejected"
+    assert_contains "new-rig append pointed at $2 names the host boundary" \
+        "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "resolves inside this host"
 }
 assert_new_worker_host_refused "127.0.0.1" "loopback"
 assert_new_worker_host_refused "172.28.0.5" "the stack's own docker-bridge subnet"
@@ -206,15 +205,16 @@ assert_new_worker_host_refused "localhost.localdomain" "the RHEL-family /etc/hos
 assert_new_worker_host_refused "ip6-localhost" "the Debian-family /etc/hosts ::1 alias"
 assert_new_worker_host_refused "ip6-loopback" "the Debian-family /etc/hosts ::1 alias (second name)"
 assert_new_worker_host_refused "2130706433" "a bare-decimal-integer encoding of loopback"
-assert_eq "config.json still has exactly rig1+rig2 after every SSRF refusal above" \
-    "$(jq -r '.workers.list | length' "$C/config.json")" "2"
+assert_eq "config.json still has exactly rig1 after every SSRF refusal above" \
+    "$(jq -r '.workers.list | length' "$C/config.json")" "1"
 unset -f assert_new_worker_host_refused
 
-# POSITIVE control: an ordinary LAN address — the feature's whole purpose — is unaffected.
+# A safe LAN address reaches the approval gate instead of the unsafe-host refusal.
 jq '.workers.list += [{name:"rig3",host:"10.0.0.50",control_port:8082,token:"tok_rig3"}]' "$C/config.json" >"$C/cand.json"
 gate_try "$C/cand.json"
-assert_eq "workers.list append of an ordinary LAN address still applies" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "applied"
-assert_eq "config.json gains the third, ordinary-LAN rig" "$(jq -r '.workers.list[2].host' "$C/config.json")" "10.0.0.50"
+assert_eq "ordinary LAN append without host approval is refused" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "rejected"
+assert_contains "ordinary LAN append reaches the approval gate" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "Telegram approval"
+assert_eq "config.json does not gain the unapproved ordinary-LAN rig" "$(jq -r '.workers.list[1].host // "unset"' "$C/config.json")" "unset"
 
 # #893 round 5: an independent review found the battery above was still a STRING classifier under
 # the hood — it can refuse "127.0.0.1" and "localhost" by literal shape, but it can never answer
@@ -256,6 +256,8 @@ assert_resolved_worker_host_refused() { # <name> <ip-list-or-empty> <label>
     jq --arg h "$1" '.workers.list += [{name:"evil-dns",host:$h,control_port:8000,token:"attacker"}]' "$C/config.json" >"$C/cand.json"
     gate_try "$C/cand.json"
     assert_eq "new-rig append resolving to $3 is refused" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "rejected"
+    assert_contains "new-rig append resolving to $3 names the host boundary" \
+        "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "resolves inside this host"
 }
 # MUTATION KILL: narrowing _ipv4_is_sensitive's loopback case from "0 | 127" (all of 127.0.0.0/8)
 # back to a single literal address turns this one red — 127.0.1.1 isn't 127.0.0.1.
@@ -274,18 +276,16 @@ assert_resolved_worker_host_refused "mixed-answer-name" "203.0.113.5,127.0.0.1" 
 # `|| return 1` (fail open — "must not resolve, so it can't be internal") turns this one red.
 assert_resolved_worker_host_refused "name-that-fails-to-resolve" "" "a name resolution fails on (fail-closed)"
 unset -f assert_resolved_worker_host_refused
-assert_eq "config.json still has exactly rig1+rig2+rig3 after every round-5 SSRF refusal above" \
-    "$(jq -r '.workers.list | length' "$C/config.json")" "3"
+assert_eq "config.json still has exactly rig1 after every round-5 SSRF refusal above" \
+    "$(jq -r '.workers.list | length' "$C/config.json")" "1"
 
-# POSITIVE control, round 5: a genuine LAN rig reached BY NAME (not a literal) still applies —
-# resolve-and-check must not turn into "refuse every hostname". MUTATION KILL: an over-broad
-# sensitivity check (e.g. refusing all of 192.168.0.0/16, not just this host's own bridge subnet)
-# turns this one red.
+# A genuine LAN hostname must reach approval, proving resolve-and-check does not refuse every name.
 printf 'real-lan-rig-by-name 192.168.1.77\n' >>"$GETENT_MAP"
 jq '.workers.list += [{name:"rig4",host:"real-lan-rig-by-name",control_port:8082,token:"tok_rig4"}]' "$C/config.json" >"$C/cand.json"
 gate_try "$C/cand.json"
-assert_eq "workers.list append of a LAN address reached BY NAME still applies" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "applied"
-assert_eq "config.json gains the fourth rig, resolved from its name" "$(jq -r '.workers.list[3].host' "$C/config.json")" "real-lan-rig-by-name"
+assert_eq "LAN hostname append without host approval is refused" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "rejected"
+assert_contains "LAN hostname append reaches the approval gate" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "Telegram approval"
+assert_eq "config.json does not gain the unapproved LAN hostname" "$(jq -r '.workers.list[1].host // "unset"' "$C/config.json")" "unset"
 
 # Tidy up the test-only stub so later sections in this same $C sandbox see the real system
 # resolver again — nothing else in this suite calls getent today, but there's no reason to leave a
@@ -306,7 +306,7 @@ run_pending >/dev/null
 assert_eq "energy edit commits" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "applied"
 assert_eq "energy cost landed in config.json" "$(jq -r '.dashboard.energy.cost_per_kwh' "$C/config.json")" "0.18"
 assert_eq "energy currency landed in config.json" "$(jq -r '.dashboard.energy.currency' "$C/config.json")" "EUR"
-assert_contains "energy commit audits the synthetic key name (#504)" "$(grep '"action":"commit","status":"applied"' "$AUDIT" | tail -n 1)" "DASHBOARD_ENERGY"
+assert_contains "energy commit audits the schema leaf path (#504)" "$(grep '"action":"commit","status":"applied"' "$AUDIT" | tail -n 1)" "dashboard.energy.cost_per_kwh"
 
 # Unedited editor round-trip (#696): the form serves the reference-merged config and posts the
 # merged document back, so a save with NO edits must preview as zero changes. The live energy
@@ -335,7 +335,7 @@ rm -f "$RESULTS/$UUIDE.json" "$STAGED/$UUIDE.json"
 jq '.dashboard.energy={cost_per_kwh:0.25} | .monero.rpc_lan_access=true' "$C/config.json" >"$C/cand.json"
 gate_try "$C/cand.json"
 assert_eq "energy edit bundled with a non-allowlisted key is refused" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "rejected"
-assert_contains "bundled refusal names the security-sensitive gate" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "security-sensitive"
+assert_contains "bundled refusal names the confirmation gate" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "type APPLY"
 assert_eq "config.json keeps monero LAN access off after the refusal" "$(jq -r '.monero.rpc_lan_access // false' "$C/config.json")" "false"
 assert_eq "config.json keeps the previously-committed energy cost after the refusal" "$(jq -r '.dashboard.energy.cost_per_kwh' "$C/config.json")" "0.18"
 
@@ -389,7 +389,7 @@ assert_contains "commit request smuggling a destructive flag is rejected" "$(jq 
 printf '{"id":"%s","action":"commit","actor":"admin"}\n' "$UUID5" >"$REQS/$UUID5.json"
 run_pending >/dev/null
 assert_eq "commit after result-file tampering is still refused" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "rejected"
-assert_contains "tampered-flag refusal comes from the host-side re-derivation" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "security-sensitive"
+assert_contains "tampered-flag refusal comes from the host-side re-derivation" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "Telegram approval"
 assert_eq "config.json keeps the untampered bot token" "$(jq -r '.telegram.bot_token' "$C/config.json")" "123456:legit-ABC_def"
 
 # Sensitive keys PRESENT but UNCHANGED must not trip the gate: a plain pool-tier change on the
@@ -398,3 +398,51 @@ jq '.p2pool.pool="mini"' "$C/config.json" >"$C/cand.json"
 gate_try "$C/cand.json"
 assert_eq "non-security change on a security-laden config still applies" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "applied"
 assert_eq "pool tier change landed in config.json" "$(jq -r '.p2pool.pool' "$C/config.json")" "mini"
+
+# The node-endpoint tier (#1888), end to end through the real spool. The four endpoint keys left
+# the never-committable perimeter for the confirm tier on the operator's ruling, and the host-side
+# REACHABILITY PROBE is what was traded for that perimeter entry — so what has to be proven here is
+# that the gate CALLS it. One variable moves per case: no token (the tier), token + an endpoint
+# nothing answers on (the probe refuses), token + one that answers (it commits). Case 2 is the
+# teeth — WITHOUT the probe that same commit applies — and case 3 is what stops a probe that
+# refuses everything from reading as a pass.
+cp "$C/config.json" "$C/nep-keep.json"
+# A kernel-chosen port: two lanes may run this suite at once, so a fixed one would collide. The
+# Tari leg of the probe is a bare TCP connect, so an accept()ing socket is all it needs to pass.
+python3 -c 'import socket, sys, time
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+s.listen(8)
+sys.stdout.write("%d\n" % s.getsockname()[1])
+sys.stdout.flush()
+time.sleep(120)' >"$C/nep.port" &
+nep_pid=$!
+nep_port_ready() { [ -s "$C/nep.port" ]; }
+wait_while_alive "$nep_pid" nep_port_ready
+nep_live=$(tr -dc '0-9' <"$C/nep.port")
+timeout 5 bash -c "</dev/tcp/127.0.0.1/$nep_live" 2>/dev/null
+assert_rc "the fixture's own port really accepts (control on the fixture, not on the gate)" "$?" "0"
+# Baseline: Tari on a REMOTE node that is NOT up. Monero stays local, so only the Tari leg is ever
+# dialled, and `apply` itself never probes — the wizard and this gate are the only callers.
+jq '.tari.mode="remote" | .tari.remote={host:"127.0.0.1",grpc_port:1}' "$C/config.json" >"$C/cand.json" && mv "$C/cand.json" "$C/config.json"
+(cd "$C" && DOCKER_LOG="$CTRL_LOG" PATH="$C/bin:$PATH" ./pithead apply -y >/dev/null 2>&1)
+assert_contains "remote-Tari baseline applied" "$(cat "$C/.env")" "TARI_GRPC_ADDRESS=127.0.0.1:1"
+# 1. No token: the endpoint IS committable now, but only behind the typed confirmation.
+jq '.tari.remote.grpc_port=2' "$C/config.json" >"$C/cand.json"
+gate_try "$C/cand.json"
+assert_eq "a node-endpoint change without the token is refused" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "rejected"
+assert_contains "the token-less refusal asks for the confirmation" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "type APPLY"
+# 2. Token + an endpoint nothing answers on: the PROBE refuses. Without it this commit applies.
+gate_try "$C/cand.json" APPLY
+assert_eq "an unreachable node endpoint is refused even with the token" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "rejected"
+assert_contains "the refusal comes from the reachability probe" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "cannot use"
+assert_eq "config.json keeps the old endpoint" "$(jq -r '.tari.remote.grpc_port' "$C/config.json")" "1"
+# 3. Token + an endpoint that answers: committed. #1888's whole point — changeable on a live machine.
+jq --argjson p "$nep_live" '.tari.remote.grpc_port=$p' "$C/config.json" >"$C/cand.json"
+gate_try "$C/cand.json" APPLY
+assert_eq "a reachable node endpoint commits with the token" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "applied"
+assert_eq "the new endpoint landed in config.json" "$(jq -r '.tari.remote.grpc_port' "$C/config.json")" "$nep_live"
+kill "$nep_pid" 2>/dev/null
+cp "$C/nep-keep.json" "$C/config.json"
+(cd "$C" && DOCKER_LOG="$CTRL_LOG" PATH="$C/bin:$PATH" ./pithead apply -y >/dev/null 2>&1)
+unset nep_pid nep_live

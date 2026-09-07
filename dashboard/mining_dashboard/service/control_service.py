@@ -19,12 +19,10 @@ import time
 import uuid
 
 from mining_dashboard.config import config
-from mining_dashboard.service import request_spool
+from mining_dashboard.service import audit_service, config_operations, request_spool
 
 logger = logging.getLogger("ControlService")
 
-# Config paths whose leaves are secrets. Mirrors pithead's CONTROL_SECRET_PATHS (the host-side
-# masking source, #440) — keep the two lists in step.
 SECRET_PATHS = [
     ("dashboard", "auth", "password"),
     ("telegram", "bot_token"),
@@ -228,12 +226,22 @@ CONFIRM_ENV_KEY_PATHS = {
     # bypasses the Tor socks5 per docs/privacy.md; a future-dated restore point silently defeats
     # payout-confirmation tamper evidence).
     "MONERO_OUT_PEERS": ("monero.out_peers",),
+    # Node endpoints (#1888): confirm-gated, not free-commit, and paired with the approval gate's
+    # host-side reachability probe. 42-control-policy-and-host-checks.sh carries the reasoning.
+    "MONERO_NODE_HOST": ("monero.remote.host",),
+    "MONERO_RPC_PORT": ("monero.remote.rpc_port",),
+    "MONERO_ZMQ_PORT": ("monero.remote.zmq_port",),
+    "TARI_GRPC_ADDRESS": ("tari.remote.host", "tari.remote.grpc_port"),
 }
 
 
-def _confirm_paths():
-    """Every config path the control gate will commit behind a type-to-confirm (#719)."""
-    return sorted({p for target in CONFIRM_ENV_KEY_PATHS.values() for p in target})
+def _confirm_paths(cfg=None):
+    """Every config path the control gate commits behind a type-to-confirm (#719), minus a chain's
+    node endpoint (#1888) while that chain is not on a REMOTE node: a local (or, after #1855, an
+    "off") chain derives its endpoint from the stack, so offering the field would edit nothing."""
+    live = {c for c in ("monero", "tari") if (cfg or {}).get(c, {}).get("mode") == "remote"}
+    paths = {p for target in CONFIRM_ENV_KEY_PATHS.values() for p in target}
+    return sorted(p for p in paths if ".remote." not in p or p.split(".")[0] in live)
 
 
 def env_key_config_paths(env_key):
@@ -246,6 +254,8 @@ def env_key_config_paths(env_key):
     synthetic ``DASHBOARD_ENERGY`` name (which the gate folds in for a dashboard.energy-only
     commit, a config.json-only block that never renders to .env, #504) covers the whole energy
     block by prefix. An unrecognised name maps to nothing, so it can never explain a diffed key."""
+    if "." in env_key:
+        return (env_key,)
     if env_key == "DASHBOARD_ENERGY":
         return ("dashboard.energy",)
     return EDITABLE_ENV_KEY_PATHS.get(env_key, ())
@@ -273,11 +283,11 @@ def read_config():
     "set — leave blank to keep" from "not set". The copy arrives already masked (#440); the
     masking pass here is defense-in-depth and runs AFTER the merge.
 
-    The response also carries ``_core_keys`` (#529) and ``_editable_keys`` (#613) — both
-    underscore-prefixed metadata keys, the same convention ``config.reference.json``'s own
-    ``_docs`` uses, so ``buildSections`` on the frontend already skips them as config sections for
-    free."""
-    cfg = _load_host_config()
+    Response-only policy/default metadata uses underscore-prefixed keys, which the frontend omits
+    from configuration sections."""
+    host = _load_host_config()
+    cfg = host
+    reference = {}
     try:
         with open(config.HOST_REFERENCE_PATH) as f:
             reference = json.load(f)
@@ -288,11 +298,16 @@ def read_config():
     mask_secrets(cfg)
     cfg["_core_keys"] = _load_core_keys()
     cfg["_editable_keys"] = _editable_paths()
-    cfg["_confirm_keys"] = _confirm_paths()
+    cfg["_confirm_keys"] = _confirm_paths(cfg)
+    cfg["_approval_keys"] = config_operations.approval_paths(
+        reference, cfg, _editable_paths(), _confirm_paths(cfg)
+    )
+    cfg["_default_keys"] = config_operations.missing_default_paths(reference, host, _get)
+    cfg["_last_apply"] = config_operations.last_apply_state(audit_service.recent_changes())
     return cfg
 
 
-def submit(action, cfg=None, actor="", intent_id=None, version=None, confirm=None):
+def submit(action, cfg=None, actor="", intent_id=None, version=None, confirm=None, approval=None):
     """Write one intent into the requests spool (atomic: temp + rename, so the runner never
     reads a half-written file). Returns the request id — always a UUID, because the id becomes
     a host-side filename and the runner rejects anything else. ``version`` rides only on the
@@ -303,23 +318,19 @@ def submit(action, cfg=None, actor="", intent_id=None, version=None, confirm=Non
     rid = str(uuid.UUID(intent_id)) if intent_id else str(uuid.uuid4())
     request = {"id": rid, "action": action, "actor": actor}
     if cfg is not None:
-        # read_config's own metadata injections (#529/#613/#719) ride back with the editor's POST —
-        # both modes round-trip the fetched doc wholesale — and the host gate's closed-schema
-        # check would refuse a commit carrying them (#679). Shed them at the one choke point
-        # every config intent passes through; everything else unknown still fails closed host-side.
+        # Both editor modes round-trip response metadata; shed it at this choke point so the host's
+        # closed-schema check still rejects every other unknown key (#679).
         # A non-dict cfg passes through untouched: the host runner already rejects it with its
         # own "config must be a JSON object" result, which the UI knows how to surface.
         if isinstance(cfg, dict):
-            cfg = {
-                k: v
-                for k, v in cfg.items()
-                if k not in ("_core_keys", "_editable_keys", "_confirm_keys")
-            }
+            cfg = config_operations.strip_editor_metadata(cfg)
         request["config"] = cfg
     if version is not None:
         request["version"] = version
     if confirm is not None:
         request["confirm"] = confirm
+    if approval is not None:
+        request["approval"] = approval
     return request_spool.write(request)
 
 

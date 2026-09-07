@@ -247,11 +247,10 @@ the time zone (detected from the machine unless set). They are still there to ch
 
 The dashboard login is also the machine's **console login**: sit at the machine, log in as
 `root` with the dashboard password. It is set fresh at every boot and never stored on disk.
-Two more switches live only in the **Advanced** view, deliberately out of the quick form:
-`ssh.enabled` with `ssh.authorized_key` turns on key-only SSH (never passwords) for remote
-debugging. Neither can be changed from the dashboard later, and its Configuration view does not
-list them at all — anyone who could flip them from a browser session would own the machine,
-wallets and all.
+Two more switches live only in the setup page's **Advanced** view, deliberately out of the quick
+form: `ssh.enabled` with `ssh.authorized_key` turns on key-only SSH (never passwords) for remote
+debugging. The day-two Configuration view does not list them and cannot approve them remotely;
+changing SSH still requires a configuration stick.
 
 **Already know exactly what you want?** Open **Advanced** at the bottom. It shows the complete
 configuration — every key, with its default filled in — and it *is* what the machine will run:
@@ -261,12 +260,23 @@ wins. Paste a whole `config.json` in there if you have one.
 ### Press "Validate, then install"
 
 The machine checks your answers first — including dialing any remote node you named, so a
-wrong host fails here with the reason and your answers kept, not after the disk is gone. Only
-when everything passes does it show you, on this page, the things you must save:
+wrong host fails here with the reason and your answers kept, not after the disk is gone. The
+page lists every endpoint it tried and the address it used: a Monero node is checked twice, on
+its RPC port and its ZMQ port, and each of those is answered by a live check of the protocol
+itself. A Tari node's gRPC port is only dialed, so a pass there says the port accepted a
+connection and nothing about what is listening behind it — there is no Tari client on the
+machine to ask. Only when everything passes does it show you, on this page, the things you
+must save:
 
 - the **dashboard login** (generated, or the one you chose)
 - the **dashboard address** (`https://pithead.local`)
 - where to **point your miners** (`stratum+tcp://pithead.local:3333`)
+
+A remote node's address is not a one-time answer. If the node you point at goes away, moves, or
+you want to try another one, the dashboard's Configuration view changes it on a running machine:
+type `APPLY` to confirm, and the machine dials the new endpoint and refuses it if nothing answers
+there ([#1888](https://github.com/p2pool-starter-stack/pithead/issues/1888)). The node's RPC
+username and password are the exception and stay fixed at setup.
 
 **Copy the login somewhere safe, then press "I saved these — erase the disk and install."**
 Nothing touches the disk until that press. The install takes a few minutes, and when it
@@ -382,12 +392,11 @@ Every start shows a short menu for five seconds, then boots by itself. You never
 touch it: the machine keeps two copies of the system and boots the last one that worked,
 so an update that fails to come up is undone on the next start without you.
 
-- **Pithead OS - slot A** and **slot B** are those two copies. The one selected when the
-  menu appears is the one the machine chose; the other holds the previous version after an
-  update. Pick it only if support asks you to.
-- **Pithead OS - slot A (fallback)** is what boots when neither copy is marked good: the
-  same system as slot A, offered so a machine with nobody at it boots something rather
-  than waiting at a prompt.
+- The first entry names the Pithead version the machine chose, its slot, and **current**.
+  The other populated slot names its version and says **previous**. Two slots may hold the
+  same version; **slot A** and **slot B** still tell them apart.
+- A slot the installer verified as unused says **empty**. An older installation with no saved
+  version says **Pithead version unknown** until that slot boots and repairs its label.
 - **Set up again** opens the setup page, keeping everything the machine already has. Use it
   when a machine's answers need changing and there is no other way in. A RigForge rig has no
   dashboard and no login, so this entry is its only way back to the setup page from the
@@ -431,7 +440,7 @@ another computer instead:
 
 The machine holds state a resync cannot rebuild: your wallet settings, the Tor onion
 keys that give it its address, and the dashboard's history. There is no filesystem to
-copy from a shell-less box, so the dashboard's **Configuration → Backup** card exports it
+copy from a shell-less box, so the dashboard's **Backup** view exports it
 for you as one encrypted file.
 
 Click **Back up now** and the machine stops the stack, archives `config.json`, `.env`,
@@ -492,7 +501,7 @@ factory reset you asked for never shows this notice.
 Fresh flash, restore, done — if the machine is gone (dead disk, stolen, dropped), a backup
 taken beforehand provisions a replacement in one page, with nothing retyped.
 
-**Take a backup before you need it.** The dashboard's **Configuration → Backup** card is
+**Take a backup before you need it.** The dashboard's **Backup** view is
 the machine's own way to do that ([Backing up your data](#backing-up-your-data) above): the
 archive it downloads and the passphrase from its kit are exactly what restore asks for. The
 console works too — log in as `root` with the dashboard password and run:

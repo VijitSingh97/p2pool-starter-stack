@@ -159,12 +159,18 @@ a plain module rather than a helper inside the test file.
 # `False` at two sites through neither of the gate's doors, so this module joins `PINNED` still
 # holding 2 residue sites in 1 function — not the zero slices 9 and 10 reached. Measured at this
 # head, and printed by `TestTheResidueThePinCannotRuleOn` whether anyone writes it here or not.
+#
+# `service/telegram_commands.py:pause_for_host_approval` returns True only after the poller has
+# yielded, and False when approval is unavailable or the poller did not yield before the deadline.
+# Its sole production caller treats both False paths identically: it refuses the configuration
+# commit. A third result would add no caller-visible state, and `-> bool | None` would invent one.
 _UNJUDGED_AND_READ = frozenset(
     {
         "client/docker/docker_control.py:_post",
         "config/config.py:local_miner_enabled",
         "service/healthchecks.py:ping",
         "service/notify_sinks.py:_post",
+        "service/telegram_commands.py:pause_for_host_approval",
         "service/telegram_notifier.py:send",
         "helper/utils.py:is_ip_address",
         "service/egress.py:_sinks_all_private",

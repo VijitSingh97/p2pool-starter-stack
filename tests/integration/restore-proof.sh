@@ -119,7 +119,7 @@ u=$(grep -E '^MONERO_NODE_USERNAME=' .env 2>/dev/null | cut -d= -f2-)
 p=$(grep -E '^MONERO_NODE_PASSWORD=' .env 2>/dev/null | cut -d= -f2-)
 url=$(grep -E '^MONERO_RPC_URL=' .env 2>/dev/null | cut -d= -f2-)
 [ -n "$url" ] || url="http://127.0.0.1:18081"
-if [ -n "$u" ]; then body=$(curl -fsS --max-time 8 --digest -u "$u:$p" "$url/get_info" 2>/dev/null)
+if [ -n "$u" ]; then body=$(printf 'user = %s\n' "$(printf '%s:%s' "$u" "$p" | jq -Rs .)" | curl -fsS --max-time 8 --digest -K - "$url/get_info" 2>/dev/null)
 else body=$(curl -fsS --max-time 8 "$url/get_info" 2>/dev/null); fi
 printf '%s' "$body" | jq -e '.status=="OK"' >/dev/null 2>&1 && echo rpc-ok || echo rpc-fail
 PROBE

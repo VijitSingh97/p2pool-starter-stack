@@ -133,9 +133,9 @@ gate_target_url() { # <scheme> <host> <port>
 }
 gate_resolve_spec() { # <host> <port> -> a --resolve spec, or empty when the host needs no lookup
     case "$1" in
-    *:*) ;;                                           # IPv6 literal
-    *[!0-9.]*) printf '%s:%s:127.0.0.1' "$1" "$2" ;;  # a name
-    *) ;;                                             # IPv4 literal
+    *:*) ;;                                          # IPv6 literal
+    *[!0-9.]*) printf '%s:%s:127.0.0.1' "$1" "$2" ;; # a name
+    *) ;;                                            # IPv4 literal
     esac
 }
 
@@ -287,19 +287,19 @@ release_held_chain_services() { # cwd /data/pithead -> 0 once `up` succeeds, 1 a
 [ "${BASH_SOURCE[0]}" = "${0}" ] || return 0
 
 cd /data/pithead || exit 1
+/usr/local/sbin/pithead-boot-version record-booted ||
+    echo "pithead-boot: could not refresh the booted slot's version label" >&2
 
 # Role fork (#797): a rig is not a small coordinator, it is a different machine. No compose
 # stack, no nodes, no dashboard — and no container images worth loading, which is why this comes
-# before the loader. Its whole boot is the miner, and its slot commits on the miner running, the
-# same shape the coordinator's commit takes on the stack serving.
-#
+# before the loader. Its whole boot is the miner, and its slot commits once that miner runs,
+# matching the coordinator's commit after its stack serves.
 # The gate is deliberately pool-INDEPENDENT: a rig whose pool is unreachable still starts, still
 # retries, and must still commit. Rolling a slot back cannot fix a switch nobody plugged in, and
 # a gate that punished it would flap the A/B pair every boot the LAN was late.
-# Existence first, deliberately: `<machine-role` on a machine that has none is a REDIRECTION
-# failure, and the shell prints that itself — `2>/dev/null` on the inner command cannot suppress
-# it. Harmless (this script runs without errexit, and the coordinator path is still reached),
-# but it would put a "No such file or directory" line in the journal of every coordinator boot,
+# Existence first: `<machine-role` on a machine that has none is a REDIRECTION failure, and
+# the shell prints it itself — `2>/dev/null` on the inner command cannot suppress it.
+# Harmless, but it would put a "No such file or directory" in every coordinator boot journal,
 # which is the most common boot there is. An error nobody should read is an error nobody will.
 if [ -f machine-role ] && [ "$(tr -d '[:space:]' <machine-role)" = "rig" ]; then
     # Same bounded clock as the coordinator's miner leg, for the same reason: the boot unit runs
