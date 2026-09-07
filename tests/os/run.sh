@@ -2002,8 +2002,8 @@ phase_provision() {
         rm -f "$jar"
         return
     }
-    # Prove the RC1 dead-page path first; it reopens the retained form for the real submission.
-    provision_failed_install_recovery "$ip" "$jar" || {
+    # Prove a failed protocol preflight keeps the editable answers for a corrected submission.
+    provision_node_preflight_retention "$ip" "$jar" || {
         rm -f "$jar"
         return
     }

@@ -62,54 +62,35 @@ provision_page_error() { # <ip> <jar>
     curl -sSk -b "$2" -m 5 "https://$1/api/wizard-state" 2>/dev/null | jq -r '.error // ""' 2>/dev/null
 }
 
-failed_install_state_retained() { # <wizard-state-json> <expected-wallet>
-    printf '%s' "$1" | jq -e --arg m "$2" '
-        .stage == "failed" and (.error | contains("Tari") and contains("unreachable.invalid")) and
-        .config.monero.wallet_address == $m and .config.tari.remote.host == "unreachable.invalid"' >/dev/null
+node_preflight_state_retained() { # <submit-response-json> <wizard-state-json> <expected-wallet>
+    printf '%s' "$1" | jq -e '
+        .error == "The node name did not resolve to an address." and
+        .node_probe.ok == false and .node_probe.configured == 1 and .node_probe.probed == 1 and
+        any(.node_probe.probes[]; .target == "tari" and .reason == "dns" and .ok == false)' >/dev/null &&
+        printf '%s' "$2" | jq -e --arg m "$3" '
+            .stage == "setup" and .config.monero.wallet_address == $m and
+            .config.tari.remote.host == "unreachable.invalid"' >/dev/null
 }
 
-# Exercise the failure the RC1 browser could not recover from before submitting the real config.
-# The first attempt uses a syntactically valid but unresolvable remote node, waits for the host's
-# terminal failure, proves the page retained the safe answers, then reopens those settings. The
-# caller's normal provision_browser_submit replaces the node choice with local and continues.
-provision_failed_install_recovery() { # <ip> <authenticated-cookie-jar>
-    local ip="$1" jar="$2" state cfg code handoff="" tries=0
+# This refusal is separate from later setup failure recovery: the protocol preflight stays on the
+# form, retains safe answers, and publishes the exact failed Tari row. The caller then submits the
+# corrected local choice; a post-validation setup fault has its own leg once that product seam lands.
+provision_node_preflight_retention() { # <ip> <authenticated-cookie-jar>
+    local ip="$1" jar="$2" state cfg code raw body
     state=$(curl -fsSk -b "$jar" -m 5 "https://$ip/api/wizard-state" 2>/dev/null) || return 1
     cfg=$(printf '%s' "$state" | jq -c --arg m "$HARNESS_WALLET" --arg t "$HARNESS_TARI" '
         .config | .monero.wallet_address = $m | .tari.wallet_address = $t |
         .tari.mode = "remote" | .tari.remote.host = "unreachable.invalid" |
         .tari.remote.grpc_port = 18142 | .p2pool.pool = "mini" | .local_miner.enabled = true') || return 1
-    code=$(curl -sSk -b "$jar" --data-urlencode "config=$cfg" --data-urlencode "auth_mode=auto" \
-        "https://$ip/submit" -o /dev/null -w '%{http_code}' 2>/dev/null)
-    [ "$code" = "200" ] || return 1
-    while [ "$tries" -lt 24 ]; do
-        handoff=$(curl -sSk -b "$jar" -m 5 "https://$ip/api/handoff" 2>/dev/null)
-        printf '%s' "$handoff" | jq -e '.password' >/dev/null 2>&1 && break
-        sleep 5
-        tries=$((tries + 1))
-    done
-    [ "$tries" -lt 24 ] || return 1
-    curl -fsSk -b "$jar" -X POST "https://$ip/handoff-ack" -o /dev/null 2>/dev/null || return 1
-    tries=0
-    while [ "$tries" -lt 48 ]; do
-        state=$(curl -sSk -b "$jar" -m 5 "https://$ip/api/wizard-state" 2>/dev/null)
-        [ "$(printf '%s' "$state" | jq -r '.stage // ""' 2>/dev/null)" = "failed" ] && break
-        sleep 5
-        tries=$((tries + 1))
-    done
-    if failed_install_state_retained "$state" "$HARNESS_WALLET"; then
-        ok "failed setup returns a named error and retains the payout + node answers"
-    else
-        bad "failed setup did not return a recoverable retained form (state: $(printf '%s' "$state" | jq -c '{stage,error}' 2>/dev/null))"
-        return 1
-    fi
-    code=$(curl -sSk -b "$jar" -X POST "https://$ip/retry" -o /dev/null -w '%{http_code}' 2>/dev/null)
+    raw=$(curl -sSk -b "$jar" -m 20 --data-urlencode "config=$cfg" --data-urlencode "auth_mode=auto" \
+        "https://$ip/submit" -w '\n%{http_code}' 2>/dev/null)
+    code=${raw##*$'\n'}
+    body=${raw%$'\n'*}
     state=$(curl -sSk -b "$jar" -m 5 "https://$ip/api/wizard-state" 2>/dev/null)
-    if [ "$code" = "200" ] && printf '%s' "$state" | jq -e --arg m "$HARNESS_WALLET" '
-        .stage == "setup" and .error == null and .config.monero.wallet_address == $m' >/dev/null; then
-        ok "Back to the settings reopens the retained form for a corrected retry"
+    if [ "$code" = "400" ] && node_preflight_state_retained "$body" "$state" "$HARNESS_WALLET"; then
+        ok "remote-node preflight refuses the unreachable Tari consumer and retains safe answers"
     else
-        bad "failed setup could not reopen its retained settings (HTTP ${code:-none})"
+        bad "remote-node preflight did not return the named Tari refusal with retained values (HTTP ${code:-none})"
         return 1
     fi
 }
@@ -263,12 +244,13 @@ phase_provision_control_regressions() { # <dashboard-user> <dashboard-password>
 }
 
 _recovery_self_test() {
-    local good='{"stage":"failed","error":"cannot reach the remote Tari node at unreachable.invalid:18142","config":{"monero":{"wallet_address":"wallet"},"tari":{"remote":{"host":"unreachable.invalid"}}}}'
-    failed_install_state_retained "$good" wallet || return 1
-    ! failed_install_state_retained "${good/\"failed\"/\"installing\"}" wallet || return 1
-    ! failed_install_state_retained "${good/\"wallet\"/\"lost\"}" wallet || return 1
-    ! failed_install_state_retained "${good/cannot reach the remote Tari node at unreachable.invalid:18142/unrelated failure}" wallet || return 1
-    echo "provision-browser-submit self-test: recovery verdict and failure controls passed"
+    local response='{"error":"The node name did not resolve to an address.","node_probe":{"ok":false,"configured":1,"probed":1,"probes":[{"target":"tari","reason":"dns","ok":false}]}}'
+    local state='{"stage":"setup","config":{"monero":{"wallet_address":"wallet"},"tari":{"remote":{"host":"unreachable.invalid"}}}}'
+    node_preflight_state_retained "$response" "$state" wallet || return 1
+    ! node_preflight_state_retained "${response/\"dns\"/\"protocol\"}" "$state" wallet || return 1
+    ! node_preflight_state_retained "$response" "${state/\"setup\"/\"failed\"}" wallet || return 1
+    ! node_preflight_state_retained "$response" "${state/\"wallet\"/\"lost\"}" wallet || return 1
+    echo "provision-browser-submit self-test: preflight retention and failure controls passed"
 }
 
 # --- self-test (#1936) -----------------------------------------------------------------------

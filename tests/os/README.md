@@ -54,8 +54,9 @@ runbook in [`docs/dev/release-server.md`](../../docs/dev/release-server.md).
 - **provision** — submit a config through the wizard's real HTTP flow and require the STACK to
   come up: wizard accepted, setup ran, images pulled and verified, containers running, dashboard
   served, Tor-only egress actually enforced, built-in miner up. Before the successful attempt, an
-  unreachable remote node must produce a recoverable failed page whose retained values can be
-  corrected. After provisioning, the dashboard drives a benign apply, a typed approval and its
+  unreachable remote node must be refused by preflight with its safe form values retained; a
+  separate injected post-validation setup fault must open a recoverable failed page and retry
+  with those values. After provisioning, the dashboard drives a benign apply, a typed approval and its
   missing-token refusal, doctor, log tail, and an encrypted backup; the stack and dashboard must
   answer again after the backup. Then the stack must return from a reboot with no
   hands on it, and the real commit gate — `pithead doctor --json` — must pass on that healthy
