@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import time
-import uuid
 
 import requests
 
@@ -28,6 +27,11 @@ from mining_dashboard.helper.utils import (
     format_xtm,
 )
 from mining_dashboard.service import control_service
+from mining_dashboard.service.config_approval import (
+    ConfigApprovalGate,
+    ControlGate,
+    config_prompt_payload,
+)
 from mining_dashboard.service.earnings import (
     MICRO_PER_XTM,
     confirmed_payouts_summary,
@@ -565,69 +569,6 @@ def format_daily_summary(metrics, data, host_label="", now=None, incidents=None)
     return "\n".join(lines)
 
 
-class ControlGate:
-    """Per-action confirmation with deny-on-timeout for the Telegram control commands (#338).
-
-    Fail-closed transaction-signing: a control action runs ONLY when a confirm callback for its exact
-    one-time token arrives, from the same operator that issued it, within ``timeout_s``. No confirm,
-    a stale/unknown token, a foreign user, or a lapsed deadline all DENY — nothing is ever queued for
-    later. ``open`` also rate-limits how many prompts each operator can be issued per rolling hour, so
-    a runaway or confused command source can't fatigue an operator into tapping approve.
-
-    The rate limit is **per operator** (#470): one shared budget let a single allow-listed id (or one
-    compromised-but-allow-listed session) exhaust it and lock the *other* operators out for up to an
-    hour. This gate is a UX / anti-fatigue guard among already-trusted operators — it is NOT the
-    security boundary. A compromised dashboard bypasses every Python-side check here and can drop an
-    intent straight into the #33 host-control spool; the load-bearing control is host-side, where the
-    root runner accepts only the fixed verbs ``restart``/``apply`` and re-validates before acting.
-
-    Pure and clock-injected (``now`` is a monotonic timestamp the caller passes), so the whole
-    state machine is unit-testable without sleeping.
-    """
-
-    def __init__(self, timeout_s, max_prompts_per_hour=10):
-        self._timeout = timeout_s
-        self._max = max_prompts_per_hour
-        # token -> (verb, owner_id, deadline)
-        self._pending = {}
-        # owner_id -> monotonic timestamps of that operator's recently-issued prompts, for a
-        # per-operator rolling-hour rate limit (#470). Bounded by the control allow-list, since the
-        # caller only reaches open() for an allow-listed id.
-        self._prompts = {}
-
-    def open(self, verb, user_id, now):
-        """Register a pending confirmation and return its token, or ``None`` when this operator is
-        rate-limited. The budget is per operator, so one id exhausting it never blocks another."""
-        self._sweep(now)
-        owner = str(user_id)
-        recent = [t for t in self._prompts.get(owner, []) if t > now - 3600]
-        if len(recent) >= self._max:
-            self._prompts[owner] = recent  # keep the pruned window; still denied
-            return None
-        token = uuid.uuid4().hex
-        self._pending[token] = (verb, owner, now + self._timeout)
-        recent.append(now)
-        self._prompts[owner] = recent
-        return token
-
-    def confirm(self, token, user_id, now):
-        """Return the verb if ``token`` is pending, unexpired, and confirmed by the same operator;
-        otherwise ``None`` (denied). One-shot: the token is consumed whether it succeeds or fails, so
-        a confirm can never be replayed."""
-        self._sweep(now)
-        rec = self._pending.pop(token, None)
-        if rec is None:
-            return None
-        verb, owner, deadline = rec
-        if str(user_id) != owner or now >= deadline:
-            return None
-        return verb
-
-    def _sweep(self, now):
-        """Drop lapsed pendings — deny-on-timeout is structural: an expired token is simply gone."""
-        self._pending = {t: r for t, r in self._pending.items() if r[2] > now}
-
-
 class TelegramCommandBot:
     """
     On-demand Telegram command interface (Issue #45) — the interactive half of the operator bot.
@@ -701,7 +642,24 @@ class TelegramCommandBot:
         if control_enabled is None:
             control_enabled = bool(TELEGRAM_CONTROL_ENABLED and DASHBOARD_CONTROL_ENABLED)
         self.control_enabled = bool(self.enabled and control_enabled and self.allowed_ids)
+        # Config approval uses the physical-presence Telegram identity list without enabling the
+        # unrelated /restart and /apply verbs (or it could never approve that toggle while off).
+        self.config_approval_enabled = bool(self.enabled and self.allowed_ids)
         self._gate = ControlGate(confirm_timeout)
+        self._config_gate = ConfigApprovalGate(confirm_timeout)
+
+    def request_config_approval(self, preview_id, actor, payout_suffixes, preview_values):
+        """Ask the allow-listed Telegram identity to approve one concrete staged preview."""
+        if not self.config_approval_enabled:
+            return False
+        accepted, token = self._config_gate.request(preview_id, actor, payout_suffixes)
+        if accepted and token:
+            self._send_config_confirm(token, actor, preview_values)
+        return accepted
+
+    def take_config_approval(self, preview_id, actor, payout_suffixes):
+        """Consume a Telegram-approved envelope once; mismatched browser retries fail closed."""
+        return self._config_gate.take(preview_id, actor, payout_suffixes)
 
     def _payout_summary(self, chain):
         """Confirmed-payout roll-up for ``chain`` (#787), or ``None`` when that chain's view-only
@@ -827,9 +785,11 @@ class TelegramCommandBot:
 
     def _get_updates(self, poll_timeout):
         """Blocking ``getUpdates`` over Tor. Called via ``to_thread`` from the loop."""
-        # Ask Telegram for callback_query updates too when control commands are on — that is how a
-        # tapped inline confirm button arrives (#338); the read-only bot stays messages-only.
-        allowed = '["message","callback_query"]' if self.control_enabled else '["message"]'
+        allowed = (
+            '["message","callback_query"]'
+            if self.control_enabled or self.config_approval_enabled
+            else '["message"]'
+        )
         params = {"timeout": poll_timeout, "allowed_updates": allowed, "limit": GETUPDATES_LIMIT}
         if self._offset is not None:
             params["offset"] = self._offset
@@ -915,7 +875,35 @@ class TelegramCommandBot:
         if cb_id:
             await asyncio.to_thread(self._answer_callback, cb_id)
         # Same outer chat boundary as messages, then the control gate does the per-operator check.
-        if str(chat.get("id")) != self.chat_id or not self.control_enabled:
+        if str(chat.get("id")) != self.chat_id:
+            return
+        if data.startswith("approve-config:"):
+            uid = str((callback.get("from") or {}).get("id", ""))
+            token = data[len("approve-config:") :]
+            rec = self._config_gate.confirm(token, uid, self.allowed_ids)
+            if rec is None:
+                logger.warning(
+                    "Configuration approval denied (stale/foreign token) for user id %s.",
+                    uid or "?",
+                )
+                await asyncio.to_thread(
+                    self._send,
+                    f"{_prefix(self.host_label)}⛔ Configuration change not approved in time "
+                    "(or not authorised) — denied.",
+                )
+                return
+            logger.info(
+                "Configuration preview %s approved by Telegram operator %s for dashboard actor %s.",
+                rec["preview_id"],
+                uid,
+                rec["actor"],
+            )
+            await asyncio.to_thread(
+                self._send,
+                f"{_prefix(self.host_label)}✅ Configuration change approved for {rec['actor']}.",
+            )
+            return
+        if not self.control_enabled:
             return
         if not data.startswith("confirm:"):
             return
@@ -990,6 +978,18 @@ class TelegramCommandBot:
             resp.raise_for_status()
         except Exception as exc:
             logger.debug("Telegram confirm prompt failed (%s)", type(exc).__name__)
+
+    def _send_config_confirm(self, token, actor, preview_values):
+        """Send the concrete host-produced, non-secret preview to the approval identity."""
+        url = f"{self._api_base}/bot{self._token}/sendMessage"
+        payload = config_prompt_payload(
+            self.chat_id, _prefix(self.host_label), token, actor, preview_values
+        )
+        try:
+            resp = requests.post(url, json=payload, timeout=10, proxies=self._proxies)
+            resp.raise_for_status()
+        except Exception as exc:
+            logger.debug("Telegram configuration approval prompt failed (%s)", type(exc).__name__)
 
     def _answer_callback(self, callback_id):
         """Acknowledge a callback query so the operator's client stops showing a spinner. Best-effort:

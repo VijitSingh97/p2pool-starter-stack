@@ -156,6 +156,9 @@ class TestSubmit:
                 "_core_keys": ["a"],
                 "_editable_keys": ["b"],
                 "_confirm_keys": ["c"],
+                "_approval_keys": ["d"],
+                "_default_keys": ["e"],
+                "_last_apply": {"status": "failed"},
             },
             actor="admin",
         )
@@ -172,6 +175,19 @@ class TestSubmit:
         rid2 = control_service.submit("commit", actor="admin", intent_id=str(uuid.uuid4()))
         req2 = json.loads((spool / "requests" / f"{rid2}.json").read_text())
         assert "confirm" not in req2
+
+    def test_commit_carries_the_server_built_approval_envelope(self, spool):
+        intent = str(uuid.uuid4())
+        approval = {
+            "preview_id": intent,
+            "actor": "admin",
+            "payout_suffixes": {"monero": "12345678"},
+        }
+        rid = control_service.submit(
+            "commit", actor="admin", intent_id=intent, confirm="APPLY", approval=approval
+        )
+        req = json.loads((spool / "requests" / f"{rid}.json").read_text())
+        assert req["approval"] == approval
 
     def test_non_dict_config_passes_through_for_the_host_to_reject(self, spool):
         # Malformed client payloads keep their host-side rejection ("config must be a JSON
@@ -240,6 +256,8 @@ class TestReferenceMerge:
         # ...and the _docs blob never leaks into the served form.
         assert "human notes" not in json.dumps(cfg)
         assert "_docs" not in cfg
+        assert "monero.new_key" in cfg["_default_keys"]
+        assert "brand_new_section.knob" in cfg["_default_keys"]
 
     def test_missing_reference_degrades_to_host_config(self, spool, monkeypatch):
         monkeypatch.setattr(
@@ -287,11 +305,7 @@ class TestCoreKeys:
 
 
 class TestEditableKeys:
-    """read_config's ``_editable_keys`` field (#613): the config paths the control gate will
-    actually commit, derived from EDITABLE_ENV_KEY_PATHS (mirroring pithead's
-    CONTROL_DASHBOARD_EDITABLE_KEYS) plus the dashboard.energy special-case (#504). Surfaced the
-    same underscore-metadata way ``_core_keys`` is, so the Configuration view can grey out
-    everything else up front instead of edit-then-reject."""
+    """Policy metadata lets the Configuration view disable paths the host would refuse (#613)."""
 
     def test_editable_keys_served_on_read_config(self, spool):
         cfg = control_service.read_config()
@@ -307,9 +321,6 @@ class TestEditableKeys:
         assert "proxy.donate_level" not in cfg["_confirm_keys"]
         assert "monero.payout_scan_height" not in cfg["_confirm_keys"]
         assert "tari.payout_scan_birthday" not in cfg["_confirm_keys"]
-        # telegram.control.confirm_timeout stays OUT: telegram.control.* is the approval
-        # channel's own trust anchor (never-approve as a block), and the timeout is unbounded
-        # at validation — a compromised container could stretch the confirm window for days.
         assert "telegram.control.confirm_timeout" not in cfg["_editable_keys"]
         assert cfg["_editable_keys"] == sorted(cfg["_editable_keys"])  # stable, deterministic order
 
@@ -321,26 +332,14 @@ class TestEditableKeys:
         assert "dashboard.energy.currency" in cfg["_editable_keys"]
         assert "dashboard.energy.xmr_price" in cfg["_editable_keys"]
 
-    def test_host_only_security_fields_are_not_editable(self, spool):
-        # Wallets, auth, remote-node RPC creds, and worker descriptors are exactly the class of
-        # field #613 exists to grey out — never on the list.
-        cfg = control_service.read_config()
-        for path in (
-            "monero.wallet_address",
-            "monero.view_key",
-            "dashboard.auth.password",
-            "monero.node_password",
-            "workers.api_token",
-            "workers.list",
-        ):
-            assert path not in cfg["_editable_keys"], path
-
-    def test_telegram_tamper_evidence_alarms_stay_host_only(self, spool):
+    def test_telegram_tamper_evidence_alarms_stay_physical_presence_only(self, spool):
         # wallet_changed / clearnet_exposed are the alarms a compromised container must not be
         # able to silence from the very channel it would use to do it.
         cfg = control_service.read_config()
         assert "telegram.events.wallet_changed" not in cfg["_editable_keys"]
+        assert "telegram.events.wallet_changed" not in cfg["_approval_keys"]
         assert "telegram.events.clearnet_exposed" not in cfg["_editable_keys"]
+        assert "telegram.events.clearnet_exposed" not in cfg["_approval_keys"]
         assert "telegram.events.node_down" in cfg["_editable_keys"]  # a normal event IS editable
 
 

@@ -128,12 +128,13 @@ firstboot_wizard() {
         fi
         if [ -f "$PWD/config.json" ] && ! setup_again_mode; then
             log "config.json already present (pre-seeded) — skipping the wizard and running setup."
-            # A pre-seeded config that names no password gets one too: skipping the wizard must
-            # not mean skipping the login.
+            # A pre-seeded config that names no password still gets a login.
             ensure_appliance_dashboard_password || true
             apply_appliance_defaults || true
             record_machine_role "$(machine_role_from_config "$PWD/config.json")"
             setup
+            control_consume_provisioning_marker "$PRESEED_DIR/pithead-setup-wizard" ||
+                warn "Provisioning succeeded, but its setup-wizard history marker could not be recorded; it was kept for retry."
             return
         fi
     fi
@@ -434,10 +435,7 @@ firstboot_wizard() {
                         continue
                     fi
                     wizard_install_begin "$spool"
-                    # Stage the ACCEPTED config (password already baked) onto the running ESP —
-                    # the installer carries pre-seed files to the target's ESP, and the first
-                    # boot from disk provisions itself headlessly from it. The credentials the
-                    # operator just saved are exactly the ones that machine will serve.
+                    # Stage the accepted config onto the ESP; the installer carries it to the target.
                     # A fleet stick's own pre-seed is set aside first and restored after: the
                     # accepted config carries THIS machine's generated password, and leaving it
                     # on the stick would hand every later machine the first one's secrets.
@@ -460,11 +458,12 @@ firstboot_wizard() {
                     else
                         install -m 600 "$PWD/config.json" /boot/efi/pithead-config.json || staged_ok=0
                     fi
+                    install -m 600 /dev/null /boot/efi/pithead-setup-wizard || staged_ok=0
                     if [ "$staged_ok" -ne 1 ]; then
                         rm -f "$spool/installing" "$spool/handoff.json" "$spool/handoff-ack" "$spool/install-request"
                         printf 'Could not stage the configuration for the installed system — nothing was installed.' >"$spool/error.txt"
                         chown 1000:1000 "$spool/error.txt" 2>/dev/null || true
-                        rm -f "$PWD/config.json" /boot/efi/pithead-restore.enc /boot/efi/pithead-restore-pass
+                        rm -f "$PWD/config.json" /boot/efi/pithead-restore.enc /boot/efi/pithead-restore-pass /boot/efi/pithead-setup-wizard
                         rm -rf "$carry"
                         mutation_lock_release
                         continue
@@ -485,7 +484,7 @@ firstboot_wizard() {
                     # The carried restore never rides on either: the passphrase beside the
                     # archive makes the pair plaintext-equivalent, and the target has its own
                     # copy now.
-                    rm -f /boot/efi/pithead-restore.enc /boot/efi/pithead-restore-pass
+                    rm -f /boot/efi/pithead-restore.enc /boot/efi/pithead-restore-pass /boot/efi/pithead-setup-wizard
                     rm -rf "$carry"
                     if [ "$irc" -ne 0 ]; then
                         rm -f /boot/efi/pithead-config.json "$spool/installing" "$spool/handoff.json" "$spool/handoff-ack"
@@ -496,8 +495,7 @@ firstboot_wizard() {
                     wizard_install_finish "$engine" "Installation complete — switching off now." "It will provision itself with the configuration you just confirmed."
                     return
                 fi
-                # Installed machine, config accepted: record what it IS. The installer path
-                # above never reaches here — its role lands on the TARGET, at its first boot.
+                # Installed machine: its accepted role lands here, not on the installer path.
                 record_machine_role "$(machine_role_from_config "$PWD/config.json")"
                 sleep 2
                 "$engine" rm -f pithead-wizard >/dev/null 2>&1 || true
@@ -518,6 +516,8 @@ firstboot_wizard() {
                 # away before it can be read.
                 { (setup) 2>&1 | tee "$setup_log"; } || setup_rc=$?
                 if [ "$setup_rc" -eq 0 ]; then
+                    control_audit_provisioned "$PWD/data/control" ||
+                        warn "Provisioning succeeded, but its setup-wizard history event could not be recorded."
                     rm -f "$setup_log"
                     return
                 fi

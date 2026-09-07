@@ -33,9 +33,10 @@
 # Both checks re-derive the changed keys from the staged config via the SAME dry-run path a preview
 # runs — nothing is trusted from the container's request or its (host-written but container-visible)
 # result file — so a forged "destructive:false" cannot slip a wallet swap or an auth-disable
-# through. Out-of-band approval with deny-on-timeout is #338 (Telegram approve/deny) — it drops in
-# here, replacing the refusal with a real second factor. Until then, these edits must be made from
-# the host CLI. Echoes a reason on stdout when it refuses.
+# through. Sensitive changes now carry an approval envelope bound to the staged preview and the
+# authenticated dashboard actor; payout destinations additionally require the operator to type the
+# final characters of the exact new address. The media-only set below remains outside that policy:
+# no browser approval makes one of those changes committable. Echoes a reason on refusal.
 
 # The env keys committable from the dashboard: operational tuning only, and only keys whose value
 # is derived from a validated enum, boolean, or number — never a free-form string that reaches a
@@ -119,6 +120,12 @@ CONTROL_DASHBOARD_CONFIRM_KEYS='MONERO_DATA_DIR TARI_DATA_DIR P2POOL_DATA_DIR DA
 # CONTROL_DASHBOARD_CONFIRM_KEYS above — a key here but not there is unreachable; a node key there
 # but not here would be committable with NO reachability probe, which is the failure that matters.
 CONTROL_NODE_ENDPOINT_KEYS='MONERO_NODE_HOST MONERO_RPC_PORT MONERO_ZMQ_PORT TARI_GRPC_ADDRESS'
+
+# Physical-presence-only configuration, matching pithead-media-config's never-approve boundary:
+# SSH, the approval channel's own identity, dashboard password, and the two tamper alarms. Exact
+# dotted paths/prefixes, space separated. This is checked against config paths before any approval.
+CONTROL_DASHBOARD_NEVER_PATHS='ssh dashboard.auth.password telegram.control.allowed_ids
+    telegram.events.wallet_changed telegram.events.clearnet_exposed'
 
 # True if $1 is EXACTLY a canonical dotted-decimal IPv4 literal — four decimal octets 0-255, none
 # with a leading zero (a bare "0" is fine; "010"/"0177" are not). curl/glibc's numeric-address

@@ -46,12 +46,12 @@ test("isSecretSentinel: only the exact sentinel shape", () => {
 
 test("buildSections: LOGICAL sections (#611), not one per top-level config key; _docs skipped, nesting flattened", () => {
   const sections = buildSections(CFG);
-  // monero.wallet_address -> Wallets & payout; monero.mode/prune/node_password/remote.* -> Monero
-  // node; p2pool.pool/stratum_password -> Mining; dashboard.auth.* -> Dashboard & access;
+  // p2pool fields -> Mining; monero.wallet_address -> Payouts; node fields -> Monero node;
+  // dashboard.auth.* -> Dashboard & access;
   // workers.list is an array (skipped, #172) so it never pulls "Workers" into the list.
   assert.deepEqual(
     sections.map((s) => s.name),
-    ["Wallets & payout", "Monero node", "Mining", "Dashboard & access"],
+    ["Mining", "Payouts", "Monero node", "Dashboard & access"],
   );
   const moneroNode = sections.find((s) => s.name === "Monero node");
   const keys = moneroNode.fields.map((f) => f.key);
@@ -75,7 +75,7 @@ test("buildSections: a config path split from its top-level key's other fields l
 });
 
 test("classifyGroup: distinct monero.* leaves resolve to their own group, not a shared bare prefix", () => {
-  assert.equal(classifyGroup("monero.data_dir"), "System / advanced");
+  assert.equal(classifyGroup("monero.data_dir"), "Advanced");
   assert.equal(classifyGroup("monero.mode"), "Monero node");
 });
 
@@ -107,8 +107,8 @@ test("classifyGroup: no tari.* key renders under the Monero node group (#1887)",
   assert.equal(classifyGroup("tari.mode"), "Tari node");
   assert.equal(classifyGroup("tari.remote.host"), "Tari node");
   // Narrowness: a fix that swept every tari.* into the new group would fail these two.
-  assert.equal(classifyGroup("tari.data_dir"), "System / advanced");
-  assert.equal(classifyGroup("tari.wallet_address"), "Wallets & payout");
+  assert.equal(classifyGroup("tari.data_dir"), "Advanced");
+  assert.equal(classifyGroup("tari.wallet_address"), "Payouts");
 });
 
 test("LOGICAL_GROUPS: the Tari node section renders directly under Monero's (#1887)", () => {
@@ -225,7 +225,7 @@ test("regroupCore: lifts core-key fields into one pinned group, out of their (lo
   );
   // monero.wallet_address was the ONLY field "Wallets & payout" had for this fixture — lifting it
   // empties the section, so it disappears entirely (same "no empty section" rule #529 already had).
-  assert.ok(!sections.some((s) => s.name === "Wallets & payout"));
+  assert.ok(!sections.some((s) => s.name === "Payouts"));
   // monero.prune stays behind in Monero node, untouched...
   const moneroNode = sections.find((s) => s.name === "Monero node");
   assert.ok(moneroNode.fields.some((f) => f.key === "monero.prune"));
@@ -308,9 +308,8 @@ test("nestSection: an empty subgroup (no matching fields) is omitted, not render
 // --- Editable-set membership / grey-out (#613) --------------------------------------------------
 
 test("markEditable: only fields whose dotted key is in the editable set are marked editable", () => {
-  const [marked] = markEditable(buildSections(CFG), ["monero.wallet_address"]);
-  const byKey = Object.fromEntries(marked.fields.map((f) => [f.key, f.editable]));
-  assert.equal(byKey["monero.wallet_address"], true);
+  const byKey = fieldsByKey(markEditable(buildSections(CFG), ["monero.wallet_address"]));
+  assert.equal(byKey["monero.wallet_address"].editable, true);
 });
 
 test("markEditable: a missing/empty editable set fails CLOSED — every field non-editable", () => {
@@ -322,7 +321,9 @@ test("markEditable: a missing/empty editable set fails CLOSED — every field no
 
 test("markEditable: host-only fields (e.g. dashboard.auth.password, a security/secret field) stay non-editable", () => {
   const editableKeys = ["monero.wallet_address", "p2pool.pool"]; // dashboard.auth.* deliberately absent
-  const [, , , dashboardAccess] = markEditable(buildSections(CFG), editableKeys);
+  const dashboardAccess = markEditable(buildSections(CFG), editableKeys).find(
+    (s) => s.name === "Dashboard & access",
+  );
   const password = dashboardAccess.fields.find((f) => f.key === "dashboard.auth.password");
   assert.equal(password.editable, false);
 });
@@ -344,6 +345,24 @@ test("markEditable: editable wins over confirm — a key on both lists is freely
   const byKey = fieldsByKey(markEditable(buildSections(CFG), ["monero.prune"], ["monero.prune"]));
   assert.equal(byKey["monero.prune"].editable, true);
   assert.equal(byKey["monero.prune"].confirm, false); // no needless friction on a freely-editable key
+});
+
+test("markEditable: approval and default metadata are explicit on the intended field", () => {
+  const byKey = fieldsByKey(
+    markEditable(buildSections(CFG), [], [], ["monero.wallet_address"], ["monero.wallet_address"]),
+  );
+  assert.equal(byKey["monero.wallet_address"].editable, true);
+  assert.equal(byKey["monero.wallet_address"].approval, true);
+  assert.equal(byKey["monero.wallet_address"].defaulted, true);
+  assert.equal(byKey["dashboard.auth.password"].editable, false);
+});
+
+test("LOGICAL_GROUPS: every purpose group has operator guidance and no reference field falls into Other", () => {
+  assert.deepEqual(
+    LOGICAL_GROUPS.map((g) => g.name),
+    ["Mining", "Payouts", "Monero node", "Tari node", "Workers", "Dashboard & access", "Notifications", "Energy", "Alerts", "Advanced"],
+  );
+  assert.ok(LOGICAL_GROUPS.every((g) => g.description && g.description.length > 20));
 });
 
 // --- JSON mode's whole-config parse (#529) ----------------------------------------------------

@@ -166,11 +166,25 @@ const AccessCard = ({ access, filters, onFilters, pager, onPager }) => {
 
 // Outcome values a "detected" (never applied/rejected) out-of-band row never has, so it keeps its
 // own neutral styling instead of picking up the "applied" green.
-const AuditRow = (e) => html`<tr>
+export function auditActionLabel(action) {
+  if (action === "provision") return "Provisioned by setup wizard";
+  if (action === "host-edit") return "Detected host edit";
+  if (action === "commit-approved") return "Approved configuration change";
+  if (action === "commit-confirmed") return "Confirmed configuration change";
+  if (action === "commit") return "Configuration change";
+  return action;
+}
+
+export const AuditRow = (e) => html`<tr>
     <td>${e.ts}</td>
     <td>${e.actor}</td>
-    <td>${e.action}</td>
-    <td class=${e.status === "applied" ? "status-ok" : ""}>${e.status}</td>
+    <td>${auditActionLabel(e.action)}</td>
+    <td class=${e.status === "applied" ? "status-ok" : e.status === "failed" ? "status-bad" : ""}>
+        ${
+          e.status === "failed" && e.id
+            ? html`<a href=${"/api/control/result?id=" + encodeURIComponent(e.id)}>Failed — view outcome</a>`
+            : e.status
+        }</td>
     <td class="font-mono">${e.keys}</td>
 </tr>`;
 

@@ -948,10 +948,9 @@ the config tab now behave identically.) The pieces:
   `monero.mode` / `p2pool.pool` / dashboard-auth-and-host shortlist
   [`./pithead setup`](getting-started.md#3-run-setup) asks, read from the one file the wizard and
   this view share, [`config.core-keys.json`](../config.core-keys.json), so the two can't drift
-  apart. Below it, the rest of the schema is grouped into **logical sections**
-  ([#611](https://github.com/p2pool-starter-stack/pithead/issues/611)) an operator recognizes —
-  Wallets & payout, Monero node, Tari node, Mining, Workers, Dashboard & access, Notifications,
-  Energy, Alerts & thresholds, System / advanced — instead of one section per top-level `config.json`
+  apart. Below it, the rest of the schema is grouped by operator purpose — **Mining, Payouts,
+  Monero node, Tari node, Workers, Dashboard & access, Notifications, Energy, Alerts, Advanced** —
+  in the same order as [`config.reference.json`](../config.reference.json), instead of one section per top-level `config.json`
   key, so a grab-bag key like `dashboard` (auth, remote access, the energy calculator, alert
   thresholds, …) splits across the sections its fields actually belong to. Each section is a
   collapsed `<details>` as before; within **Notifications**, the 27 `telegram.events` toggles, the
@@ -960,35 +959,32 @@ the config tab now behave identically.) The pieces:
   section's field list. Rows in a section whose fields span more than one top-level key carry their
   full dotted path (`monero.view_key`, `tari.view_key`) so two leaves with the same name read as two
   different keys; a single-key section keeps the shorter relative label — its heading names the rest.
-  A config path no logical section claims still renders, in a catch-all
-  **Other** group — a new schema key can't silently vanish from the editor, and a frontend test
-  fails loudly if one ever would. A hidden key is the one exception: `ssh.*` (below) is dropped
+  Every group carries a one-line explanation. A frontend test requires every reference path to
+  have an intentional named group, so a new key cannot silently vanish or drift into an **Other**
+  bucket. A hidden key is the one exception: `ssh.*` (below) is dropped
   before the grouping runs, so it reaches neither a section nor **Other**. `workers.list[]` (the per-rig descriptors) isn't a form field
-  here — a variable-length list has no single form control for it, and the host gate refuses a
-  change to it in either edit mode, since it carries each rig's host and token. Edit it in
-  `config.json` and run `./pithead apply`. [Worker Inspect](#worker-inspect) is a different thing:
+  here — a variable-length list has no single form control for it; edit the complete list in the
+  Advanced JSON pane. Changes to existing rig hosts and tokens require approval.
+  [Worker Inspect](#worker-inspect) is a different thing:
   it retunes the *rig's own* settings (pools, donation, autotune, watchdog, temperature cap)
   through that rig's control API, never the stack's descriptor list.
 
-  A field the control gate wouldn't actually commit renders **greyed out**
-  ([#613](https://github.com/p2pool-starter-stack/pithead/issues/613)): disabled, its value shown
-  read-only, with a tooltip ("Host-only — edit `config.json` and run `./pithead apply`") instead of
-  letting you edit it and finding out only at Save. A smaller set of operationally-disruptive
+  Ordinary fields are editable directly. A smaller set of operationally-disruptive
   fields — the four service data directories, the stratum port, the clearnet initial-sync toggles,
   enabling Monero pruning, the Monero outbound-peer count, and the remote Monero and Tari node
   endpoints — render **editable but confirm-gated**
   ([#719](https://github.com/p2pool-starter-stack/pithead/issues/719)): editable, tooltipped
-  "you'll type `APPLY` to confirm at Save". Both sets are derived from the same allowlists the gate
-  enforces (see below) and surfaced on `GET /api/config` as `_editable_keys` and `_confirm_keys`,
-  so neither can drift from what the gate actually accepts; a greyed field never enters the staged
-  edit set at all.
+  "you'll type `APPLY` to confirm at Save". Sensitive fields require the signed-in dashboard user
+  plus approval by an allow-listed Telegram user. All three sets come from the host policy and are surfaced on `GET /api/config`
+  as `_editable_keys`, `_confirm_keys`, and `_approval_keys`, so the form cannot silently choose a
+  weaker policy than the commit path.
 - **The Advanced pane** is the whole editable candidate as one text block, for operators who'd rather
   paste than click through fields. A **Load from file** control (`FileReader`, no upload) fills
   it from a saved `config.json`, the same pattern [Worker Inspect's JSON mode](#worker-inspect)
   uses. A malformed edit is flagged inline, keeps the last good candidate as what Save would
   send, and blocks Save until fixed. The pane edits the whole config as text, so grouping and
-  the host-only grey-out (both display-layer, form-only) don't constrain it — the gate still
-  validates and gates it identically. The hidden keys below are the exception: they are not in
+  the form grouping does not constrain it — the machine still validates it under the same free,
+  confirm, approval, and never-approve classes. The hidden keys below are the exception: they are not in
   the text, and typing one in does not put it there.
 - **`ssh.*` is not in this view at all**
   ([#1850](https://github.com/p2pool-starter-stack/pithead/issues/1850)). SSH on the appliance is a
@@ -1013,35 +1009,42 @@ The flow mirrors the CLI's `apply`:
 2. **Save & preview changes** stages the edited config on the host, which dry-runs it and returns
    the same change preview `./pithead apply` prints — one row per changed setting, disruptive rows
    (⚠) styled as warnings. A config that fails validation is rejected here with pithead's own
-   error message; nothing is applied.
-3. Confirm. If the preview flags any change disruptive (⚠), you must type `APPLY` first. The
+   error message; nothing is applied. Sensitive changes also show the complete old and new
+   non-secret payout or endpoint value; secret values remain masked.
+3. Confirm. If the preview flags any change disruptive (⚠), you must type `APPLY` first. A payout
+   change also requires the final eight characters of the new address. The
    commit runs `pithead apply -y` on the host and recreates only the containers whose config
    changed. Your typed confirmation rides to the host gate, which requires it before a
    confirm-gated change proceeds — a change confirmed this way is recorded in the audit log as a
-   `commit-confirmed` action, distinct from an ordinary commit.
+   `commit-confirmed` action, distinct from an ordinary commit. An approval-required commit is
+   bound to that preview id, dashboard user, and Telegram approver, and is recorded as
+   `commit-approved`.
 
-Most settings cannot be committed from the dashboard — the host-side runner holds an explicit
-allowlist of operational settings (pool tier, XvB enable and donation level, alert toggles,
-memory limits, time zone, the energy-calculator prices, …) and default-denies a change, in any
-direction, to anything else. A second, confirm-gated allowlist
+Every reference setting belongs to an explicit policy class. The ordinary allowlist covers routine
+operations. A second, confirm-gated allowlist
 ([#719](https://github.com/p2pool-starter-stack/pithead/issues/719)) adds the
 operationally-disruptive-but-recoverable settings — a data-directory move (re-sync), a stratum-port
 change (rigs repoint), a clearnet initial-sync enable (host IP exposed during IBD, auto-reverts),
 enabling Monero pruning, the Monero outbound-peer count (bounded, but the biggest
 steady-state knob on the shared Tor daemon's load), and the remote Monero and Tari **node
 endpoints** ([#1888](https://github.com/p2pool-starter-stack/pithead/issues/1888)) — which commit
-only behind the typed `APPLY`. Type-to-confirm here is
-friction, not a security control: a compromised dashboard that can set a field can also fill the
-confirm box, so the boundary stays where a breach would happen. Form mode's grey-out and
-confirm-gating (above) are those SAME allowlists surfaced to the browser up front, not a separate
-approximation of them — so what renders editable is exactly what the gate will commit. The
-allowlists gate BOTH edit modes identically regardless — JSON mode is a different way to assemble
-the candidate config, not a different validation path, so it can't smuggle a change the form
-couldn't make. The **security perimeter stays host-only** in every direction: wallets and view
-keys, the dashboard login and onion settings, the control channel itself, the Tor egress firewall,
-the stratum password, the node RPC credentials, and the per-rig hosts and tokens. The gate
-also refuses the heavier direction of a confirm-gated key (disabling pruning forces a full re-sync,
-so it stays host-only). Apply those from the host with `./pithead apply`.
+only behind typed `APPLY`. Type-to-confirm is intent friction, not authentication. The approval
+class covers funds, traffic, control, authentication, and sensitive behavior; its envelope is bound
+to the preview id and signed-in dashboard actor, requires the existing Telegram operator identity,
+and adds the typed suffix check for payout destinations.
+The machine re-derives the changed paths and expected suffixes rather than trusting browser labels.
+Both edit modes use the same policy. Secrets are never included in preview or audit values.
+
+The existing physical-presence boundary is unchanged: `ssh.*`, the dashboard password, the approval
+identity (`telegram.control.allowed_ids`), and the two tamper alarms cannot be approved remotely.
+The machine refuses them even if a request forges an approval envelope and directs the operator to
+use a configuration stick. This prevents the configuration page from weakening the identity or
+evidence needed to approve its own later changes.
+
+Approval is available when the Telegram bot's command interface is running and `allowed_ids`
+already names an operator. `telegram.control.enabled` may still be off; config approval reuses its
+identity list without enabling `/restart` or `/apply`. If no approval identity is configured, the
+page refuses a sensitive commit instead of treating the dashboard login as its own approval.
 
 A node-endpoint change is the one confirm-gated setting with a second gate behind the typed
 `APPLY`: before the commit is accepted, the host dials the endpoint you staged and refuses one it
@@ -1052,8 +1055,8 @@ publisher behind it answers a reachability check exactly like a live node does. 
 the staged config, host-side, and only when an endpoint key actually changed, so an unrelated
 commit is never held up by a node that happens to be down. It is what makes the endpoints
 committable at all: the typed token is friction, but the probe means a dashboard cannot park a
-chain on a node that is not there. The remote node's RPC username and password did not move with
-the endpoints — those are secrets, and they stay host-only.
+chain on a node that is not there. Remote node credentials can also be changed through approval,
+but their secret values stay masked in the browser, preview, result, and audit trail.
 
 On an appliance a refusal never tells you to open a shell you do not have: where a DIY host is
 told to edit `config.json` and run `./pithead apply`, the appliance is told the setting is fixed at
@@ -1082,7 +1085,8 @@ read-only `results/` mount plus an audit line (timestamp, logged-in user, action
 the names of the changed settings) to `audit/control.log`. A dashboard-confirmed disruptive change
 records its action as `commit-confirmed`, so a confirm-gated apply reads distinctly from an
 ordinary commit in the log. The container cannot forge results,
-alter a staged config between preview and commit, or rewrite the audit log. A failed apply keeps
+alter a staged config between preview and commit, or rewrite the audit log. A failed apply replaces
+the earlier preview row with a `failed` history row linked to the same saved result/log. It keeps
 the previous config at `config.json.bak-control` and surfaces pithead's error in the view.
 On an appliance that view is worded differently
 ([#1769](https://github.com/p2pool-starter-stack/pithead/issues/1769)): the operator has no
@@ -1106,8 +1110,9 @@ Below the form, the Configuration view shows two read-only security panels
   `./pithead rotate-dashboard-onion`. The log is always on; entries appear once Caddy has handled
   a request on this version.
 - **Recent config changes.** The control channel's host-side audit trail: one row per handled
-  request — timestamp, dashboard user, preview/commit, outcome, and the *names* of the settings
-  that changed. Values are never recorded (several are secrets). Shown only when
+  request — timestamp, dashboard user, operation, outcome, and the *names* of the settings
+  that changed. Initial wizard provisioning is named as provisioning instead of a host edit, and a
+  failed apply links to its saved outcome. Values are never recorded (several are secrets). Shown only when
   `dashboard.control.enabled` is on.
 
 Each panel carries the same navigation row: range presets (**24 Hr / 1 Wk / 1 Mo / All**, the

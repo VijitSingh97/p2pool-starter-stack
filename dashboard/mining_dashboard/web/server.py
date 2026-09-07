@@ -13,6 +13,7 @@ from mining_dashboard.service import audit_service, control_service, worker_adop
 from mining_dashboard.service.metrics import build_metrics, share_reject_pct
 from mining_dashboard.service.update_checker import parse_semver
 from mining_dashboard.web import diagnostics_views, download_views
+from mining_dashboard.web.config_commit import approval_envelope
 from mining_dashboard.web.prometheus import CONTENT_TYPE as PROMETHEUS_CONTENT_TYPE
 from mining_dashboard.web.prometheus import render_prometheus
 from mining_dashboard.web.views import (
@@ -179,13 +180,18 @@ async def handle_control_commit(request):
     _require_control_header(request)
     try:
         body = await request.json()
+        actor = request.headers.get("X-Auth-User", "")
+        approval, pending = await approval_envelope(request, body, actor)
+        if pending is not None:
+            return pending
         rid = control_service.submit(
             "commit",
-            actor=request.headers.get("X-Auth-User", ""),
+            actor=actor,
             intent_id=body.get("id"),
             # #719: the operator's typed confirmation for an in-scope disruptive change. It is
             # friction, not a secret — the host gate requires it before a CONFIRM row proceeds.
             confirm=body.get("confirm"),
+            approval=approval,
         )
     except Exception:
         raise web.HTTPBadRequest(text="Body must be JSON with a valid intent 'id'.") from None
@@ -569,11 +575,12 @@ async def _cancel_bg_tasks(app):
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def create_app(state_manager, latest_data_ref):
+def create_app(state_manager, latest_data_ref, telegram_bot=None):
     """Factory to create the web app instance."""
     app = web.Application(middlewares=[security_headers_middleware])
     app["state_manager"] = state_manager
     app["latest_data"] = latest_data_ref
+    app["telegram_bot"] = telegram_bot
     # Fire-and-forget recorder tasks (worker-upgrade, #1014) — tracked so they can't be
     # garbage-collected mid-flight and so shutdown can cancel any still in progress.
     app["_bg_tasks"] = set()
