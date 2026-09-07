@@ -7518,7 +7518,8 @@ render_masked_config() { # <control-dir>
 prepare_control_dirs() {
     mkdir -p "$CONTROL_DIR/requests" "$CONTROL_DIR/staged" "$CONTROL_DIR/results" "$CONTROL_DIR/audit"
     ensure_owner "$CONTROL_DIR/requests" "$APP_UID" "$APP_GID"
-    chmod 700 "$CONTROL_DIR/requests" 2>/dev/null || sudo chmod 700 "$CONTROL_DIR/requests"
+    chmod 700 "$CONTROL_DIR" "$CONTROL_DIR/requests" 2>/dev/null ||
+        sudo chmod 700 "$CONTROL_DIR" "$CONTROL_DIR/requests"
     # Appliance only: seed the OS-update state file the dashboard reads through the results/
     # mount. Its presence is what tells the container "this is an appliance — render the OS
     # update control"; the os-* verbs and pithead-boot keep it current from then on.
@@ -12995,14 +12996,15 @@ control_run_pending() {
         fi
         req="$cdir/requests/$name"
         [ -f "$req" ] || continue
-        # The dashboard creates requests as 0600. Narrow hand-written/legacy regular files before
-        # moving them into the traversable control parent; never chmod a symlink and follow it.
-        if [ ! -L "$req" ] && ! chmod 600 "$req" 2>/dev/null; then
-            warn "Could not protect control request $name — leaving it unclaimed."
-            continue
-        fi
         claim="$cdir/.claim.$$"
         mv "$req" "$claim" 2>/dev/null || continue
+        # The dashboard cannot reach the owner-only control parent after this atomic claim. Narrow
+        # hand-written/legacy regular files there, tied to the inode we parse; never follow a link.
+        if [ ! -L "$claim" ] && ! chmod 600 "$claim" 2>/dev/null; then
+            warn "Could not protect claimed control request $name — refusing it."
+            rm -f "$claim"
+            continue
+        fi
         control_process_request "$claim" "$cdir"
         rm -f "$claim"
         n=$((n + 1))

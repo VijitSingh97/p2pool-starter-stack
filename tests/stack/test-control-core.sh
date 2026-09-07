@@ -91,6 +91,7 @@ assert_contains "control spool dir rendered to .env" "$(cat "$C/.env")" "CONTROL
     [ -d "$C/data/control/results" ] && [ -d "$C/data/control/audit" ] &&
     ok "control spool dirs created" || bad "control spool dirs created" "missing under $C/data/control"
 assert_eq "dashboard-writable requests dir is owner-only under umask 000" "$(file_mode "$C/data/control/requests")" "700"
+assert_eq "host-only control parent protects claimed requests" "$(file_mode "$C/data/control")" "700"
 assert_contains "caddy access-log dir rendered to .env (#349)" "$(cat "$C/.env")" "CADDY_LOG_DIR=$C/data/caddy-logs"
 [ -d "$C/data/caddy-logs" ] && ok "caddy access-log dir created (#349)" || bad "caddy access-log dir created (#349)" "missing"
 

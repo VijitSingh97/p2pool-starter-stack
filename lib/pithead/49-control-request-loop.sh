@@ -120,14 +120,15 @@ control_run_pending() {
         fi
         req="$cdir/requests/$name"
         [ -f "$req" ] || continue
-        # The dashboard creates requests as 0600. Narrow hand-written/legacy regular files before
-        # moving them into the traversable control parent; never chmod a symlink and follow it.
-        if [ ! -L "$req" ] && ! chmod 600 "$req" 2>/dev/null; then
-            warn "Could not protect control request $name — leaving it unclaimed."
-            continue
-        fi
         claim="$cdir/.claim.$$"
         mv "$req" "$claim" 2>/dev/null || continue
+        # The dashboard cannot reach the owner-only control parent after this atomic claim. Narrow
+        # hand-written/legacy regular files there, tied to the inode we parse; never follow a link.
+        if [ ! -L "$claim" ] && ! chmod 600 "$claim" 2>/dev/null; then
+            warn "Could not protect claimed control request $name — refusing it."
+            rm -f "$claim"
+            continue
+        fi
         control_process_request "$claim" "$cdir"
         rm -f "$claim"
         n=$((n + 1))
