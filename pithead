@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GENERATED FILE — do not edit. Built from lib/pithead/*.sh (55 slices, LC_ALL=C name order) by:
+# GENERATED FILE — do not edit. Built from lib/pithead/*.sh (56 slices, LC_ALL=C name order) by:
 #   scripts/build-pithead.sh
 # A drifted copy fails `scripts/build-pithead.sh --check` (make lint-pithead-parity).
 #
@@ -3271,14 +3271,8 @@ firstboot_wizard() {
                     install -m 600 /dev/null /boot/efi/pithead-setup-wizard || staged_ok=0
                     if [ "$staged_ok" -ne 1 ]; then
                         rm -f "$spool/installing" "$spool/handoff.json" "$spool/handoff-ack" "$spool/install-request"
-<<<<<<< HEAD
                         printf 'Could not stage the configuration for the installed system — nothing was installed.' | wizard_spool_publish "$spool" error.txt cat
-                        rm -f "$PWD/config.json" /boot/efi/pithead-restore.enc /boot/efi/pithead-restore-pass
-=======
-                        printf 'Could not stage the configuration for the installed system — nothing was installed.' >"$spool/error.txt"
-                        chown 1000:1000 "$spool/error.txt" 2>/dev/null || true
                         rm -f "$PWD/config.json" /boot/efi/pithead-restore.enc /boot/efi/pithead-restore-pass /boot/efi/pithead-setup-wizard
->>>>>>> origin/develop
                         rm -rf "$carry"
                         mutation_lock_release
                         continue
