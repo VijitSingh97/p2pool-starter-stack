@@ -67,7 +67,7 @@ export const SavedRoleScreen = ({
             )}
             <${Err}>${error}<//>
             <button type="button" class="btn-toggle active" onClick=${onKeep}>Keep it</button>
-            <button type="button" onClick=${onRestore}>Restore from a backup</button>
+            <button type="button" class="btn-toggle" onClick=${onRestore}>Restore from a backup</button>
             <button type="button" class="wizard-link" onClick=${onSetUpAgain}>Set up again</button>
             <${Note}>Setting it up again asks the same questions as a first boot, with this
             machine's answers already filled in. Its login and other secrets are never filled
