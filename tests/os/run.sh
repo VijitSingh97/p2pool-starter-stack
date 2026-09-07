@@ -61,6 +61,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 . "$SCRIPT_DIR/provision-browser-submit.sh"
 # shellcheck source=tests/os/appliance-hostname-leg.sh
 . "$SCRIPT_DIR/appliance-hostname-leg.sh"
+# shellcheck source=tests/os/appliance-diagnostics-leg.sh
+. "$SCRIPT_DIR/appliance-diagnostics-leg.sh"
 # shellcheck source=tests/os/reinstall-prefill-submit-leg.sh
 . "$SCRIPT_DIR/reinstall-prefill-submit-leg.sh"
 # shellcheck source=tests/os/setup-again-leg.sh
@@ -95,7 +97,6 @@ while [ $# -gt 0 ]; do
         ;;
     esac
 done
-
 PASS=0
 FAIL=0
 ok() {
@@ -108,7 +109,6 @@ bad() {
 }
 info() { printf '\033[1;34m==>\033[0m %s\n' "$1"; }
 have() { command -v "$1" >/dev/null 2>&1; }
-
 KEY="$HOME/.ssh/pithead-os-test"
 ip=""
 # Overwritten by every _ssh call with that call's stderr (empty on success). Not a log — just the
@@ -118,7 +118,6 @@ SSH_ERR="/tmp/pithead-os-ssh.err"
 # A fresh run must not inherit the last run's preserved console: the cleanup copy below is
 # no-clobber (the at-assertion copy is the authoritative one), so clear the slate here.
 rm -f "$SERIAL.failed"
-
 # The wallet every phase submits. It must be checksum-VALID: p2pool refuses a well-formed but
 # checksum-invalid address at startup with a SIGABRT and crash-loops (#829), which killed the
 # provision phase's whole miner chain when the harness used `4` + 94×`A`. Host-side validation
@@ -2412,6 +2411,7 @@ phase_provision() {
     else
         ok "commit gate REFUSES a slot whose monerod is down — left uncommitted, A/B fallback stays armed"
     fi
+    phase_provision_failed_doctor_regression "$pv_user" "$pv_pass"
     _ssh "podman start monerod >/dev/null 2>&1" || true
     unset -f _gate
 

@@ -59,8 +59,10 @@ runbook in [`docs/dev/release-server.md`](../../docs/dev/release-server.md).
   with those values. The successful wizard submission names the appliance `fixture-box`; the
   running kernel, rendered dashboard address, served certificate and active mDNS service must all
   agree on that identity. After provisioning, the dashboard drives a benign apply, a typed approval
-  and its missing-token refusal, doctor, log tail, and an encrypted backup; the stack and dashboard
-  must answer again after the backup. A day-two hostname preview must require the sensitive-change
+  and its missing-token refusal, structured doctor output, a capped/redacted p2pool log tail and
+  the wallet-log refusal, then an encrypted backup; the stack and dashboard must answer again after
+  the backup. Doctor must still return every structured row as an applied diagnostic when its own
+  exit is nonzero with monerod deliberately stopped. A day-two hostname preview must require the sensitive-change
   approval and leave the kernel name, mDNS activation, certificate and live config byte-for-byte
   unchanged. The initial name must remain coherent after both the unaided reboot and the closing
   A/B migration update. Then the stack must return from a reboot with no

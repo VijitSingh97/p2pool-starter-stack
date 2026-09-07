@@ -385,8 +385,9 @@ RC1 addendum, still manual after the automated rows run:
 - Reinstall pre-fill and failed-install recovery: confirm the migration notice names the removed
   1.x key without showing values, that preflight keeps safe fields after refusing a bad node, and
   that a separate post-validation failure returns the same safe fields for retry.
-- Diagnostics: run both controls and inspect the rendered health rows and redacted log tail; KVM
-  proves the verbs finish, not that the presentation is useful.
+- Diagnostics: the battery runs both controls, requires all structured doctor rows even on a real
+  nonzero health result, caps and redacts a p2pool tail, and refuses wallet logs. Manually inspect
+  the rendered grouping and remedies; KVM proves the host results, not that the presentation is useful.
 - `xvb.enabled`: its three config shapes remain tier-1 coverage; manually check only the final
   opt-in wording when #1855 is integrated.
 - Boot labels (#1956): the specific post-commit serial-console assertion is written on its product

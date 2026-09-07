@@ -278,18 +278,7 @@ phase_provision_control_regressions() { # <dashboard-user> <dashboard-password>
     result=$(dashboard_control_request commit "$(jq -nc --arg id "$rid" '{id:$id,confirm:"APPLY"}')")
     printf '%s' "$result" | jq -e '.status == "applied"' >/dev/null || bad "post-provision approved-setting cleanup failed"
 
-    result=$(dashboard_control_request diag-doctor '{}')
-    if printf '%s' "$result" | jq -e '.status == "applied" and (.doctor.checks | type == "array")' >/dev/null; then
-        ok "doctor completes through the dashboard control runner"
-    else
-        bad "doctor did not return a report through the control runner"
-    fi
-    result=$(dashboard_control_request diag-logs '{"container":"dashboard","lines":20}')
-    if printf '%s' "$result" | jq -e '.status == "applied" and .container == "dashboard" and (has("lines") or has("note"))' >/dev/null; then
-        ok "dashboard log tail completes through the control runner"
-    else
-        bad "dashboard log tail did not return through the control runner"
-    fi
+    phase_provision_diagnostics_regressions "$DASH_USER" "$DASH_PASS"
 
     result=$(dashboard_control_request backup '{}' 360)
     rid=$(printf '%s' "$result" | jq -r '.id // ""')
