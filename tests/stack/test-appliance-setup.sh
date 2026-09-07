@@ -176,6 +176,11 @@ run_sourced "$RS" restore_setup_archive_within_limits "$RS/restore-names" "$RS/r
 assert_rc "restore expansion limit rejects excess members" "$?" 1
 run_sourced "$RS" restore_setup_archive_within_limits "$RS/restore-names" "$RS/restore-verbose" 2 8
 assert_rc "restore expansion limit rejects excess bytes" "$?" 1
+mkdir "$RS/list-fixture"
+for n in $(seq 1 200); do printf x >"$RS/list-fixture/member-$n-abcdefghijklmnopqrstuvwxyz"; done
+tar -czf "$RS/list-fixture.tar.gz" -C "$RS/list-fixture" .
+if run_sourced "$RS" restore_setup_tar_list "$RS/list-fixture.tar.gz" -tvzf "$RS/list-output" 1 30; then out=accepted; else out=refused; fi
+assert_eq "archive listing is stopped at its output cap" "$out" refused
 rm -f "$RS/restore-names" "$RS/restore-verbose"
 RPSEED="$RS/preseed"
 mkdir "$RPSEED"

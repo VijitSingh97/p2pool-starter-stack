@@ -2062,6 +2062,13 @@ restore_setup_archive_within_limits() { # <names-file> <verbose-file> [max-membe
     [ "$bytes" -le "${4:-1073741824}" ]
 }
 
+restore_setup_tar_list() { # <archive> <tar-list-option> <output> [max-KiB] [seconds]
+    (
+        ulimit -f "${4:-4096}"
+        exec timeout "${5:-30}" tar --quoting-style=escape "$2" "$1"
+    ) >"$3" 2>/dev/null
+}
+
 restore_setup_publish_file() { # <source> <destination>
     local publish
     publish=$(mktemp "${2}.restore.XXXXXXXXXX") || return 1
@@ -2155,8 +2162,8 @@ restore_apply() ( # <archive> <passphrase> <errfile> [<config-only-dest>]
     # only regular files and dirs under known prefixes, so any escaping path or link is corruption
     # or an attack: fail closed. Lists names (whole-line, absolute/".." check) and the verbose
     # form (link check) separately, because a name with spaces is unparseable from `tar -tv`.
-    if ! LC_ALL=C tar --quoting-style=escape -tzf "$plain" >"$tmp/names" 2>/dev/null ||
-        ! LC_ALL=C tar --quoting-style=escape -tvzf "$plain" >"$tmp/verbose" 2>/dev/null; then
+    if ! LC_ALL=C restore_setup_tar_list "$plain" -tzf "$tmp/names" ||
+        ! LC_ALL=C restore_setup_tar_list "$plain" -tvzf "$tmp/verbose"; then
         printf 'archive fails integrity verification (tampered or truncated)' >"$errf"
         return 1
     fi
