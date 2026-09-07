@@ -7,10 +7,14 @@
 APPROVAL_FIXTURE_ARMED=0
 APPROVAL_RESTORE_SNAPSHOT=""
 approval_fixture_arm() {
-    local id="$1"
-    [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || return 1
     APPROVAL_FIXTURE_ARMED=1
-    _ssh "set -eu; test ! -e /data/pithead/data/control/.os1966-active-id; umask 077; printf '%s' '$id' > /data/pithead/data/control/.os1966-active-id" || return
+    _ssh 'set -eu
+test ! -e /data/pithead/data/control/.os1966-active-id
+test -z "$(find /data/pithead/data/control/requests -maxdepth 1 -type f -name '"'"'*.json'"'"' -print -quit)"
+test -z "$(find /data/pithead/data/control -maxdepth 1 -type f -name '"'"'.claim.*'"'"' -print -quit)"
+test -z "$(find /data/pithead/data/control/staged -maxdepth 1 -type f -name '"'"'*.json*'"'"' -print -quit)"
+umask 077
+printf PENDING > /data/pithead/data/control/.os1966-active-id' || return
     _ssh 'set -eu
 rm -rf /data/pithead/.os-approval-fixture
 mkdir -p /data/pithead/.os-approval-fixture/bin /etc/systemd/system/pithead-control.service.d
@@ -56,6 +60,20 @@ systemctl cat pithead-control.service | grep -qxF '"'"'Environment="PATH=/data/p
 test ! -e /data/pithead/.os-approval-fixture/unexpected-url' || return
 }
 
+approval_fixture_bind() {
+    local id="$1"
+    [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || return 1
+    _ssh "set -eu; grep -qxF PENDING /data/pithead/data/control/.os1966-active-id; umask 077; printf '%s' '$id' > /data/pithead/data/control/.os1966-active-id"
+}
+
+approval_fixture_preview() {
+    local body="$1"
+    approval_fixture_arm || return 1
+    APPROVAL_PREVIEW=$(dashboard_control_request preview "$body") || return 1
+    APPROVAL_REQUEST_ID=$(printf '%s' "$APPROVAL_PREVIEW" | jq -r '.id // ""')
+    approval_fixture_bind "$APPROVAL_REQUEST_ID"
+}
+
 approval_fixture_quiesce() {
     [ "${APPROVAL_FIXTURE_ARMED:-0}" -eq 1 ] || return 0
     [ -n "${ip:-}" ] || return 1
@@ -65,15 +83,18 @@ systemctl stop pithead-control.service
 ! systemctl is-active --quiet pithead-control.service
 mkdir -p /data/pithead/.os-approval-fixture/cancelled
 id=$(cat /data/pithead/data/control/.os1966-active-id)
-printf "%s" "$id" | grep -qE '"'"'^[0-9a-f-]{36}$'"'"'
+case "$id" in
+PENDING) staged_names='"'"'*.json*'"'"' ;;
+*) printf "%s" "$id" | grep -qE '"'"'^[0-9a-f-]{36}$'"'"'; staged_names="$id.json*" ;;
+esac
 find /data/pithead/data/control/requests -maxdepth 1 -type f -name '"'"'*.json'"'"' -exec mv -t /data/pithead/.os-approval-fixture/cancelled -- {} +
 find /data/pithead/data/control -maxdepth 1 -type f -name '"'"'.claim.*'"'"' -exec mv -t /data/pithead/.os-approval-fixture/cancelled -- {} +
 find /data/pithead/data/control/staged -maxdepth 1 -type f \( -name '"'"'.*.approval-*'"'"' -o -name '"'"'.*.telegram-*'"'"' -o -name '"'"'*.json.approved'"'"' \) -exec mv -t /data/pithead/.os-approval-fixture/cancelled -- {} +
-find /data/pithead/data/control/staged -maxdepth 1 -type f \( -name "$id.json" -o -name "$id.json.*" -o -name ".$id.*" \) -exec mv -t /data/pithead/.os-approval-fixture/cancelled -- {} +
+find /data/pithead/data/control/staged -maxdepth 1 -type f \( -name "$staged_names" -o -name ".$id.*" \) -exec mv -t /data/pithead/.os-approval-fixture/cancelled -- {} +
 test -z "$(find /data/pithead/data/control/requests -maxdepth 1 -type f -name '"'"'*.json'"'"' -print -quit)"
 test -z "$(find /data/pithead/data/control -maxdepth 1 -type f -name '"'"'.claim.*'"'"' -print -quit)"
 test -z "$(find /data/pithead/data/control/staged -maxdepth 1 -type f \( -name '"'"'.*.approval-*'"'"' -o -name '"'"'.*.telegram-*'"'"' -o -name '"'"'*.json.approved'"'"' \) -print -quit)"
-test -z "$(find /data/pithead/data/control/staged -maxdepth 1 -type f \( -name "$id.json" -o -name "$id.json.*" -o -name ".$id.*" \) -print -quit)"'
+test -z "$(find /data/pithead/data/control/staged -maxdepth 1 -type f \( -name "$staged_names" -o -name ".$id.*" \) -print -quit)"'
 }
 
 approval_fixture_disarm() {
@@ -192,9 +213,10 @@ phase_provision_sensitive_regressions() { # <dashboard-user> <dashboard-password
     }
     before=$(hostname_runtime_snapshot fixture-box)
     proposed=$(printf '%s' "$live" | jq -c '.dashboard.host = "fixture-next"')
-    preview=$(dashboard_control_request preview "$(dashboard_config_body "$proposed")")
-    rid=$(printf '%s' "$preview" | jq -r '.id // ""')
+    approval_fixture_preview "$(dashboard_config_body "$proposed")" || return
+    preview=$APPROVAL_PREVIEW rid=$APPROVAL_REQUEST_ID
     result=$(dashboard_control_request commit "$(jq -nc --arg id "$rid" '{id:$id,confirm:"APPLY"}')")
+    approval_fixture_require_disarm || return
     after=$(hostname_runtime_snapshot fixture-box)
     if printf '%s' "$result" | jq -e '.status == "rejected" and (.error | contains("Telegram approval"))' >/dev/null && [ "$before" = "$after" ]; then
         ok "day-two hostname commit is refused without host-mediated approval and leaves identity unchanged"
@@ -203,9 +225,8 @@ phase_provision_sensitive_regressions() { # <dashboard-user> <dashboard-password
         return
     fi
 
-    preview=$(dashboard_control_request preview "$(dashboard_config_body "$proposed")")
-    rid=$(printf '%s' "$preview" | jq -r '.id // ""')
-    approval_fixture_arm "$rid" || return
+    approval_fixture_preview "$(dashboard_config_body "$proposed")" || return
+    preview=$APPROVAL_PREVIEW rid=$APPROVAL_REQUEST_ID
     _ssh 'printf 999 > /data/pithead/.os-approval-fixture/uid' || {
         bad "could not set the wrong-identity approval control"
         approval_fixture_require_disarm
@@ -221,12 +242,11 @@ phase_provision_sensitive_regressions() { # <dashboard-user> <dashboard-password
         return
     fi
 
-    preview=$(dashboard_control_request preview "$(dashboard_config_body "$proposed")")
-    rid=$(printf '%s' "$preview" | jq -r '.id // ""')
-    approval_fixture_arm "$rid" || {
+    approval_fixture_preview "$(dashboard_config_body "$proposed")" || {
         bad "could not arm the isolated Telegram approval fixture"
         return
     }
+    preview=$APPROVAL_PREVIEW rid=$APPROVAL_REQUEST_ID
     result=$(approval_commit "$rid")
     prompt=$(_ssh 'cat /data/pithead/.os-approval-fixture/prompt.json 2>/dev/null' | jq -r '.text // ""' 2>/dev/null)
     approval_fixture_require_disarm || return
@@ -243,9 +263,8 @@ phase_provision_sensitive_regressions() { # <dashboard-user> <dashboard-password
 
     live=$(dashboard_curl -fsSk -m 8 "https://$ip/api/config" 2>/dev/null) || return
     proposed=$(printf '%s' "$live" | jq -c '.dashboard.auth.password = "os1966-physical-only"')
-    preview=$(dashboard_control_request preview "$(dashboard_config_body "$proposed")")
-    rid=$(printf '%s' "$preview" | jq -r '.id // ""')
-    approval_fixture_arm "$rid" || return
+    approval_fixture_preview "$(dashboard_config_body "$proposed")" || return
+    preview=$APPROVAL_PREVIEW rid=$APPROVAL_REQUEST_ID
     result=$(approval_commit "$rid")
     approval_fixture_require_disarm || return
     if printf '%s' "$result" | jq -e '.status == "rejected" and (.error | contains("configuration stick"))' >/dev/null &&
@@ -272,7 +291,8 @@ phase_provision_sensitive_regressions() { # <dashboard-user> <dashboard-password
         bad "reserved-node proposal could not be constructed"
         return
     }
-    preview=$(dashboard_control_request preview "$(dashboard_config_body "$proposed")")
+    approval_fixture_preview "$(dashboard_config_body "$proposed")" || return
+    preview=$APPROVAL_PREVIEW
     if ! printf '%s' "$preview" | jq -e --arg mh "$mh" --arg th "$th" '
         .status == "previewed" and .destructive == true and .approval_required == true and
         any(.preview_values[]; .key == "monero.remote.host" and .new == $mh) and
@@ -280,21 +300,21 @@ phase_provision_sensitive_regressions() { # <dashboard-user> <dashboard-password
         bad "reserved-node preview did not expose endpoints behind the combined approval gate"
         return
     fi
-    rid=$(printf '%s' "$preview" | jq -r '.id')
+    rid=$APPROVAL_REQUEST_ID
     result=$(dashboard_control_request commit "$(jq -nc --arg id "$rid" '{id:$id,approve:true,payout_suffixes:{}}')")
+    approval_fixture_require_disarm || return
     if printf '%s' "$result" | jq -e '.status == "rejected" and (.error | contains("type APPLY"))' >/dev/null; then
         ok "reachable-node commit is refused before probing or approval without typed APPLY"
     else
         bad "reachable-node commit crossed the typed confirmation gate"
         return
     fi
-    preview=$(dashboard_control_request preview "$(dashboard_config_body "$proposed")")
-    rid=$(printf '%s' "$preview" | jq -r '.id')
+    approval_fixture_preview "$(dashboard_config_body "$proposed")" || return
+    preview=$APPROVAL_PREVIEW rid=$APPROVAL_REQUEST_ID
     approval_capture_restore_snapshot || {
         bad "could not preserve the original raw configuration for guaranteed restore"
         return
     }
-    approval_fixture_arm "$rid" || return
     result=$(approval_commit "$rid")
     prompt=$(_ssh 'cat /data/pithead/.os-approval-fixture/prompt.json 2>/dev/null' | jq -r '.text // ""' 2>/dev/null)
     approval_fixture_require_disarm || return
@@ -353,6 +373,7 @@ _approval_self_test() {
     tari_endpoint_roundtrip_verdict 'MergeMiningClientTari tari://old.fixture:18142 uses chain_id 0123456789abcdef' 'node.fixture:18142' && f=$((f + 1))
     _control_request_transport_self_test || f=$((f + 1))
     _approval_fixture_failure_self_test || f=$((f + 1))
+    _approval_preview_lifecycle_self_test || f=$((f + 1))
     _runtime_epoch_self_test || f=$((f + 1))
     [ "$f" -eq 0 ] || {
         printf 'appliance-config-approval-leg self-test FAILED: %s checks\n' "$f"

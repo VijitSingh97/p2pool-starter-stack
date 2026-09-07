@@ -52,11 +52,11 @@ _control_request_transport_self_test() (
 _approval_fixture_failure_self_test() (
     local f=0 ip=fixture command_file command ssh_called=0
     _ssh() { ssh_called=1; }
-    approval_fixture_arm not-an-id && f=$((f + 1))
+    approval_fixture_bind not-an-id && f=$((f + 1))
     [ "$ssh_called" -eq 0 ] || f=$((f + 1))
     _ssh() { return 1; }
     APPROVAL_FIXTURE_ARMED=0
-    ! approval_fixture_arm 00000000-0000-4000-8000-000000000001 && [ "$APPROVAL_FIXTURE_ARMED" -eq 1 ] || f=$((f + 1))
+    ! approval_fixture_arm && [ "$APPROVAL_FIXTURE_ARMED" -eq 1 ] || f=$((f + 1))
     APPROVAL_FIXTURE_ARMED=1
     ! approval_fixture_disarm && [ "$APPROVAL_FIXTURE_ARMED" -eq 1 ] || f=$((f + 1))
     _ssh() { return 0; }
@@ -68,10 +68,32 @@ _approval_fixture_failure_self_test() (
     command=$(cat "$command_file")
     rm -f "$command_file"
     case "$command" in
-    *"systemctl stop pithead-control.path"*"systemctl stop pithead-control.service"*".os1966-active-id"*"requests"*".claim."*".approval-"*".telegram-"*'$id.json'*) ;;
+    *"systemctl stop pithead-control.path"*"systemctl stop pithead-control.service"*".os1966-active-id"*"PENDING"*"requests"*".claim."*".approval-"*".telegram-"*'$staged_names'*) ;;
     *) f=$((f + 1)) ;;
     esac
     [ "$f" -eq 0 ]
+)
+
+_approval_preview_lifecycle_self_test() (
+    local order_file
+    order_file=$(mktemp)
+    trap 'rm -f "$order_file"' EXIT
+    approval_fixture_arm() {
+        APPROVAL_FIXTURE_ARMED=1
+        printf 'arm ' >>"$order_file"
+    }
+    dashboard_control_request() {
+        printf 'preview ' >>"$order_file"
+        printf '{"id":"00000000-0000-4000-8000-000000000001"}'
+    }
+    approval_fixture_bind() {
+        printf 'bind ' >>"$order_file"
+        return 1
+    }
+    APPROVAL_FIXTURE_ARMED=0
+    approval_fixture_preview '{}' && return 1
+    [ "$APPROVAL_FIXTURE_ARMED" -eq 1 ] || return 1
+    [ "$(cat "$order_file")" = "arm preview bind " ]
 )
 
 _runtime_epoch_self_test() (
