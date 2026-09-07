@@ -1,11 +1,10 @@
-// The host's remote-node probe report, rendered (#1889). ONE module, because the same report
+// The wizard server's remote-node probe report, rendered (#1889). ONE module, because the same report
 // reaches an operator on two surfaces — the wizard's setup screen, and the Configuration view's
 // preview once the control channel carries a probe of its own — and six failure reasons worded
 // two ways is exactly how two surfaces come to disagree about what a failure means.
 //
-// IT GATES NOTHING. `preflight_remote_nodes` refuses to provision and hands the form back
-// (12-firstboot-wizard.sh), which is the same side wizard.py already puts "which step this machine
-// is on" on. A client-side disable here would be worse than a courtesy: the only way out of a
+// IT GATES NOTHING. wizard.py runs the protocol checks and hands the form back before it stages a
+// configuration. A client-side disable here would be worse than a courtesy: the only way out of a
 // failed probe is to correct the host or the port and submit again, and a disabled button takes
 // that away. The CONSEQUENCE sentence is the surface's own, passed in — setup halting and an apply
 // being refused are different things — so it arrives as this component's children, while the
@@ -20,30 +19,31 @@ const ENDPOINTS = {
   "monero:rpc": "Monero node, RPC port",
   "monero:zmq": "Monero node, ZMQ port",
   "tari:connect": "Tari node, gRPC port",
+  "tari:grpc": "Tari node, gRPC port",
 };
 
 // Why a check did not pass. Two of these are not reachability failures at all, and copy that
 // lumps them in with the rest sends the operator to check something that is working:
-//   - `auth` is a node that ANSWERED and wanted a login. It is a dead end, not a retry — there is
-//     nowhere in a remote-node config to put credentials.
+//   - `auth` is a node that ANSWERED but rejected the configured login.
 //   - `missing-tool` is curl missing on THIS machine. Nothing about the operator's node is known.
 // An unlisted reason falls to "did not complete" and never to "not reached": inventing a
-// reachability claim for a value this page does not recognise is the defect #1913 names, and the
-// probe's vocabulary is expected to grow a name-resolution reason.
+// reachability claim for a value this page does not recognise is the defect #1913 names.
 const REASONS = {
   protocol: "The port is open, and what is listening there is not the node this expects.",
   timeout: "Nothing answered within the time the check allows.",
   refused: "Not reached — no connection was made to that address.",
-  auth: "The node answered, and asked for a login this machine has nowhere to keep.",
+  auth: "The node answered, but rejected the configured login.",
   "missing-tool": "This machine could not run the check — the fault is here, not with your node.",
+  address: "The address cannot work from the mining container.",
+  dns: "The node name did not resolve.",
+  unusable: "The endpoint did not complete the live protocol check.",
   unknown: "The check did not complete.",
 };
 const UNRECOGNISED = REASONS.unknown;
 
 // What a pass PROVED, which is not the same claim on every endpoint. A bare TCP connect is
 // satisfied by any socket that accepts — an ssh forward, a stray container, the right port on the
-// wrong host — and the shipped CLI has no Tari client to ask further, so that pass is always
-// reported qualified rather than as a verified node.
+// wrong host — so legacy reports stay qualified rather than claiming a verified node.
 const PASSED = {
   connect:
     "The port accepted a connection. What is listening behind it was not checked — any socket that accepts satisfies this.",
@@ -102,7 +102,7 @@ export const NodeProbeReport = ({ report, children }) => {
   // malformed report `skipped` exists to survive, and an endpoint that produced no row was not
   // verified. The CONSEQUENCE below deliberately stays on `s.ok`: a host that published `ok: true`
   // DID proceed, so telling the operator setup had stopped would be the opposite lie.
-  const passed = s.ok && s.skipped === 0;
+  const passed = s.ok && s.skipped === 0 && s.rows.every((row) => row.ok);
   return html`<div class="card">
     <h3 class=${passed ? "c-ok" : "c-bad"}>
       ${
@@ -127,5 +127,28 @@ export const NodeProbeReport = ({ report, children }) => {
       html`<p class="c-bad">${s.skipped} of the ${s.configured} checks this configuration asks for
       produced no result at all, so nothing here covers them.</p>`
     }
+  </div>`;
+};
+
+export function needsNodeProbe(config) {
+  return config?.monero?.mode === "remote" || config?.tari?.mode === "remote";
+}
+
+export const NodeProbeProgress = ({ config }) => {
+  if (!needsNodeProbe(config)) return null;
+  return html`<div class="card">
+    <h3>Reaching your remote nodes…</h3>
+    <ul class="config-preview-list">
+      ${
+        config?.monero?.mode === "remote" &&
+        html`<li><strong>Monero</strong> — asking RPC for live node information with the
+          configured login, then completing a ZMQ protocol handshake.</li>`
+      }
+      ${
+        config?.tari?.mode === "remote" &&
+        html`<li><strong>Tari</strong> — asking the base node for live chain information over
+          gRPC with GetTipInfo.</li>`
+      }
+    </ul>
   </div>`;
 };

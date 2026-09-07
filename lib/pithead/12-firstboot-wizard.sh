@@ -156,7 +156,7 @@ firstboot_wizard() {
         # survives between machines, and machine 2 must not open on machine 1's answers —
         # the same staleness rule the per-session flow-marker clear below enforces.
         rm -f "$spool/last-attempt.json" "$spool/install-attempt.json" \
-            "$spool/auth-mode" "$spool/config-changes.json"
+            "$spool/auth-mode" "$spool/config-changes.json" "$spool/setup-failed"
         if [ "$operator_preseed" -eq 1 ] && wizard_spool_publish "$spool" last-attempt.json jq -c . "$PRESEED_DIR/pithead-config.json" 2>/dev/null; then
             log "Pre-seeded configuration found — the page opens with it filled in."
         elif prefill_from_previous_install "$spool"; then
@@ -521,6 +521,7 @@ firstboot_wizard() {
                 # machine still holds. The accept path wiped the spool, so both are restored here.
                 grep -a "\[ERROR\]" "$setup_log" | tail -n 1 | tr -d '[:cntrl:]' | tail -c 300 | wizard_spool_publish "$spool" error.txt cat
                 [ -n "$(wizard_spool_read "$spool" error.txt)" ] || printf 'Provisioning failed — see the machine console for detail.' | wizard_spool_publish "$spool" error.txt cat
+                wizard_spool_publish "$spool" setup-failed true || return 1
                 # Prefill from what THIS run failed on. The copy when it was made, the live file
                 # otherwise — never a config.json.failed left by an earlier attempt, which would
                 # hand the operator back answers they had already moved past.

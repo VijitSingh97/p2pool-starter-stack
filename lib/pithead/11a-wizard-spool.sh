@@ -39,7 +39,7 @@ wizard_spool_publish() ( # <spool-dir> <name> <producer> [args...]
     "$@" >"$tmp/value" || return 1
     if [ "$(id -u)" = 0 ]; then
         case "$name" in
-        error.txt | last-attempt.json | installing)
+        error.txt | last-attempt.json | installing | setup-failed)
             chmod 600 "$tmp/value" && chown 1000:1000 "$tmp/value" || return 1
             ;;
         *) chmod 640 "$tmp/value" && chown 0:1000 "$tmp/value" || return 1 ;;

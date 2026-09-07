@@ -30,6 +30,7 @@ renders what it is told. The client must never infer the stage.
 
 | Stage | True when | View |
 |---|---|---|
+| `failed` | the installation medium has `error.txt` | the failure reason and **Back to the settings** |
 | `handoff` | `handoff.json` exists and `handoff-ack` does not | credentials card |
 | `installing` | `installing` or `installed` exists | install progress, then the switch-off steps |
 | `done` | `applied` or `handoff-ack` exists — but `installing` when the machine is the installation medium | provisioning notice |
@@ -58,6 +59,19 @@ first — a fleet stick's spool survives between machines, and machine 2 must ne
 machine 1's answers. Pure convenience: any failure (no config, unreadable, ambiguous targets)
 opens the form blank and blocks nothing. On keep, none of it matters — the survivor config
 wins and no config crosses.
+
+Before a pre-fill reaches the form, the server moves the removed `xmrig_proxy.*` and
+`dashboard.workers[]` names to `xvb.*` and `workers.list[]`. It then drops keys absent from the
+current reference schema. The same preparation runs again on submit, so a hand-edited JSON pane
+cannot put an obsolete or unknown name back into the host's candidate. Known keys keep their
+values and types for the host parser to validate; the wizard never weakens that gate. The page
+lists changed key paths without rendering their values.
+
+An install error outranks a stale `installing` marker and survives a page refresh as `failed`.
+The authenticated return action clears only the error and stale progress marker. The settings
+come from the retained `last-attempt.json`; the disk and wipe choice return, but the typed disk
+confirmation does not. Retype it before another destructive attempt. Passwords and payout
+addresses stay in the config copy and are never included in the changed-path summary.
 
 **Why the server owns this.** Two defects came from the client deciding:
 
@@ -89,48 +103,58 @@ whatever the role says: the survivor config wins, and no role change crosses.
 
 The rig submission travels on its own spool channel (`rig-request.json`; the server never
 writes a `config.json` candidate for it), and the host dials the pool BEFORE anything
-irreversible — the same discipline `preflight_remote_nodes` gives remote nodes.
+irreversible — the same discipline the wizard server gives remote nodes.
 
 ### The remote-node probe report
 
-`preflight_remote_nodes` refuses to provision when a configured remote node does not answer, and
-it publishes what it found beside that refusal as `node-probe.json` (#1889). The wizard serves it
-as `node_probe` so the page can say WHICH endpoint failed and why, rather than showing one line of
-error text.
+Before it stages a configuration, the wizard server asks every configured remote endpoint the
+same protocol-level question its mining consumer needs (#1889). Monero RPC must answer
+`get_info`, using the configured Digest login, and its ZMQ port must complete a ZMTP handshake
+with a publication-capable peer.
+A Tari base node must answer `GetTipInfo` over gRPC. The browser names those checks while they run.
+Failure keeps the operator's complete form in `last-attempt.json`, removes any install request,
+and returns the report as `node_probe`; nothing writes a `config.json` candidate.
+
+The server resolves a name once, dials that vetted address and stores its numeric form in the
+accepted candidate. Loopback, unspecified, link-local,
+multicast and reserved addresses are refused, including names that resolve to one (#1946). With
+the Tor egress firewall on, every answer must also be in the private LAN or VPN IPv4 ranges the
+mining container can dial. Credentials are used only for the RPC request and never enter the
+report.
 
 | Field | Meaning |
 |---|---|
 | `ok` | the verdict, and the ONLY gate — true when every configured endpoint was probed and every probe passed |
 | `configured` | endpoints the config asked for: a remote Monero node contributes 2 (RPC and ZMQ), a remote Tari node 1 |
 | `probed` | rows actually produced; a skipped endpoint emits no row, so `probed < configured` is how the page names one |
-| `probes[]` | `{target, host, port, ok, checked, reason, detail, elapsed_ms}` per endpoint |
+| `probes[]` | `{target, host, resolved_host, port, ok, checked, reason, detail, elapsed_ms}` per endpoint |
 
-`reason` is one of `ok`, `protocol`, `timeout`, `refused`, `auth`, `missing-tool` or `unknown`.
-Two of those do not mean the node is unreachable: `auth` is a node that ANSWERED and asked for
-credentials Pithead has nowhere to store, which is a dead end rather than something to retry, and
-`missing-tool` is this machine failing to run the check at all. A reason the page does not
-recognise reads as "the check did not complete" — never as "not reached", because inventing a
-reachability claim for an unrecognised value is the defect #1913 names.
+`reason` is one of `ok`, `protocol`, `timeout`, `refused`, `auth`, `address`, `dns`, `unusable`,
+`missing-tool` or `unknown`. Two do not mean the node is unreachable: `auth` means a node answered
+but rejected the configured login, and legacy `missing-tool` reports that the machine could not
+run its old check. A reason the page does not recognise reads as "the check did not complete" —
+never as "not reached", because inventing a reachability claim for an unrecognised value is the
+defect #1913 names.
 
-`checked` says what was proved: `rpc` and `zmq` are live protocol checks, while `connect` is a
-bare TCP connect and passes on ANY socket that accepts — so a Tari row that passed is reported as
-qualified, not as a verified node.
+`checked` says what was proved: `rpc`, `zmq` and `grpc` are live protocol checks. The renderer
+still understands a legacy `connect` row, but qualifies it because any open socket can satisfy a
+bare TCP dial.
 
 An ABSENT report is not a failed one. A machine running its own nodes probes nothing and writes no
 file, so `node_probe` is `null` there and on any host older than the report; the wizard reads the
 verdict only when `ok` arrives as a real boolean, and a malformed file falls through to `null` the
 way every other spool reader fails open.
 
-`nodeprobe.mjs` renders it, and owns the operator's words for all seven reasons in one place: the
+`nodeprobe.mjs` renders it, and owns the operator's words for all nine reasons in one place: the
 setup screen shows the report today, and the Configuration view's preview will show the same one
 once the control channel carries a probe of its own, so a reason worded twice cannot come to mean
 two things. Three rules in it are load-bearing rather than stylistic. A reason the module does not
-recognise reads as "the check did not complete" and never as "not reached", because the probe's
-vocabulary is expected to grow and an invented reachability claim is the defect that growth would
-otherwise reintroduce. A `missing-tool` row drops the host's own `detail`, which is the generic
+recognise reads as "the check did not complete" and never as "not reached"; an invented
+reachability claim would reintroduce the defect this fallback prevents. A `missing-tool` row drops
+the host's own `detail`, which is the generic
 reach sentence naming the operator's host, port and LAN switch — none of them at fault when the
-check could not run at all. And the module renders no control: the gate is the host's, so a failed
-probe leaves the form editable and the submit button live, which is the only way out of it.
+check could not run at all. And the module renders no control: the gate is the wizard server's, so
+a failed probe leaves the form editable and the submit button live, which is the only way out.
 
 ### The machine-role contract
 
@@ -186,7 +210,7 @@ A third spool channel, beside the config candidate and the rig request: an uploa
 backup (`pithead backup`'s own archive format) plus its passphrase, as an alternative to the
 config form. `POST /submit-restore` writes `restore-archive` (binary) and `restore-passphrase`
 (plain, read once) — on the installation medium the disk/wipe fields ride beside them through
-the SAME `_gate_install_request` a typed submission takes.
+the same side-effect-free disk validation a typed submission takes.
 
 `firstboot_consume_restore` (host-side) does the whole job in one call, staged through a COPY —
 the same "validate before mutating real state" idiom `consume_preseed_config` already uses:
