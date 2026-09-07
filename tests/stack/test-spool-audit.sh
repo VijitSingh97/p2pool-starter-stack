@@ -107,7 +107,28 @@ UUID4="44444444-4444-4444-8444-444444444444"
     head -c 70000 /dev/zero | tr '\0' a
     printf '"}\n'
 } >"$REQS/$UUID4.json"
+chmod 666 "$REQS/$UUID4.json"
+mkdir -p "$C/mode-bin"
+cat >"$C/mode-bin/chmod" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}:${2:-}" in
+600:*/.claim.*)
+    /bin/chmod "$@"
+    (stat -c %a "$2" 2>/dev/null || stat -f %Lp "$2" 2>/dev/null) >>"${MODE_LOG:?}"
+    exit
+    ;;
+esac
+exec /bin/chmod "$@"
+EOF
+chmod +x "$C/mode-bin/chmod"
+old_path="$PATH"
+MODE_LOG="$C/mode-bin-output"
+export MODE_LOG
+PATH="$C/mode-bin:$PATH"
 run_pending >/dev/null
+PATH="$old_path"
+unset MODE_LOG
+assert_eq "regular host claim is owner-only before it is parsed" "$(cat "$C/mode-bin-output" 2>/dev/null)" "600"
 assert_contains "oversized intent refused before parsing" "$(cat "$AUDIT" 2>/dev/null)" "refused-oversize"
 [ ! -f "$RESULTS/$UUID4.json" ] && ok "oversized intent gets no result file" || bad "oversized intent gets no result file" "result written"
 [ ! -f "$REQS/$UUID4.json" ] && ok "oversized intent claimed out of requests/" || bad "oversized intent claimed out of requests/" "still present"

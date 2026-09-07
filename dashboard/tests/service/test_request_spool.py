@@ -7,6 +7,7 @@ this covers how it LANDS."""
 
 import json
 import os
+import stat
 
 import pytest
 
@@ -49,13 +50,37 @@ class TestWrite:
         real_replace = os.replace
 
         def recording_replace(src, dst):
-            seen.append((os.path.basename(src), os.path.basename(dst), os.path.exists(dst)))
+            seen.append(
+                (
+                    os.path.basename(src),
+                    os.path.basename(dst),
+                    os.path.exists(dst),
+                    stat.S_IMODE(os.stat(src).st_mode),
+                )
+            )
             return real_replace(src, dst)
 
         monkeypatch.setattr(os, "replace", recording_replace)
-        request_spool.write({"id": "abc", "action": "diag-doctor"})
-        # Staged under the dotted temp, and the final name did not exist before the rename made it.
-        assert seen == [(".abc.tmp", "abc.json", False)]
+        old_umask = os.umask(0)
+        try:
+            request_spool.write({"id": "abc", "action": "diag-doctor"})
+        finally:
+            os.umask(old_umask)
+        # The private temp inode becomes the final file by rename, even under a permissive umask.
+        assert len(seen) == 1
+        tmp, final, existed, mode = seen[0]
+        assert tmp.startswith(".abc.") and tmp.endswith(".tmp")
+        assert (final, existed, mode) == ("abc.json", False, 0o600)
+        assert stat.S_IMODE((spool / final).stat().st_mode) == 0o600
+
+    def test_failed_publication_removes_the_private_temp(self, spool, monkeypatch):
+        def fail_replace(_src, _dst):
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(os, "replace", fail_replace)
+        with pytest.raises(OSError, match="replace failed"):
+            request_spool.write({"id": "abc", "action": "diag-doctor"})
+        assert list(spool.iterdir()) == []
 
     def test_an_unwritable_spool_raises_rather_than_dropping_the_request(self, monkeypatch):
         monkeypatch.setattr(request_spool.config, "CONTROL_REQUESTS_DIR", "/nonexistent/requests")

@@ -122,6 +122,13 @@ control_run_pending() {
         [ -f "$req" ] || continue
         claim="$cdir/.claim.$$"
         mv "$req" "$claim" 2>/dev/null || continue
+        # The dashboard cannot reach the owner-only control parent after this atomic claim. Narrow
+        # hand-written/legacy regular files there, tied to the inode we parse; never follow a link.
+        if [ ! -L "$claim" ] && ! chmod 600 "$claim" 2>/dev/null; then
+            warn "Could not protect claimed control request $name — refusing it."
+            rm -f "$claim"
+            continue
+        fi
         control_process_request "$claim" "$cdir"
         rm -f "$claim"
         n=$((n + 1))
