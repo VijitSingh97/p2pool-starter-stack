@@ -239,9 +239,6 @@ assert_not_contains "worker-apply keeps the control token out of curl argv" \
     "$(grep '^ARGS=' "$WA3/curl.log")" "tok-rig1"
 assert_contains "worker-apply gives curl its bearer through stdin config" \
     "$(grep '^CONFIG=' "$WA3/curl.log")" "Authorization: Bearer tok-rig1"
-# The rig can also end an apply terminal "failed" — it could not restore its own rollback backup
-# (present since the v1.11.2 fleet floor). The poll must land it as failed-with-reason, never burn
-# the 20s deadline into a vague "accepted".
 WA4="$SANDBOX/ctrl185-failed"
 mkdir -p "$WA4/staged" "$WA4/results" "$WA4/audit" "$WA4/bin"
 cp "$WA3/config.json" "$WA4/config.json"
@@ -268,20 +265,26 @@ EOF
 chmod +x "$WA4/bin/curl"
 u10="fafafafa-fafa-4afa-8afa-fafafafafafa"
 printf '{"id":"%s","action":"worker-apply","actor":"admin","worker":"rig1","changes":{"pools":["pool.example:3333"]}}\n' "$u10" >"$WA4/req.json"
-PATH="$WA4/bin:$PATH" CONTROL_WA_BUDGET=1 PITHEAD_CONFIG_FILE="$WA4/config.json" \
-    run_sourced "$SANDBOX" control_process_request "$WA4/req.json" "$WA4" >/dev/null 2>&1
+(
+    jq() {
+        if [ "$2" = '(.reason // "") | tostring | .[:500]' ] && [ ! -e "$WA4/.jq-failed" ]; then
+            touch "$WA4/.jq-failed"
+            return 1
+        fi
+        command jq "$@"
+    }
+    PATH="$WA4/bin:$PATH" CONTROL_WA_BUDGET=1 PITHEAD_CONFIG_FILE="$WA4/config.json" \
+        run_sourced "$SANDBOX" control_process_request "$WA4/req.json" "$WA4" >/dev/null 2>&1
+)
 assert_eq "a failed apply reaches terminal 'failed', not the poll-deadline 'accepted'" \
     "$(jq -r '.status' "$WA4/results/$u10.json" 2>/dev/null)" "failed"
+assert_eq "the failed reason parse control fired" "$([ -e "$WA4/.jq-failed" ] && echo yes)" "yes"
 assert_contains "the failed apply carries the rig's reason" \
     "$(jq -r '.reason' "$WA4/results/$u10.json" 2>/dev/null)" "rollback backup unreadable"
 assert_contains "the failed apply is audited as failed" \
     "$(cat "$WA4/audit/control.log")" '"action":"worker-apply","status":"failed"'
-
-# ---------------------------------------------------------------------------
 echo "== control channel: worker upgrade fails closed (#597) =="
-# control_worker_upgrade fuses the worker-apply template (rig resolved from the HOST config, never
-# the intent) with the stack-upgrade template (host-side target re-derivation, throttled). These are
-# the pre-dial fail-closed guards.
+# These are worker-upgrade's pre-dial fail-closed guards.
 WU="$SANDBOX/ctrl597"
 mkdir -p "$WU/staged" "$WU/results" "$WU/audit"
 cat >"$WU/config.json" <<'EOF'
@@ -442,8 +445,6 @@ CONTROL_WU_BUDGET=1 PITHEAD_CONFIG_FILE="$wa_dir/config.json" \
     run_sourced "$SANDBOX" control_process_request "$wa_dir/req.json" "$wa_dir" >/dev/null 2>&1
 assert_contains "a non-latest proposal is refused against the host-derived tag" \
     "$(jq -r '.error // ""' "$wa_dir/results/$w10.json")" "not the latest published RigForge release"
-# Stale-terminal guard: the rig's /status first shows a PREVIOUS change's applied (no in-progress
-# state, rigforge#320) — it must be ignored until OUR change_id appears.
 stale_dir="$SANDBOX/ctrl597-stale"
 mkdir -p "$stale_dir/staged" "$stale_dir/results" "$stale_dir/audit" "$stale_dir/bin"
 cp "$WU/config.json" "$stale_dir/config.json"
@@ -461,6 +462,7 @@ case "\$url" in
 */upgrade) printf '{"change_id":"chg-9"}' >"\$out"; printf '202' ;;
 */status)
     if [ -f "$stale_dir/.polled" ]; then
+        touch "$stale_dir/.matched"
         printf '{"change_id":"chg-9","status":"applied"}' >"\$out"
     else
         touch "$stale_dir/.polled"
@@ -474,15 +476,15 @@ EOF
 chmod +x "$stale_dir/bin/curl"
 w11="56565656-5656-4256-9256-565656565656"
 printf '{"id":"%s","action":"worker-upgrade","actor":"admin","worker":"rig1","version":"v9.9.9"}\n' "$w11" >"$stale_dir/req.json"
-PATH="$stale_dir/bin:$PATH" CONTROL_WU_BUDGET=1 PITHEAD_CONFIG_FILE="$stale_dir/config.json" \
-    run_sourced "$SANDBOX" control_process_request "$stale_dir/req.json" "$stale_dir" >/dev/null 2>&1
+(
+    sleep() { :; }
+    PATH="$stale_dir/bin:$PATH" CONTROL_WU_BUDGET=1 PITHEAD_CONFIG_FILE="$stale_dir/config.json" \
+        run_sourced "$SANDBOX" control_process_request "$stale_dir/req.json" "$stale_dir" >/dev/null 2>&1
+)
 assert_eq "a stale terminal for a PREVIOUS change_id is ignored; ours lands" \
     "$(jq -r '.status + "|" + .change_id' "$stale_dir/results/$w11.json" 2>/dev/null)" "applied|chg-9"
-# Poll-cap timeout (the sec-review headline fix): the cap bounds a hostile/hung rig's hold on the
-# single-threaded root drain, and hitting it must land "accepted" (queued on the rig; the #596
-# badge clears on its own), never a failure. CONTROL_WU_POLL_CAP shrinks the 90s cap so this
-# proves the fallback in seconds — the rig accepts (202) but its /status only ever shows a
-# PREVIOUS change's terminal, so no terminal for OUR change_id arrives inside the cap.
+assert_eq "the stale terminal was polled past, not accepted" "$([ -f "$stale_dir/.matched" ] && echo yes)" "yes"
+# CONTROL_WU_POLL_CAP proves the 90s poll fallback in seconds.
 to_dir="$SANDBOX/ctrl597-timeout"
 mkdir -p "$to_dir/staged" "$to_dir/results" "$to_dir/audit" "$to_dir/bin"
 cp "$WU/config.json" "$to_dir/config.json"
@@ -516,9 +518,6 @@ assert_contains "the poll-cap timeout is audited as accepted" \
     "$(cat "$to_dir/audit/control.log")" '"action":"worker-upgrade","status":"accepted"'
 
 echo "== control channel: worker upgrade derives the target tag from GitHub (#597) =="
-# Every accept case above pre-caches .rigforge-latest-tag; these prove the derive itself. The
-# GitHub call captures curl's STDOUT (no -o), so the stub answers the release API on stdout and
-# keeps the -o/-w shape for the rig's /upgrade + /status.
 gh_dir="$SANDBOX/ctrl597-derive"
 mkdir -p "$gh_dir/staged" "$gh_dir/results" "$gh_dir/audit" "$gh_dir/bin"
 cp "$WU/config.json" "$gh_dir/config.json"
@@ -542,8 +541,11 @@ EOF
 chmod +x "$gh_dir/bin/curl"
 w14="89898989-8989-4289-9289-898989898989"
 printf '{"id":"%s","action":"worker-upgrade","actor":"admin","worker":"rig1","version":"v9.9.9"}\n' "$w14" >"$gh_dir/req.json"
-PATH="$gh_dir/bin:$PATH" CONTROL_WU_BUDGET=1 PITHEAD_CONFIG_FILE="$gh_dir/config.json" \
-    run_sourced "$SANDBOX" control_process_request "$gh_dir/req.json" "$gh_dir" >/dev/null 2>&1
+(
+    sleep() { :; }
+    PATH="$gh_dir/bin:$PATH" CONTROL_WU_BUDGET=1 PITHEAD_CONFIG_FILE="$gh_dir/config.json" \
+        run_sourced "$SANDBOX" control_process_request "$gh_dir/req.json" "$gh_dir" >/dev/null 2>&1
+)
 assert_eq "a fresh derive parses tag_name and drives the upgrade to applied" \
     "$(jq -r '.status + "|" + .version' "$gh_dir/results/$w14.json" 2>/dev/null)" "applied|v9.9.9"
 assert_eq "the derived tag is cached for the next intent" \
