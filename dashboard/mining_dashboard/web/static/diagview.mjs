@@ -72,14 +72,28 @@ export class DiagnosticWaitTimeout extends Error {
 // result exists yet. Keep that uncertainty instead of borrowing the upgrade flow's version copy or
 // calling the runner wedged from elapsed time alone.
 export async function runDiag(path, body, label = "the diagnostics request", max = DIAG_POLL_MAX) {
-  const res = await fetch(`/api/control/${path}`, {
-    method: "POST",
-    headers: CONTROL_HEADERS,
-    body: JSON.stringify(body || {}),
-  });
+  let res;
+  try {
+    res = await fetch(`/api/control/${path}`, {
+      method: "POST",
+      headers: CONTROL_HEADERS,
+      body: JSON.stringify(body || {}),
+    });
+  } catch {
+    throw new Error(
+      `Could not submit ${label}: the dashboard could not reach the control service.`,
+    );
+  }
   if (!res.ok && res.status !== 202)
     throw new Error(`Could not submit ${label}: HTTP ${res.status}`);
-  const { id } = await res.json();
+  let id;
+  try {
+    ({ id } = await res.json());
+  } catch {
+    throw new Error(`Could not submit ${label}: the host returned an unreadable response.`);
+  }
+  if (typeof id !== "string" || !id)
+    throw new Error(`Could not submit ${label}: the host returned no request id.`);
   for (let i = 0; i < max; i++) {
     await new Promise((resolve) => setTimeout(resolve, DIAG_POLL_MS));
     let result;
@@ -90,7 +104,11 @@ export async function runDiag(path, body, label = "the diagnostics request", max
     }
     if (result.status === 202 || [502, 503, 504].includes(result.status)) continue;
     if (!result.ok) throw new Error(`Could not read ${label}: HTTP ${result.status}`);
-    return await result.json();
+    try {
+      return await result.json();
+    } catch {
+      throw new Error(`Could not read ${label}: the host returned an unreadable result.`);
+    }
   }
   throw new DiagnosticWaitTimeout(label);
 }

@@ -206,6 +206,40 @@ test("submission and result HTTP failures name the diagnostics request", async (
   );
 });
 
+test("transport and malformed responses keep the diagnostics request context", async () => {
+  await assert.rejects(
+    () =>
+      withFastPoll(
+        async () => {
+          throw new TypeError("Failed to fetch");
+        },
+        () => runDiag("diag-logs", { container: "tor" }, "tor's recent log"),
+      ),
+    /Could not submit tor's recent log: the dashboard could not reach the control service/,
+  );
+
+  await assert.rejects(
+    () =>
+      withFastPoll(
+        async () => ({ status: 202, ok: false, json: async () => Promise.reject(new SyntaxError()) }),
+        () => runDiag("diag-doctor", {}, "the health check"),
+      ),
+    /Could not submit the health check: the host returned an unreadable response/,
+  );
+
+  await assert.rejects(
+    () =>
+      withFastPoll(
+        async (url) =>
+          url === "/api/control/diag-doctor"
+            ? { status: 202, ok: false, json: async () => ({ id: ID }) }
+            : { status: 200, ok: true, json: async () => Promise.reject(new SyntaxError()) },
+        () => runDiag("diag-doctor", {}, "the health check"),
+      ),
+    /Could not read the health check: the host returned an unreadable result/,
+  );
+});
+
 test("the idle card shows all services and offers logs only where the host can redact them", () => {
   const out = renderToString(inst().render());
   assert.equal((out.match(/Run health check/g) || []).length, 1);
