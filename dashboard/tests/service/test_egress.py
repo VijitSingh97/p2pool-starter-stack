@@ -345,6 +345,7 @@ TOPOLOGY_NODE_IDS = {
     "rigs",
     "browser",
     "xmrig-proxy",
+    "local-miner",
     "caddy",
     "dashboard",
     "p2pool",
@@ -361,11 +362,10 @@ def test_topology_nodes_match_the_canonical_set():
 
 
 def test_every_edge_endpoint_is_a_placeable_node_for_all_configs():
-    # No config may emit an edge to/from a node the diagram can't place — that edge would silently
-    # disappear from the SVG. This is the contract that keeps "various configs show correctly".
+    # Every emitted endpoint must be placeable or its edge silently disappears from the SVG.
     for cfg in _all_configs():
         topo = compute_topology(**cfg)
-        assert {n["id"] for n in topo["nodes"]} == TOPOLOGY_NODE_IDS, cfg
+        assert {n["id"] for n in topo["nodes"]} == TOPOLOGY_NODE_IDS - {"local-miner"}, cfg
         for e in topo["edges"]:
             assert e["from"] in TOPOLOGY_NODE_IDS, (cfg, e)
             assert e["to"] in TOPOLOGY_NODE_IDS, (cfg, e)

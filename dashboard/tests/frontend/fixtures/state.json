@@ -599,7 +599,7 @@
     "nodes": [
       {
         "id": "rigs",
-        "label": "Mining rigs",
+        "label": "External rigs",
         "zone": "clients"
       },
       {
