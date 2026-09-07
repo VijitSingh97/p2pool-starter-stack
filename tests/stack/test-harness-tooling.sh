@@ -333,6 +333,8 @@ test-control-core.sh|reowned
 test-control-diagnostics.sh|_c
 test-control-editable-allowlist.sh|1
 test-doctor.sh|ip
+test-recovery-address-gates.sh|_rag_v
+test-recovery-address-gates.sh|label
 test-release.sh|comp
 test-release.sh|pin_rel
 test-release.sh|svc
