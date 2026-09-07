@@ -123,35 +123,43 @@ self_test() {
     expect "a budgeted file dropped below target still listed FAILS (stale entry)" 1 "$rc"
     seq 1 500 >"$tmp/budgeted.sh"
 
-    # Two-lane shape: a develop-v2 branch cut BEFORE the lane tip advanced must still
-    # ratchet against develop-v2, not fall back to develop and read this lane's larger
-    # ceiling as a raise — the false RED that bit two live PRs the day the tip moved.
+    # Complement of the case above, and the one #1430 found untested: the base entry is not just
+    # stale, it is GONE from the new tsv. check_monotonic walks the working-tree rows, so a base
+    # row absent here is never visited — the file legitimately shrank to <= target — and the gate
+    # must PASS, not FAIL. Without this case, a regression that made that skip fail open again
+    # (#1375's construct) would go uncaught by this suite.
+    seq 1 300 >"$tmp/budgeted.sh"
+    printf '# test budget\n' >"$tmp/$BUDGET_FILE"
+    rc=0
+    (cd "$tmp" && run_gate) >"$out" 2>&1 || rc=$?
+    expect "a shrunk file whose entry was correctly removed PASSES (legitimate removal, #1430)" 0 "$rc"
+    seq 1 500 >"$tmp/budgeted.sh"
+    printf '# test budget\nbudgeted.sh\t500\n' >"$tmp/$BUDGET_FILE"
+
+    # A feature branch cut from develop, with develop advanced past it since: the ratchet reads
+    # develop (the merge-base's branch), and a ceiling lowered on the branch passes.
     local tmp3
     tmp3=$(mktemp -d)
     git -C "$tmp3" init -q -b develop
     git -C "$tmp3" config user.email test@example.invalid
     git -C "$tmp3" config user.name test
     mkdir -p "$tmp3/$(dirname "$BUDGET_FILE")"
-    seq 1 500 >"$tmp3/budgeted.sh"
-    printf '# test budget\nbudgeted.sh\t500\n' >"$tmp3/$BUDGET_FILE"
-    git -C "$tmp3" add -A && git -C "$tmp3" commit -q -m dev-base
-    git -C "$tmp3" checkout -q -b develop-v2
     seq 1 600 >"$tmp3/budgeted.sh"
     printf '# test budget\nbudgeted.sh\t600\n' >"$tmp3/$BUDGET_FILE"
-    git -C "$tmp3" add -A && git -C "$tmp3" commit -q -m v2-larger
+    git -C "$tmp3" add -A && git -C "$tmp3" commit -q -m dev-base
     git -C "$tmp3" checkout -q -b feature
-    git -C "$tmp3" checkout -q develop-v2
+    git -C "$tmp3" checkout -q develop
     echo x >"$tmp3/other.txt"
-    git -C "$tmp3" add other.txt && git -C "$tmp3" commit -q -m v2-advances
+    git -C "$tmp3" add other.txt && git -C "$tmp3" commit -q -m develop-advances
     git -C "$tmp3" checkout -q feature
     seq 1 580 >"$tmp3/budgeted.sh"
     printf '# test budget\nbudgeted.sh\t580\n' >"$tmp3/$BUDGET_FILE"
     rc=0
     (cd "$tmp3" && run_gate) >"$out" 2>&1 || rc=$?
-    expect "a v2-lane branch behind the moved lane tip still ratchets against develop-v2" 0 "$rc"
+    expect "a branch behind the moved develop tip still ratchets against develop and passes a lowered ceiling" 0 "$rc"
     rc=0
-    (cd "$tmp3" && [ "$(resolve_base_ref)" = develop-v2 ]) || rc=1
-    expect "lane detection reads history, not tip-levelness" 0 "$rc"
+    (cd "$tmp3" && [ "$(resolve_base_ref)" = develop ]) || rc=1
+    expect "the base ref is develop" 0 "$rc"
     git -C "$tmp3" checkout -q -f develop
     rc=0
     (cd "$tmp3" && [ "$(resolve_base_ref)" = develop ]) || rc=1
@@ -280,6 +288,48 @@ self_test() {
     (cd "$tmp5" && run_gate) >"$out" 2>&1 || rc=$?
     expect "control: a new row stating the file's real count on first appearance passes" 0 "$rc"
     rm -rf "$tmp5"
+
+    # #1739 — the resolve-failure arm: FATAL under GITHUB_ACTIONS, a NOTE outside it. Its own repo,
+    # on a branch not named develop and with no remotes, so resolve_base_ref
+    # finds neither of its two candidates — the shape a depth-1 CI checkout has. Every other fixture
+    # in this file is `git init -b develop`, so the bare local `develop` always resolves and none
+    # of them ever reach this arm; that is why it needs a repo of its own to be exercised at all.
+    local tmp6
+    tmp6=$(mktemp -d)
+    git -C "$tmp6" init -q -b probe
+    git -C "$tmp6" config user.email test@example.invalid
+    git -C "$tmp6" config user.name test
+    mkdir -p "$tmp6/$(dirname "$BUDGET_FILE")"
+    seq 1 500 >"$tmp6/budgeted.sh"
+    printf '# test budget\nbudgeted.sh\t500\n' >"$tmp6/$BUDGET_FILE"
+    git -C "$tmp6" add -A && git -C "$tmp6" commit -q -m no-base-refs
+    rc=0
+    (cd "$tmp6" && [ -z "$(resolve_base_ref)" ]) || rc=1
+    expect "calibration: this fixture really does resolve NO base ref" 0 "$rc"
+    rc=0
+    (cd "$tmp6" && export GITHUB_ACTIONS=true && run_gate) >"$out" 2>&1 || rc=$?
+    expect "an unresolvable base ref is FATAL under GITHUB_ACTIONS (#1739)" 1 "$rc"
+    if grep -q "no base ref .* resolvable under GITHUB_ACTIONS" "$out"; then
+        echo "  self-test ok: names the unresolvable base ref and the remedy"
+    else
+        echo "  self-test FAIL: did not name the unresolvable base ref"
+        st_fail=1
+    fi
+
+    # NEGATIVE CONTROL, and the `unset` in it is load-bearing: this self-test itself runs IN CI,
+    # where GITHUB_ACTIONS is already true in the environment. Inheriting it would redden this
+    # case there while it passed locally, and — worse — a case that cannot produce the OTHER
+    # answer never shows the arm discriminates on the variable rather than on the missing refs.
+    rc=0
+    (cd "$tmp6" && unset GITHUB_ACTIONS && run_gate) >"$out" 2>&1 || rc=$?
+    expect "control: the same fixture outside CI still PASSES, with the NOTE" 0 "$rc"
+    if grep -q "NOTE — no base ref" "$out"; then
+        echo "  self-test ok: the local skip still says why it skipped"
+    else
+        echo "  self-test FAIL: the local skip lost its NOTE"
+        st_fail=1
+    fi
+    rm -rf "$tmp6"
 
     rc=0
     (

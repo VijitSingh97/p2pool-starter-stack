@@ -5,6 +5,33 @@ sha256_hex() {
     else shasum -a 256 | cut -d' ' -f1; fi
 }
 
+# HMAC-SHA256 without putting the key in a child process's argv. ACCESS_TOKEN is header-clean ASCII,
+# so bash can hold it losslessly; only padded key bytes flow to openssl on stdin.
+hmac_sha256_hex() { # <key> <message>
+    local key="$1" message="$2" key_hex="" byte oct i pad
+    if [ "${#key}" -gt 64 ]; then
+        key_hex=$(printf '%s' "$key" | openssl dgst -sha256 -binary | od -An -v -tx1 | tr -d ' \n') || return 1
+    else
+        key_hex=$(printf '%s' "$key" | od -An -v -tx1 | tr -d ' \n') || return 1
+    fi
+    while [ "${#key_hex}" -lt 128 ]; do key_hex="${key_hex}00"; done
+    _hmac_pad() {
+        pad="$1"
+        for ((i = 0; i < 128; i += 2)); do
+            byte=$((16#${key_hex:i:2} ^ pad))
+            printf -v oct '%03o' "$byte"
+            printf "\\$oct"
+        done
+    }
+    {
+        _hmac_pad 92
+        {
+            _hmac_pad 54
+            printf '%s' "$message"
+        } | openssl dgst -sha256 -binary
+    } | openssl dgst -sha256 | sed 's/^.*= //'
+}
+
 # bcrypt-hash a dashboard password with the PINNED Caddy image (read straight from docker-compose.yml
 # so it tracks the digest), returned base64-encoded so the raw bcrypt '$' never lands in .env (#8).
 # Returns non-zero if Docker / the image isn't available.

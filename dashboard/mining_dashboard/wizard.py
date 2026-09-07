@@ -32,6 +32,16 @@ import tempfile
 
 from aiohttp import web
 
+from mining_dashboard.wizard_config import (
+    NEW_MACHINE_ANSWERS,
+    prepare_config,
+    validate_machine_name,
+)
+from mining_dashboard.wizard_form import build_config
+from mining_dashboard.wizard_install import validate_install_request
+from mining_dashboard.wizard_node_probe import first_failure, probe_remote_nodes, saved_probe
+from mining_dashboard.wizard_recovery import recovery_state, remember_changes, retry_handler
+
 MAX_FAILURES = 5
 EXIT_TOKEN_LOCKOUT = 3
 # Restore-at-setup upload cap (#909): a Pithead backup holds only config, keys and the
@@ -52,10 +62,15 @@ def _shell_html() -> str:
         return f.read()
 
 
-def _spool_clear_error() -> None:
-    err_file = os.path.join(spool_dir(), "error.txt")
-    if os.path.exists(err_file):
-        os.unlink(err_file)
+def _spool_remove(name: str) -> None:
+    path = os.path.join(spool_dir(), name)
+    if os.path.exists(path):
+        os.unlink(path)
+
+
+def _spool_clear_host_verdict() -> None:
+    for name in ("error.txt", "node-probe.json"):
+        _spool_remove(name)
 
 
 def _canon_token(t: str) -> str:
@@ -144,26 +159,40 @@ def _data_wiped() -> dict:
     return _spool_json("data-wiped.json")
 
 
+def _saved_role() -> dict | None:
+    """The role this machine is already set up as, published by the HOST only on a set-up-again
+    boot (#1318): {"role": "rig", "pool", "worker"} for a rig, {"role": "pithead"} or
+    {"role": "both"} for a coordinator. Its PRESENCE is the signal to offer "Keep it", so a file
+    that names no role reads as ABSENT rather than as an error — the one thing this screen must
+    never do is offer to keep a role it cannot name. None means "run the normal wizard"."""
+    saved = _spool_json("saved-role.json")
+    return saved if isinstance(saved.get("role"), str) and saved["role"] else None
+
+
 def wizard_stage() -> str:
     """Which step this machine is actually on, decided by the SPOOL — never by the client.
 
-    A page refresh must not walk backwards into an editable form after a config was accepted,
-    and the client cannot know the difference on its own: a bench session refreshed during
-    provisioning and was handed the setup form again, as if nothing had been submitted.
+    A page refresh must not walk back into an editable form after a config was accepted, and the
+    client cannot know that alone: a bench session refreshed mid-provision got the setup form back.
 
+    failed     the host ended an installer attempt with an error
     handoff    credentials published, waiting for the operator to save them
     done       provisioning under way (or finished) — nothing left to edit
     installer  running from the installation medium
     setup      no config accepted yet
     """
+    if _spool_read("setup-failed") is not None or (
+        installer_mode() and _spool_read("error.txt") is not None
+    ):
+        return "failed"
     if _spool_read("handoff.json") is not None and _spool_read("handoff-ack") is None:
         return "handoff"
     if _spool_read("installed") is not None or _spool_read("installing") is not None:
         return "installing"
     if _spool_read("applied") is not None or _spool_read("handoff-ack") is not None:
-        # Same ack, two meanings: on the installation medium it releases the INSTALL (the page
-        # then shows the switch-off steps), on an installed machine it releases provisioning.
-        return "installing" if installer_mode() else "done"
+        # Same ack, two meanings: on the medium it releases the INSTALL, on an installed
+        # machine provisioning. A stick run installs nothing, so it is "done" too (#1835).
+        return "installing" if installer_mode() and _spool_read("stick") != "1" else "done"
     if installer_mode():
         return "installer"
     return "setup"
@@ -229,97 +258,40 @@ async def auth(request: web.Request) -> web.Response:
 
 
 async def wizard_state(request: web.Request) -> web.Response:
-    """Everything the SPA needs to render: which flow, the effective config (defaults with the
-    last attempt merged over them — a rejected config comes back for editing rather than making
-    someone retype a 95-character address), the reference for type coercion, the host's error,
-    and the disk inventory in installer mode."""
+    """Everything the SPA needs to render: which flow, the effective config (the defaults with a
+    previous configuration merged over them — a pre-seed, a reinstall pre-fill or a rejected
+    submission, each of which WINS WHOLE; a machine that has never been configured gets this
+    page's own default instead), the reference, the host's error, and the disk inventory."""
     if not _authed(request):
         return web.json_response({"error": "unauthenticated"}, status=401)
     ref = _reference()
     stage = wizard_stage()
+    attempt, changes = prepare_config(_last_attempt(), ref)
+    remembered, install_attempt, auth_mode = recovery_state(_spool_json, _spool_read, _disks())
+    if changes:
+        remember_changes(spool_dir(), changes, _spool_json, _spool_write_text)
     raw_handoff = _spool_read("handoff.json") if stage == "handoff" else None
     return web.json_response(
         {
             "stage": stage,
             # Kept for the field's original meaning; `stage` is what the client renders from.
             "mode": "installer" if installer_mode() else "setup",
-            "config": _deep_merge(ref, _last_attempt()),
+            "config": _deep_merge(ref, attempt or NEW_MACHINE_ANSWERS),
             "reference": ref,
             "error": _spool_read("error.txt"),
             "disks": _disks(),
             "rig_defaults": _rig_defaults(),
             "data_wiped": _data_wiped(),
             "handoff": json.loads(raw_handoff) if raw_handoff else None,
+            # Always present, null when this is not a set-up-again boot (#1318).
+            "saved_role": _saved_role(),
+            # Always present, null when no probe ran at all (#1889).
+            "node_probe": saved_probe(_spool_json),
+            "config_changes": list(dict.fromkeys([*changes, *remembered])),
+            "install_attempt": install_attempt,
+            "auth_mode": auth_mode,
         }
     )
-
-
-def build_config(form: dict) -> dict:
-    """Form fields as a pithead config — the fallback for a client that never populated the
-    JSON pane (no JavaScript: the harness's curl, a text browser). Mirrors the CLI wizard's
-    question set; the host's parse_and_validate_config is the validator.
-
-    Keys are omitted rather than written empty: an absent key inherits the documented default,
-    while an empty string is a value and would override it."""
-
-    def s_(name: str) -> str:
-        return str(form.get(name, "")).strip()
-
-    def port(name: str, fallback: int) -> int:
-        raw = s_(name)
-        return int(raw) if raw.isdigit() else fallback
-
-    cfg: dict = {
-        "monero": {"wallet_address": s_("monero_wallet")},
-        "tari": {"wallet_address": s_("tari_wallet")},
-        "p2pool": {"pool": s_("pool") or "mini", "stratum_password": "auto"},
-    }
-
-    if form.get("monero_mode") == "remote":
-        cfg["monero"]["mode"] = "remote"
-        cfg["monero"]["remote"] = {
-            "host": s_("monero_remote_host"),
-            "rpc_port": port("monero_remote_rpc", 18081),
-            "zmq_port": port("monero_remote_zmq", 18083),
-        }
-        if form.get("monero_remote_auth"):
-            cfg["monero"]["node_username"] = s_("monero_remote_user")
-            cfg["monero"]["node_password"] = s_("monero_remote_pass")
-
-    if form.get("tari_mode") == "remote":
-        cfg["tari"]["mode"] = "remote"
-        cfg["tari"]["remote"] = {
-            "host": s_("tari_remote_host"),
-            "grpc_port": port("tari_remote_grpc", 18142),
-        }
-
-    # prune only means anything for a node we run. On remote, the key is noise at best and a
-    # lie at worst — the chain lives on someone else's machine and its shape is not ours.
-    if form.get("monero_mode") != "remote" and form.get("prune") == "false":
-        cfg["monero"]["prune"] = False
-
-    # Optional services: written ONLY when actually filled in. An empty ping_url silently
-    # disables the dead-man's switch the operator thinks they have; a half-configured
-    # Telegram fails validation on a blank they never meant to set.
-    hc = s_("healthchecks_url")
-    if hc:
-        cfg["healthchecks"] = {"ping_url": hc}
-    tg_token, tg_chat = s_("telegram_token"), s_("telegram_chat")
-    if tg_token and tg_chat:
-        cfg["telegram"] = {"enabled": True, "bot_token": tg_token, "chat_id": tg_chat}
-
-    if form.get("local_miner"):
-        cfg["local_miner"] = {"enabled": True}
-
-    if form.get("clearnet_sync") == "true":
-        cfg["monero"]["clearnet_initial_sync"] = True
-        cfg["tari"]["clearnet_initial_sync"] = True
-
-    tz = s_("timezone")
-    if tz and tz != "auto":  # auto IS the documented default — writing it would only pin it
-        cfg.setdefault("dashboard", {})["timezone"] = tz
-
-    return cfg
 
 
 def _spool_write_text(name: str, text: str) -> None:
@@ -343,39 +315,20 @@ def _spool_write_bytes(name: str, data: bytes) -> None:
 
 
 def _spool_write_config(cfg: dict) -> None:
-    _spool_clear_error()
     _spool_write_text("config.json", json.dumps(cfg, indent=2))
 
 
-def _gate_install_request(form: dict) -> str | None:
-    """Three independent gates before anything is written, because this leads to erasing a
-    disk — identical for every role: the target must be one the HOST offered (never a name the
-    browser invented), the operator must retype it exactly, and the wipe mode must be from the
-    fixed set — with anything other than "keep" allowed only on a disk that actually carries
-    data to wipe. Writes the install request and returns None, or returns the error text."""
-    disk = str(form.get("disk", "")).strip()
-    confirm = str(form.get("confirm", "")).strip()
-    wipe = str(form.get("wipe", "keep")).strip() or "keep"
-    by_name = {d["name"]: d for d in _disks()}
-    if disk not in by_name:
-        return "choose a disk from the list"
-    if confirm != disk:
-        return f"type {disk} exactly to confirm"
-    if wipe not in ("keep", "data", "all"):
-        return "unknown wipe mode"
-    if wipe != "keep" and by_name[disk]["state"] != "pithead-with-data":
-        wipe = "keep"  # nothing on the disk to keep or wipe — normalize silently
-    _spool_write_text("install-request", f"{disk}\t{wipe}")
-    return None
+def _publish_install_request(request: dict) -> None:
+    """Publish the host's trigger last, after every input it consumes is complete."""
+    _spool_write_text("install-attempt.json", json.dumps(request))
+    _spool_write_text("install-request", f"{request['disk']}\t{request['wipe']}")
 
 
 def _submit_rig(form: dict) -> web.Response:
-    """The RigForge role's submission: no pithead config at all — a pool address, a worker
-    name, an optional stratum password, on their own spool channel. The coordinator flow stays
-    byte-for-byte untouched because nothing here goes near config.json; the HOST dials the
-    pool and owns everything after. On the installation medium the disk gates are the same as
-    every other role, with one extra first-class target: "usb" means run from this stick —
-    nothing is erased, so no gates apply to it."""
+    """The RigForge role's submission: no pithead config at all — a pool address, a worker name,
+    an optional stratum password, on their own spool channel. The coordinator flow stays
+    byte-for-byte untouched because nothing goes near config.json; the HOST dials the pool. On the
+    medium the disk gates match every other role, bar one target: "usb" runs from the stick."""
     pool = str(form.get("rig_pool", "")).strip()
     host, _, port = pool.rpartition(":")
     if not host or not port.isdigit():
@@ -383,10 +336,13 @@ def _submit_rig(form: dict) -> web.Response:
             {"error": "enter the pool address as host:port — a Pithead answers on port 3333"},
             status=400,
         )
-    if installer_mode() and str(form.get("disk", "")).strip() != "usb":
-        err = _gate_install_request(form)
-        if err:
-            return web.json_response({"error": err}, status=400)
+    stick = installer_mode() and str(form.get("disk", "")).strip() == "usb"
+    install = None
+    if installer_mode() and not stick:
+        try:
+            install = validate_install_request(form, _disks())
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
     rig = {"pool": pool}
     worker = str(form.get("rig_worker", "")).strip()
     if worker:
@@ -394,10 +350,12 @@ def _submit_rig(form: dict) -> web.Response:
     password = str(form.get("rig_password", "")).strip()
     if password:
         rig["stratum_password"] = password
-    _spool_clear_error()
+    _spool_clear_host_verdict()
     # The role rides beside the request so /status can narrate honestly after it is consumed.
     _spool_write_text("role", "rig")
     _spool_write_text("rig-request.json", json.dumps(rig))
+    if install:
+        _publish_install_request(install)
     return web.json_response({"status": "accepted"})
 
 
@@ -405,6 +363,9 @@ async def submit(request: web.Request) -> web.Response:
     if not _authed(request):
         raise web.HTTPFound("/")
     form = await request.post()
+    _spool_clear_host_verdict()
+    # Restated per SUBMISSION (#1835): a stale stick choice must not mute the install narration.
+    _spool_write_text("stick", "1" if str(form.get("disk", "")).strip() == "usb" else "0")
     raw = str(form.get("config", "")).strip()
     ref = _reference()
     # Keep-everything reinstall: the preserved config wins, so the submission carries NO config
@@ -425,8 +386,8 @@ async def submit(request: web.Request) -> web.Response:
             # password is generated, no card appears, whatever a crafted submit carried.
             if confirm != disk:
                 return web.json_response({"error": f"type {disk} exactly to confirm"}, status=400)
-            _spool_clear_error()
-            _spool_write_text("install-request", f"{disk}\tkeep")
+            _spool_clear_host_verdict()
+            _publish_install_request({"disk": disk, "wipe": "keep"})
             return web.json_response({"status": "accepted"})
         # A blank disk with wipe=keep (the client's default) is just a fresh install — fall
         # through unconditionally. The no-JS path submits individual form FIELDS, not a config
@@ -444,6 +405,11 @@ async def submit(request: web.Request) -> web.Response:
             raise ValueError("the top level must be a JSON object")
     except (ValueError, TypeError) as exc:
         return web.json_response({"error": f"Not valid JSON: {exc}"}, status=400)
+    try:
+        cfg, changes = prepare_config(cfg, ref, reject_legacy_conflicts=True)
+        validate_machine_name(cfg, _last_attempt())
+    except ValueError as exc:
+        return web.json_response({"error": f"Invalid configuration: {exc}"}, status=400)
     # The dashboard-login choice travels BESIDE the config: "no login" is an empty password,
     # which is also what "not chosen yet" looks like, so the config alone cannot express intent.
     # The host reads this to decide whether to generate one.
@@ -451,29 +417,43 @@ async def submit(request: web.Request) -> web.Response:
     if mode in ("auto", "set", "none"):
         _spool_write_text("auth-mode", mode)
     # On the installation medium, config and disk arrive TOGETHER — one page, one submission,
-    # gated before anything is written (see _gate_install_request).
+    # validated without side effects; the trigger is published only after the candidate.
+    install = None
     if installer_mode():
-        err = _gate_install_request(dict(form))
-        if err:
-            return web.json_response({"error": err}, status=400)
+        try:
+            install = validate_install_request(dict(form), _disks())
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+    report = await probe_remote_nodes(cfg)
+    if report["configured"]:
+        _spool_write_text("node-probe.json", json.dumps(report))
+    if not report["ok"]:
+        remember_changes(spool_dir(), changes, _spool_json, _spool_write_text)
+        _spool_write_text("last-attempt.json", json.dumps(cfg))
+        _spool_remove("install-request")
+        return web.json_response({"error": first_failure(report), "node_probe": report}, status=400)
     # Keep the full attempt for a retry, write only what differs from the defaults.
+    remember_changes(spool_dir(), changes, _spool_json, _spool_write_text)
     _spool_write_text("last-attempt.json", json.dumps(cfg))
     _spool_write_config(strip_defaults(cfg, ref) if ref else cfg)
-    return web.json_response({"status": "accepted"})
+    if install:
+        _publish_install_request(install)
+    return web.json_response({"status": "accepted", "config_changes": changes})
 
 
 async def submit_restore(request: web.Request) -> web.Response:
     """Restore-at-setup (#909, #786 sub-issue B): an uploaded encrypted backup archive + its
-    emergency-kit passphrase, in place of the config form. This server only asks — the archive
-    and passphrase cross the SAME spool the rest of the wizard uses, and the HOST decrypts,
-    validates and extracts (firstboot_consume_restore, reusing stack_restore's own machinery).
-    A rejected archive falls back to the form with the reason, exactly like a rejected config;
-    the passphrase is written once and the host deletes it immediately either way."""
+    emergency-kit passphrase, in place of the config form. This server only asks — both cross the
+    SAME spool the rest of the wizard uses, and the HOST decrypts, validates and extracts
+    (firstboot_consume_restore). The passphrase is written once, deleted immediately either way."""
     if not _authed(request):
         raise web.HTTPFound("/")
     # aiohttp enforces client_max_size (set in make_app) itself, answering 413 before this
     # body even finishes reading — no try/except needed to turn that into a response.
     form = await request.post()
+    _spool_clear_host_verdict()
+    # Restated like /submit (#1835): a restore installs to a DISK — the gate below refuses "usb".
+    _spool_write_text("stick", "0")
     upload = form.get("archive")
     if not isinstance(upload, web.FileField):
         return web.json_response({"error": "choose a backup archive to upload"}, status=400)
@@ -488,14 +468,17 @@ async def submit_restore(request: web.Request) -> web.Response:
             status=400,
         )
     # On the installation medium, disk + wipe ride beside the archive — the SAME gate a typed
-    # submission takes (see _gate_install_request), so a restore can install too.
+    # submission takes, so a restore can install too. Validation writes no trigger.
+    install = None
     if installer_mode():
-        err = _gate_install_request(dict(form))
-        if err:
-            return web.json_response({"error": err}, status=400)
-    _spool_clear_error()
+        try:
+            install = validate_install_request(dict(form), _disks())
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
     _spool_write_bytes("restore-archive", data)
     _spool_write_text("restore-passphrase", str(form.get("passphrase", "")))
+    if install:
+        _publish_install_request(install)
     return web.json_response({"status": "accepted"})
 
 
@@ -522,8 +505,20 @@ async def handoff_ack(request: web.Request) -> web.Response:
     return web.json_response({"status": "provisioning"})
 
 
+async def keep_role(request: web.Request) -> web.Response:
+    """The "Keep it" half of the set-up-again screen: the operator wants the machine left as it
+    is, so there is nothing to configure and nothing to submit. The host is waiting on this file
+    to carry on booting with the configuration it already has."""
+    if not _authed(request):
+        raise web.HTTPFound("/")
+    if _saved_role() is None:
+        return web.json_response({"error": "nothing to keep"}, status=400)
+    _spool_write_text("keep-role", "1")
+    return web.json_response({"status": "kept"})
+
+
 async def status(request: web.Request) -> web.Response:
-    if installer_mode():
+    if installer_mode() and _spool_read("stick") != "1":
         if _spool_read("installed") is not None:
             return web.Response(
                 text="Installed — the machine is switching itself off. "
@@ -570,6 +565,8 @@ def make_app(exit_fn=sys.exit) -> web.Application:
             web.post("/submit-restore", submit_restore),
             web.get("/api/handoff", handoff),
             web.post("/handoff-ack", handoff_ack),
+            web.post("/keep-role", keep_role),
+            web.post("/retry", retry_handler(_authed, wizard_stage, spool_dir)),
             web.get("/status", status),
         ]
     )

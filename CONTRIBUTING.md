@@ -51,26 +51,8 @@ runs `ruff` (plus a few hygiene hooks) on your changed files. If you change depe
      generic class, not a trace of whoever's actual box; `tests/` and `docs/` are an accepted
      exemption boundary for illustrative/fixture content, and each class also carries a small,
      explicit value-level allowlist — see the script's own header — never a per-file exemption
-     comment), `lint-file-budget` (the file-budget ratchet, issue #1105 Phase 0 — a new tracked
-     file has a hard ceiling of 800 lines, target 400; an existing offender's current line count
-     is its personal ceiling in `docs/dev/file-budget.tsv`, and a PR may not grow it past that —
-     ceilings only ever move down, and the gate rejects a budget edit that raises one. A
-     deliberate, justified addition to a budgeted file therefore has exactly one legal path:
-     split or shrink the file so the addition fits under a ceiling that stays put or drops —
-     see issue #1258 for the worked example, where a security test that outgrew its file moved
-     into its own — and note that two same-wave merges can each pass alone and fail together, so
-     re-run `make lint` after merging onto the tip. Generated
-     code, vendored files, data/config, and prose docs are exempt by glob — see `is_exempt()` in
-     the script — and so is the shipped `pithead` artifact itself: it is generated, and the gate
-     governs its `lib/pithead/*.sh` sources instead, now that Phase 2 has begun splitting it.
-     One row was exempt from the ceilings-only-move-down half, and only that half:
-     `lib/pithead/99-remainder.sh` measured how much of that generated artifact Phase 2 had not
-     split out yet, not the size of a file anyone writes. Without that, `pithead`'s own exemption
-     became a freeze — the CLI could not gain a line, because the row refused to rise and the file
-     refused to grow past it (issue #1464). That row has retired, and not by reaching the 400
-     target: Phase 2 split the remainder out completely, so the file was deleted at 949 lines and
-     nothing in `docs/dev/file-budget.tsv` names it now. `monotonic_exempt()` in the script still
-     carries the arm and the reasoning behind it),
+     comment), `lint-file-budget` (the file-budget ratchet, issue #1105 Phase 0 — see
+     [File budget gate](#file-budget-gate)),
      `lint-pithead-parity` (the shipped `pithead` must be exactly what `lib/pithead/*.sh`
      concatenate to: edit a slice, run `scripts/build-pithead.sh`, and commit both — issue #1105
      Phase 2), `lint-trivy-parity` (the CVE
@@ -104,26 +86,51 @@ runs `ruff` (plus a few hygiene hooks) on your changed files. If you change depe
    user-facing change. To see what the suites cover, `make test-inventory` writes a
    generated (git-ignored) inventory you can read locally.
 
-### The two lanes, and what that means for CI config
+### File budget gate
 
-The stack ships two ways from one repo. `develop` is the integration branch for the Docker Compose
-product and is the repo's **default branch**. `develop-v2` is its twin: everything on `develop`,
-plus the appliance OS tree under `os/`. Appliance work targets `develop-v2`; everything else
-targets `develop`, and `develop` is merged into `develop-v2` to keep the twins level.
+The file-budget ratchet (issue #1105 Phase 0). A new tracked file has a hard ceiling of 800 lines, target
+400; an existing offender's current line count is its personal ceiling in `docs/dev/file-budget.tsv`, and a
+PR may not grow it past that — ceilings only ever move down, and the gate rejects a budget edit that raises
+one.
 
-**Automation that GitHub reads from a fixed location must live on `develop`, and must name the
-appliance branch explicitly when it needs the appliance tree.** GitHub fires a workflow's
-`schedule:` trigger from the default branch only, and Dependabot reads `.github/dependabot.yml`
-from the default branch only. A scheduled workflow or a Dependabot entry that lives on
-`develop-v2` never runs — and a job that never runs looks exactly like a job that ran and found
-nothing, which is why this went unnoticed three times (#1146, #1162, #1163). #1048 is its sibling
-and worth knowing next to it: there the schedule did fire, and the job skipped itself behind an
-unset repository variable, so `main` showed green for a gate that had never run.
+A deliberate, justified addition to a budgeted file therefore has exactly one legal path: split or shrink
+the file so the addition fits under a ceiling that stays put or drops — see issue #1258 for the worked
+example, where a security test that outgrew its file moved into its own — and note that two same-wave merges
+can each pass alone and fail together, so re-run `make lint` after merging onto the tip.
 
-Living on `develop` is only half of it. A workflow on `develop` still checks out `develop`, which
-has no `os/`, so the appliance lane is reached by an explicit ref
-(`.github/workflows/os-rootfs.yml`) or by `target-branch:` (`.github/dependabot.yml`). Both files
-carry a comment saying why they are deliberately asymmetric; do not "tidy" either onto `develop-v2`.
+The ratchet half is fatal in CI when it cannot run at all: a job that resolves none of the base-ref
+candidates has lost its `fetch-depth: 0`, which is a misconfigured job rather than a clean tree, so the gate
+fails there instead of printing a note into a log nobody reads (issue #1739). A local checkout without those
+refs still gets the note and still passes.
+
+Generated code, vendored files, data/config, and prose docs are exempt by glob — see `is_exempt()` in the
+script — and so is the shipped `pithead` artifact itself: it is generated, and the gate governs its
+`lib/pithead/*.sh` sources instead, now that Phase 2 has begun splitting it.
+
+One row was exempt from the ceilings-only-move-down half, and only that half: `lib/pithead/99-remainder.sh`
+measured how much of that generated artifact Phase 2 had not split out yet, not the size of a file anyone
+writes. Without that, `pithead`'s own exemption became a freeze — the CLI could not gain a line, because the
+row refused to rise and the file refused to grow past it (issue #1464). That row has retired, and not by
+reaching the 400 target: Phase 2 split the remainder out completely, so the file was deleted at 949 lines
+and nothing in `docs/dev/file-budget.tsv` names it now. `monotonic_exempt()` in the script still carries the
+arm and the reasoning behind it.
+
+### One integration branch, and what that means for CI config
+
+`develop` is the integration branch for everything the repo ships — the Docker Compose product and
+the appliance OS tree under `os/` — and it is the repo's **default branch**. Until 2026-09-06 the
+appliance lived on a twin branch, `develop-v2`; that branch was fast-forwarded into `develop` and
+retired, so a reference to it anywhere in this tree is stale and should be fixed, not followed.
+
+**Automation that GitHub reads from a fixed location must live on the default branch.** GitHub
+fires a workflow's `schedule:` trigger from the default branch only, and Dependabot reads
+`.github/dependabot.yml` from the default branch only. A scheduled workflow or a Dependabot entry
+that lives anywhere else never runs — and a job that never runs looks exactly like a job that ran
+and found nothing, which is why this went unnoticed three times while the twin existed
+(#1146, #1162, #1163). Its sibling is #1048, worth knowing next to it: there the schedule did fire,
+and the job skipped itself behind an unset repository variable, so `main` showed green for a gate
+that had never run. Nothing in the tree needs an explicit checkout `ref:` or a Dependabot
+`target-branch:` any more; if you find one, it is left over from the twin.
 
 Check this from run history, never from the file — the file always looks fine:
 

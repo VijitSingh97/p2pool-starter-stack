@@ -15,6 +15,14 @@ The dashboard shows Sync Mode the first time you start the stack, or any time th
 node is still catching up. A `Syncing...` badge appears next to the hostname, the headline reads
 *"System is currently synchronizing with the network,"* and no hashrate is routed yet.
 
+The screen also says what it is waiting on, because two of the clocks involved are not the progress
+bars and an operator watching only those reads a working machine as a stuck one. If the node went
+unreachable and is catching up again, workers are readmitted once the node has stayed reachable for
+a recovery window rather than on the first check that succeeds — a machine starting for the first
+time has no rejected workers, so that wait belongs to a node that dropped out, not to a first run.
+And `dashboard.tari_required` is read when the dashboard starts, so changing it takes effect once
+you apply the change, not while the screen is up.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./images/launch/sync.png">
   <img alt="Sync Mode" src="./images/launch/sync-light.png">
@@ -571,20 +579,19 @@ How it stays safe:
   against its prefill, table mode only ever emits a key you changed. The change record never gets
   a chance to hold the value either way — it strips the password and the TLS fingerprint out
   before writing, and strips them again out of every read.
-  **Editing a pool entry is a different story, and it is not fully solved yet.** RigForge deletes
-  `pass` and `tls-fingerprint` before serving its enriched feed (`rigforge.sh`'s
-  `_api_config_json`), so on a stock rig `pools` reaches this dashboard with no password key at
-  all — no `{__secret__: true}` sentinel, nothing for the editor to recognise as "a credential
-  lives here." (The sentinel and the scrub chain that removes a stray one before it reaches the
-  rig do exist and do fire, but only for a rig running an older or patched build that still serves
-  `pass`.) **Edit a pool entry's URL or any other field on a stock rig, in either mode, and the
-  submitted entry carries no password — RigForge accepts it: a missing `pass` defaults to the
-  literal string `x` (`parse_config`), and `_control_commit` replaces the array wholesale, so the
-  rig starts running with password `x`, silently.** Fixing this needs a change on the RigForge
-  side — a marker for "a password is set" that `_control_commit` can honour when an incoming entry
-  omits `pass` — tracked as rigforge#415; this dashboard's sentinel machinery becomes the real
-  defence once that lands. Until then, re-supply a pool's password whenever you edit anything else
-  on that pool.
+  **Editing a pool entry keeps its password, with one exception.** RigForge serves a stored
+  `pass` or `tls-fingerprint` as the `{__secret__: true}` sentinel and never the value
+  (`rigforge.sh`'s `_api_config_json`, rigforge#415, in the build this appliance bakes); a pool that
+  stores no password arrives with no `pass` key at all, so "not set" stays distinguishable from
+  "set but hidden". The editor keeps the sentinel in its prefill, the scrub chain drops it again
+  before the request reaches the rig, and `_control_commit` restores the stored value for an
+  incoming entry that omits `pass` or carries the sentinel — matched on the entry's `url` and
+  `user`. **Change a pool's URL or its user and that match finds nothing: the entry commits as a
+  brand-new pool with no password, which `parse_config` defaults to the literal string `x`, and the
+  rig starts running with password `x`, silently.** Re-supply the password whenever you change a
+  pool's URL or user; editing any other field on the pool keeps it. A rig on a RigForge build older
+  than 1.17.0 still deletes `pass` outright before serving it, and there every pool edit needs the
+  password re-supplied.
 
 RigForge keeps no config history on the rig, so Pithead owns it: every change the dashboard applies is
 recorded with its keys, outcome, and time. The editor prefills from the rig's own current writable
@@ -930,9 +937,10 @@ button sits next to the Simple/Advanced toggle whether or not the channel is on;
 view explains how to turn it on and nothing else.
 
 One editing surface: the form on top and, beneath it, a collapsed **Advanced** pane holding
-the exact configuration that will be applied — both live views of a single candidate. Editing
+the configuration this page sends — both live views of a single candidate. Editing
 a field rewrites the pane; editing the pane refills the fields; what the pane shows is
-byte-for-byte what Save previews. (This is the setup wizard's pattern — the first page and
+byte-for-byte what Save previews, apart from the developer-only keys named below, which the
+machine keeps and this page never touches. (This is the setup wizard's pattern — the first page and
 the config tab now behave identically.) The pieces:
 ([#529](https://github.com/p2pool-starter-stack/pithead/issues/529)):
 
@@ -940,46 +948,53 @@ the config tab now behave identically.) The pieces:
   `monero.mode` / `p2pool.pool` / dashboard-auth-and-host shortlist
   [`./pithead setup`](getting-started.md#3-run-setup) asks, read from the one file the wizard and
   this view share, [`config.core-keys.json`](../config.core-keys.json), so the two can't drift
-  apart. Below it, the rest of the schema is grouped into **logical sections**
-  ([#611](https://github.com/p2pool-starter-stack/pithead/issues/611)) an operator recognizes —
-  Wallets & payout, Monero node, Mining, Workers, Dashboard & access, Notifications, Energy, Alerts
-  & thresholds, System / advanced — instead of one section per top-level `config.json` key, so a
-  grab-bag key like `dashboard` (auth, remote access, the energy calculator, alert thresholds, …)
-  splits across the sections its fields actually belong to. Each section is a collapsed `<details>`
-  as before; within **Notifications**, the 27 `telegram.events` toggles, the ntfy/webhook sinks,
-  and Healthchecks each nest one level deeper into their own collapsed sub-group
+  apart. Below it, the rest of the schema is grouped by operator purpose — **Mining, Payouts,
+  Monero node, Tari node, Workers, Dashboard & access, Notifications, Energy, Alerts, Advanced** —
+  in the same order as [`config.reference.json`](../config.reference.json), instead of one section per top-level `config.json`
+  key, so a grab-bag key like `dashboard` (auth, remote access, the energy calculator, alert
+  thresholds, …) splits across the sections its fields actually belong to. Each section is a
+  collapsed `<details>` as before; within **Notifications**, the 27 `telegram.events` toggles, the
+  ntfy/webhook sinks, and Healthchecks each nest one level deeper into their own collapsed sub-group
   ([#612](https://github.com/p2pool-starter-stack/pithead/issues/612)) instead of dominating the
   section's field list. Rows in a section whose fields span more than one top-level key carry their
   full dotted path (`monero.view_key`, `tari.view_key`) so two leaves with the same name read as two
   different keys; a single-key section keeps the shorter relative label — its heading names the rest.
-  A config path no logical section claims still renders, in a catch-all
-  **Other** group — a new schema key can't silently vanish from the editor, and a frontend test
-  fails loudly if one ever would. `workers.list[]` (the per-rig descriptors) isn't a form field
-  here — a variable-length list has no single form control for it, and the host gate refuses a
-  change to it in either edit mode, since it carries each rig's host and token. Edit it in
-  `config.json` and run `./pithead apply`. [Worker Inspect](#worker-inspect) is a different thing:
+  Every group carries a one-line explanation. A frontend test requires every reference path to
+  have an intentional named group, so a new key cannot silently vanish or drift into an **Other**
+  bucket. A hidden key is the one exception: `ssh.*` (below) is dropped
+  before the grouping runs, so it reaches neither a section nor **Other**. `workers.list[]` (the per-rig descriptors) isn't a form field
+  here — a variable-length list has no single form control for it; edit the complete list in the
+  Advanced JSON pane. Changes to existing rig hosts and tokens require approval.
+  [Worker Inspect](#worker-inspect) is a different thing:
   it retunes the *rig's own* settings (pools, donation, autotune, watchdog, temperature cap)
   through that rig's control API, never the stack's descriptor list.
 
-  A field the control gate wouldn't actually commit renders **greyed out**
-  ([#613](https://github.com/p2pool-starter-stack/pithead/issues/613)): disabled, its value shown
-  read-only, with a tooltip ("Host-only — edit `config.json` and run `./pithead apply`") instead of
-  letting you edit it and finding out only at Save. A smaller set of operationally-disruptive
+  Ordinary fields are editable directly. A smaller set of operationally-disruptive
   fields — the four service data directories, the stratum port, the clearnet initial-sync toggles,
-  enabling Monero pruning, and the Monero outbound-peer count — render **editable but
-  confirm-gated**
+  enabling Monero pruning, the Monero outbound-peer count, and the remote Monero and Tari node
+  endpoints — render **editable but confirm-gated**
   ([#719](https://github.com/p2pool-starter-stack/pithead/issues/719)): editable, tooltipped
-  "you'll type `APPLY` to confirm at Save". Both sets are derived from the same allowlists the gate
-  enforces (see below) and surfaced on `GET /api/config` as `_editable_keys` and `_confirm_keys`,
-  so neither can drift from what the gate actually accepts; a greyed field never enters the staged
-  edit set at all.
-- **The Advanced pane** is the whole candidate as one text block, for operators who'd rather
+  "you'll type `APPLY` to confirm at Save". Sensitive fields require the signed-in dashboard user
+  plus approval by an allow-listed Telegram user. All three sets come from the host policy and are surfaced on `GET /api/config`
+  as `_editable_keys`, `_confirm_keys`, and `_approval_keys`, so the form cannot silently choose a
+  weaker policy than the commit path.
+- **The Advanced pane** is the whole editable candidate as one text block, for operators who'd rather
   paste than click through fields. A **Load from file** control (`FileReader`, no upload) fills
   it from a saved `config.json`, the same pattern [Worker Inspect's JSON mode](#worker-inspect)
   uses. A malformed edit is flagged inline, keeps the last good candidate as what Save would
   send, and blocks Save until fixed. The pane edits the whole config as text, so grouping and
-  the host-only grey-out (both display-layer, form-only) don't constrain it — the gate still
-  validates and gates it identically.
+  the form grouping does not constrain it — the machine still validates it under the same free,
+  confirm, approval, and never-approve classes. The hidden keys below are the exception: they are not in
+  the text, and typing one in does not put it there.
+- **`ssh.*` is not in this view at all**
+  ([#1850](https://github.com/p2pool-starter-stack/pithead/issues/1850)). SSH on the appliance is a
+  developer feature — a user never shells into the machine, and the ways in are a configuration
+  stick and the `--ssh` debug image. The host's approval channel refuses those keys whatever
+  sends them, so the page used to offer a control that could not work: an operator who set
+  `ssh.enabled` and pressed **Save & preview changes** was told "No configuration changes
+  detected", because the host had dropped the only key they had changed. The form and the pane
+  both hide them now, and the view puts the machine's own values back into whatever it sends —
+  so a save from here leaves SSH exactly as it was, on or off.
 
 The flow mirrors the CLI's `apply`:
 
@@ -994,34 +1009,62 @@ The flow mirrors the CLI's `apply`:
 2. **Save & preview changes** stages the edited config on the host, which dry-runs it and returns
    the same change preview `./pithead apply` prints — one row per changed setting, disruptive rows
    (⚠) styled as warnings. A config that fails validation is rejected here with pithead's own
-   error message; nothing is applied.
-3. Confirm. If the preview flags any change disruptive (⚠), you must type `APPLY` first. The
+   error message; nothing is applied. Sensitive changes also show the complete old and new
+   non-secret payout or endpoint value; secret values remain masked.
+3. Confirm. If the preview flags any change disruptive (⚠), you must type `APPLY` first. A payout
+   change also requires the final eight characters of the new address. The
    commit runs `pithead apply -y` on the host and recreates only the containers whose config
    changed. Your typed confirmation rides to the host gate, which requires it before a
    confirm-gated change proceeds — a change confirmed this way is recorded in the audit log as a
-   `commit-confirmed` action, distinct from an ordinary commit.
+   `commit-confirmed` action, distinct from an ordinary commit. For an approval-required commit,
+   the host pauses the dashboard poller, creates a one-time token bound to the preview id, staged
+   config digest, dashboard user, payout suffixes, and expiry, then sends and polls the complete
+   non-secret preview itself. It accepts only the configured chat, exact prompt, and an allow-listed
+   Telegram user. The dashboard cannot assert the approver. The result is recorded as
+   `commit-approved` with both the dashboard actor and Telegram approver.
 
-Most settings cannot be committed from the dashboard — the host-side runner holds an explicit
-allowlist of operational settings (pool tier, XvB enable and donation level, alert toggles,
-memory limits, time zone, the energy-calculator prices, …) and default-denies a change, in any
-direction, to anything else. A second, confirm-gated allowlist
+Every reference setting belongs to an explicit policy class. The ordinary allowlist covers routine
+operations. A second, confirm-gated allowlist
 ([#719](https://github.com/p2pool-starter-stack/pithead/issues/719)) adds the
 operationally-disruptive-but-recoverable settings — a data-directory move (re-sync), a stratum-port
 change (rigs repoint), a clearnet initial-sync enable (host IP exposed during IBD, auto-reverts),
-enabling Monero pruning, and the Monero outbound-peer count (bounded, but the biggest
-steady-state knob on the shared Tor daemon's load) — which commit only behind the typed
-`APPLY`. Type-to-confirm here is
-friction, not a security control: a compromised dashboard that can set a field can also fill the
-confirm box, so the boundary stays where a breach would happen. Form mode's grey-out and
-confirm-gating (above) are those SAME allowlists surfaced to the browser up front, not a separate
-approximation of them — so what renders editable is exactly what the gate will commit. The
-allowlists gate BOTH edit modes identically regardless — JSON mode is a different way to assemble
-the candidate config, not a different validation path, so it can't smuggle a change the form
-couldn't make. The **security perimeter stays host-only** in every direction: wallets and view
-keys, the dashboard login and onion settings, the control channel itself, the Tor egress firewall,
-the stratum password, node endpoints and credentials, and the per-rig hosts and tokens. The gate
-also refuses the heavier direction of a confirm-gated key (disabling pruning forces a full re-sync,
-so it stays host-only). Apply those from the host with `./pithead apply`.
+enabling Monero pruning, the Monero outbound-peer count (bounded, but the biggest
+steady-state knob on the shared Tor daemon's load), and the remote Monero and Tari **node
+endpoints** ([#1888](https://github.com/p2pool-starter-stack/pithead/issues/1888)) — which commit
+only behind typed `APPLY`. Type-to-confirm is intent friction, not authentication. The approval
+class covers funds, traffic, control, authentication, and sensitive behavior; its host-owned record
+is bound to the preview id, staged digest, and signed-in dashboard actor, requires the existing
+Telegram operator identity, and adds the typed suffix check for payout destinations.
+The machine re-derives the changed paths and expected suffixes rather than trusting browser labels.
+Both edit modes use the same policy. Secrets are never included in preview or audit values.
+
+The existing physical-presence boundary is unchanged: `ssh.*`, the dashboard password, the approval
+identity (`telegram.control.allowed_ids`), and the two tamper alarms cannot be approved remotely.
+The machine refuses them even if a request forges an approval envelope and directs the operator to
+use a configuration stick. This prevents the configuration page from weakening the identity or
+evidence needed to approve its own later changes.
+
+Approval is available when the Telegram bot token, chat, and `allowed_ids` already name an operator.
+The command interface and `telegram.control.enabled` may stay off; configuration approval reuses
+the identity data without enabling status commands, `/restart`, or `/apply`. If no approval identity
+is configured, the page refuses a sensitive commit instead of treating the dashboard login as its
+own approval.
+
+A node-endpoint change is the one confirm-gated setting with a second gate behind the typed
+`APPLY`: before the commit is accepted, the host dials the endpoint you staged and refuses one it
+cannot reach, reporting which check failed
+([#1889](https://github.com/p2pool-starter-stack/pithead/issues/1889)) — a TCP connect on each
+port, and for Monero's ZMQ port a protocol greeting, because a published container port with no
+publisher behind it answers a reachability check exactly like a live node does. The probe runs on
+the staged config, host-side, and only when an endpoint key actually changed, so an unrelated
+commit is never held up by a node that happens to be down. It is what makes the endpoints
+committable at all: the typed token is friction, but the probe means a dashboard cannot park a
+chain on a node that is not there. Remote node credentials can also be changed through approval,
+but their secret values stay masked in the browser, preview, result, and audit trail.
+
+On an appliance a refusal never tells you to open a shell you do not have: where a DIY host is
+told to edit `config.json` and run `./pithead apply`, the appliance is told the setting is fixed at
+setup and pointed at **Set up again**.
 
 A dashboard-confirmed data-directory move
 ([#728](https://github.com/p2pool-starter-stack/pithead/issues/728)) is held to a tighter rule than
@@ -1046,8 +1089,15 @@ read-only `results/` mount plus an audit line (timestamp, logged-in user, action
 the names of the changed settings) to `audit/control.log`. A dashboard-confirmed disruptive change
 records its action as `commit-confirmed`, so a confirm-gated apply reads distinctly from an
 ordinary commit in the log. The container cannot forge results,
-alter a staged config between preview and commit, or rewrite the audit log. A failed apply keeps
+alter a staged config between preview and commit, or rewrite the audit log. A failed apply replaces
+the earlier preview row with a `failed` history row linked to the same saved result/log. It keeps
 the previous config at `config.json.bak-control` and surfaces pithead's error in the view.
+On an appliance that view is worded differently
+([#1769](https://github.com/p2pool-starter-stack/pithead/issues/1769)): the operator has no
+shell, so it says the backup was kept without naming a host path they cannot reach, and it
+labels pithead's error as the machine's own apply log rather than leaving its `./pithead`
+commands to read as instructions. The log itself is shown either way — it is the only
+diagnostic detail either operator gets.
 Operational details:
 [Operations › Editing config from the dashboard](operations.md#editing-config-from-the-dashboard).
 
@@ -1064,8 +1114,9 @@ Below the form, the Configuration view shows two read-only security panels
   `./pithead rotate-dashboard-onion`. The log is always on; entries appear once Caddy has handled
   a request on this version.
 - **Recent config changes.** The control channel's host-side audit trail: one row per handled
-  request — timestamp, dashboard user, preview/commit, outcome, and the *names* of the settings
-  that changed. Values are never recorded (several are secrets). Shown only when
+  request — timestamp, dashboard user, operation, outcome, and the *names* of the settings
+  that changed. Initial wizard provisioning is named as provisioning instead of a host edit, and a
+  failed apply links to its saved outcome. Values are never recorded (several are secrets). Shown only when
   `dashboard.control.enabled` is on.
 
 Each panel carries the same navigation row: range presets (**24 Hr / 1 Wk / 1 Mo / All**, the
@@ -1130,6 +1181,94 @@ The audit trail is no longer only a log tail: entries — both mirrored from `co
 three out-of-band kinds above — persist to the dashboard's own database, so the range presets, date
 fields and search reach further back than the log's own trimmed tail. Walk the result with the
 page-size control (5, 10, 20, 50 or 100 rows a page), newest first.
+
+### Service diagnostics
+
+Two read-only questions you can ask the host, in the same card stack as the config editor and
+under the same `dashboard.control.enabled` flag. Neither changes anything: they run a check and
+report, which is why neither asks you to confirm.
+
+**Run health check** runs the host's own `pithead doctor` and shows what it found — the same
+checks the CLI prints, failures first, with the host's summary counts above them. This is the one
+that matters on a [Pithead OS appliance](appliance.md), where there is no shell to run `doctor`
+from: before it, the dashboard could tell you *that* a service was unhealthy and never *why*.
+
+A check that fails tells you what to do about it in the terms of the machine you are on. On an
+appliance there is no shell, so where the DIY stack says to run `./pithead apply` or
+`./pithead setup`, this panel names a surface you can actually reach instead — the update button,
+the log view, or the setup page while the machine is still unprovisioned.
+
+Where the appliance offers nothing that would fix it, the report says so and stops, rather than
+naming a command you cannot run or a page that is no longer there. Three cases are worth knowing,
+because each is a real dead end rather than an oversight:
+
+- **A payout address is not editable from the dashboard at all**, so the report tells you that
+  correcting it needs console access.
+- **The setup page closes permanently once the machine is provisioned.** Setup that did not finish
+  can only be reported after that point, so the report does not send you back to a page that is
+  gone.
+- **The dashboard certificate is re-minted only when the set of names this machine answers to
+  changes.** An expiring or expired certificate whose name list is still correct will not renew
+  itself, and replacing it needs console access.
+
+A missing Tor hidden service is the case that goes the other way, and the report tells you which one
+you are looking at. Saving any change from the dashboard re-runs this machine's own apply, and that
+regenerates a missing hidden service for the Monero node, the Tari node, or the dashboard itself — so
+those verdicts ask you to save a change rather than to find a console. P2Pool's is the exception:
+apply refuses to finish while that one is missing, so no dashboard surface can regenerate it.
+
+One thing reads differently here than at a terminal: the report is redacted on its way to the
+browser, so where `pithead doctor` prints your dashboard's onion address in full, this panel shows
+it as `[redacted].onion`. That is the only address the redaction changes here. The report names the
+other three hidden services — the Monero node's, the Tari node's and P2Pool's — by setting rather
+than by address, so there is nothing of theirs on this page to hide.
+
+The two surfaces disagree about your dashboard's **own** onion on purpose: the header shows it in
+full, with a **Copy** button, because a machine you cannot reach is a machine you cannot fix. This
+panel still redacts it. A `[redacted].onion` here is not a promise that the address is absent from
+the browser — scroll up and it is in the header on both the Compose stack and the appliance. When
+you need one of the node onions, they are in the stack's `.env`, which the encrypted backup archive
+carries.
+
+**Show recent log** returns the last 200 lines from one service, redacted on the host by the same
+redactor the [support bundle](operations.md) uses — so a credential a service echoed on its
+launch line does not reach the browser. Neither does a Monero payout address written into ordinary
+log text, which p2pool does every time it reports a payout. Pick the service from the list; the
+host caps the line count and the total size itself, whatever the page asks for.
+
+One gap is worth knowing about rather than assuming away: a **Tari** address in log text is
+scrubbed on a launch line and nowhere else. Its three valid forms are 91, 48 and 67 characters
+long and one of them is not even alphanumeric, so nothing recognises it by shape the way the
+Monero address and the onion are recognised. Read a tail before you paste it somewhere public.
+
+Two services are deliberately missing from that list: `wallet-rpc` and `tari-wallet`. The
+redactor is built around the credentials and addresses services print when they start, plus the
+two values it can recognise anywhere by shape, and the wallet daemons are the two most likely to
+print key or address material in some other shape. The
+support bundle may still collect them, because it lands on the host as a file you review before
+sharing it; this panel streams to a browser, which is not the same thing. To debug a wallet
+daemon, use the support bundle or the console.
+
+If you pick a service the host will not read logs for, the host refuses and the panel shows its
+reason as-is rather than guessing at one.
+
+## Backup view
+
+**Backup** is its own entry in the toggle above the chart, beside Simple, Advanced and
+Configuration ([#1854](https://github.com/p2pool-starter-stack/pithead/issues/1854)). It used to
+sit below the config editor, where an operator handed a working machine had to scroll past a form
+they had no reason to open before finding it. The card itself is unchanged — one button, one
+archive, one passphrase shown once — and
+[Backing up your data](appliance.md#backing-up-your-data) covers what it produces.
+
+The card names both halves a restore needs: the encrypted archive, and the kit that carries the
+passphrase opening it. Neither half is any use without the other, and setting a machine up later
+asks for that same pair.
+
+On the appliance the card drops the host-side remedy the other builds print. Turning the control
+channel back on means editing `config.json` and running `./pithead apply`, and an appliance
+operator has no shell for either, so there the card says backup returns with the control channel
+rather than naming a file they cannot open.
 
 ## Upgrading from the dashboard
 

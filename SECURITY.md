@@ -87,8 +87,12 @@ The stack's defaults:
   channel without a dashboard password is a validation error, on a published onion it additionally
   requires Tor client authorization, and every mutation is audited host-side. Commits are default-denied against an explicit allowlist. Low-risk
   operational settings commit directly; a small set of operationally-disruptive ones — data-directory
-  moves, the stratum port, enabling clearnet initial sync, and enabling pruning — commit only behind
-  a typed confirmation in the dashboard, and only in that direction. A dashboard-confirmed
+  moves, the stratum port, enabling clearnet initial sync, enabling pruning, and the remote Monero
+  and Tari **node endpoints** (#1888) — commit only behind a typed confirmation in the dashboard,
+  and only in that direction. A node-endpoint change carries a second, non-cosmetic gate: the host
+  probes the staged endpoint and refuses one it cannot reach, so a dashboard cannot park a chain on
+  a node that is not there. The endpoints are address identity, not secrets — the remote node's RPC
+  username and password stay in the never-committable set below. A dashboard-confirmed
   data-directory move is further held to an **allowlist** (#728): the new location must sit under the
   stack's own data root (the install dir's `data/`) or a parent the stack already keeps data in;
   a move to any other absolute path is refused even with the typed confirmation and stays host-CLI
@@ -97,7 +101,7 @@ The stack's defaults:
   every direction, as is anything the change preview flags destructive (including the heavy direction
   of a confirm-gated key, e.g. disabling pruning, which forces a full re-sync). The security
   perimeter — wallets and view keys, dashboard auth and onion exposure, the control channel itself,
-  the Tor egress firewall, node endpoints, binds, every credential, and the per-rig hosts and tokens —
+  the Tor egress firewall, binds, every credential, and the per-rig hosts and tokens —
   is never dashboard-committable, with or without the typed confirmation. A key added in the
   future stays un-committable until deliberately listed. Those edits must be applied from the host CLI.
 - Attack visibility (#349): Caddy writes a JSON access log for every dashboard vhost (LAN and
@@ -123,8 +127,18 @@ The stack's defaults:
   rows per hour between them before the rest are dropped behind a single `rate-limited` marker that
   names which of the two tipped it. One budget rather than one each, because two would double what
   that device can make permanent. The cap is keyed on the worker name the device presents, which a
-  device chooses freely, so it bounds a NAME rather than a device: one rotating names draws a fresh
-  budget per name (#1566). And it bounds how many rows arrive, not how large each one is, so the
+  device chooses freely, so a second bound sits beside it (#1695): only a fixed number of worker
+  names may hold a live window at once, and a name that holds none yet is refused once that
+  ceiling is reached, so a rotating device no longer draws a fresh budget per name. What a flood
+  cannot do is displace a name that already holds a live window. It does NOT leave every
+  established rig alone, and the difference is the residual: holding a window means having
+  produced an out-of-band detection within the last hour, not being a device we know, so a rig
+  whose changes all go through the dashboard holds none — and during a flood its FIRST detection
+  is refused and dropped behind the episode marker. The best-behaved rig is the least protected.
+  That is disclosed rather than fixed: this feed carries no authenticated identity to key
+  admission on instead. The refusal is as visible as the per-worker cap: one `rate-limited` marker
+  for the episode, naming no rotated name, because a marker per name would be the flood the
+  ceiling exists to stop. And it bounds how many rows arrive, not how large each one is, so the
   row's own identifier is bounded separately (#1561): every audit row id
   is length-capped and whitelisted at the writer, the one field the trail's sanitizer used to skip,
   and `rig-drift`'s revision is validated to a short opaque token at the point it is read as well.
@@ -138,6 +152,18 @@ The stack's defaults:
   row, and the later detection was DROPPED. The same escaping settles the `host-edit` and
   `control.log` identifiers by construction instead of by reading the call sites — those carry no
   `:` and every out-of-band id does, so a rig cannot mint one however it names itself.
+  Nor can either source stop the poll step that detects them (#1696). Both read strings the device
+  picks — its change id, the reason beside it, its own worker name — and a rig's JSON may legally
+  carry a lone surrogate, which sqlite refuses to store. That refusal is a `ValueError` rather than
+  a database error, so it used to travel through the store's fail-closed handlers and end the step:
+  an unauthenticated device on the LAN could halt out-of-band detection with one character. Each
+  rig-chosen string is now checked before it is bound, and each caller answers in its own
+  direction. An unstorable change id reads as one this dashboard never sent, so the rig is flagged
+  rather than excused — the opposite direction from a read error, and deliberately so, since
+  treating it as already-known would have let a rig opt out of being audited. An unstorable reason
+  is dropped while the outcome beside it is still recorded. One case is disclosed rather than
+  fixed: a rig whose worker NAME is unstorable is not drift-checked at all for as long as it keeps
+  that name, because a name the database cannot hold is one no later poll can compare against.
   The `host-edit` and mirrored `control.log` rows are not attacker-controllable and are not capped.
 
 ### Telegram control commands (#338)

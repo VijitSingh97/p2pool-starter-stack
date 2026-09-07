@@ -283,24 +283,67 @@ provision_local_miner() {
 
 # --- the rig role's boot leg (one stick, three machines) -------------------------------------
 # A rig has no config.json, no containers, no dashboard and no chains: its entire product is the
-# miner. So it rides the SAME leg the Both role rides, sourced from rig.json instead of
-# config.json — one invocation contract, one prebuilt, one appliance mode.
+# miner. It shares the Both provisioning leg, with rig.json as its input.
+
+# The rig's control token (#1836): 32 hex, minted once and kept in rig.json beside the answers
+# it belongs to, so the config rebuilt at every boot carries the token the operator pasted into
+# the coordinator's adopt form. The token is this function's ONLY stdout — callers capture it.
+rig_access_token() {
+    local tok tmp
+    tok=$(jq -r '.access_token // ""' "$PWD/rig.json" 2>/dev/null)
+    if ! [[ "$tok" =~ ^[0-9a-f]{32}$ ]]; then
+        tok=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+        [[ "$tok" =~ ^[0-9a-f]{32}$ ]] || return 1
+        tmp=$(mktemp "$PWD/.rig.json.XXXXXXXXXX") || return 1
+        if ! { (umask 077 && jq --arg t "$tok" '. + {access_token: $t}' "$PWD/rig.json" >"$tmp" 2>/dev/null) &&
+            chmod 600 "$tmp" && mv -f "$tmp" "$PWD/rig.json"; }; then
+            rm -f "$tmp"
+            return 1
+        fi
+    fi
+    printf '%s' "$tok"
+}
+
+# The coordinator's address for RigForge's api_allow_from pin: rig.json's pool host resolved to
+# ONE IPv4. RigForge takes an address or CIDR there, never a name, and binds its API ports on
+# IPv4. Prints nothing when the host has no IPv4 — an onion pool, a name mDNS does not answer —
+# and the caller leaves control OFF rather than guess: RigForge refuses control without the pin.
+rig_coordinator_ip() {
+    local host
+    host=$(jq -r '.pool // ""' "$PWD/rig.json" 2>/dev/null)
+    host=${host%:*}
+    host=${host#\[}
+    host=${host%\]}
+    [ -n "$host" ] || return 0
+    getent ahostsv4 "$host" 2>/dev/null | awk '$1 ~ /^[0-9]+(\.[0-9]+){3}$/ { print $1; exit }'
+}
 
 # RigForge's config for a rig, derived from rig.json exactly the way the Both role's is derived
-# from config.json — rebuilt every boot, never repaired. Three values and no more: the pool the
-# operator gave, the worker name that labels this rig at that pool (RigForge's pools[].user,
-# which falls back to the hostname when empty), and the stratum password when one was set.
-# No hugepages_reserve_extra_mb: there is no stack on this machine to leave headroom for, so
-# RigForge sizes the HugePages pool for the miner alone.
+# from config.json — rebuilt every boot, never repaired. The pool the operator gave, the worker
+# name that labels this rig there (RigForge's pools[].user, the hostname when empty), the stratum
+# password when one was set — and, #1836, the rig's own token on every API, the read-only sister
+# feed the coordinator probes, and the writable control path pinned to the coordinator's address,
+# which is what lets the Workers view adopt this rig instead of showing "API error". Without the
+# token XMRig's own API stood open on the LAN. control_upgrade stays off: an appliance rig updates
+# through its own A/B bundle, never through RigForge's upgrade path. No hugepages_reserve_extra_mb:
+# there is no stack on this machine to leave headroom for, so RigForge sizes the pool for the miner.
 render_rig_miner_config() {
-    local dir
+    local dir tok allow
     dir=$(rigforge_dir)
     if [ ! -d "$dir" ]; then
         warn "This machine is a rig, but there is no RigForge tree at $dir — this image does not carry the miner."
         return 1
     fi
-    jq '{pools: [({url: .pool, user: (.worker // "")}
-        + (if (.stratum_password // "") == "" then {} else {pass: .stratum_password} end))]}' \
+    tok=$(rig_access_token) || {
+        warn "Could not mint or keep the rig's control token in rig.json — the miner was not configured."
+        return 1
+    }
+    allow=$(rig_coordinator_ip)
+    [ -n "$allow" ] || warn "The rig's control API stays off: the pool host does not resolve to an IPv4 address to pin it to. The read-only feed still serves, token required."
+    jq --arg tok "$tok" --arg allow "$allow" '{pools: [({url: .pool, user: (.worker // "")}
+        + (if (.stratum_password // "") == "" then {} else {pass: .stratum_password} end))],
+        ACCESS_TOKEN: $tok, api: "enabled"}
+        + (if $allow == "" then {} else {control: "enabled", api_allow_from: $allow} end)' \
         "$PWD/rig.json" >"$dir/config.json" 2>/dev/null || return 1
     chmod 600 "$dir/config.json" 2>/dev/null || true
 }
@@ -326,8 +369,28 @@ rig_minimize_writes() {
     # overrides a drop-in.
     printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=32M\n' >"$dropin/zz-rig-volatile.conf" 2>/dev/null || return 0
     [ -d "$journal" ] || return 0
-    rm -rf "${journal:?}"
+    # Restart FIRST: journald holds the persistent files under $journal open, and a bind there
+    # cannot come off while it does (umount: target is busy). Volatile, it writes under /run and
+    # holds nothing here. (Before #1817 the restart came after the reclaim, which worked only
+    # because unlinking an open file is allowed — taking a mount off is not.)
     systemctl restart systemd-journald >/dev/null 2>&1 || true
+    # #1817: a first boot binds the persistent journal home onto this path before the role is
+    # known (pithead-journal-persist), so the reclaim meets a MOUNTPOINT. `rm -rf` on one empties
+    # it — through the bind, onto /data — and then fails on the mountpoint itself. Take the bind
+    # off first, so what is reclaimed is the overlay's own directory and nothing on /data is
+    # touched. Every step is best-effort: this is a stick-wear optimisation, nothing downstream
+    # reads its result, and the one caller that matters runs under errexit (pithead-boot's
+    # `local-miner`) — a cleanup that cannot complete must never leave a slot uncommitted.
+    if mountpoint -q "$journal" 2>/dev/null; then
+        umount "$journal" 2>/dev/null || true
+        # A bind that did not come off is left alone: `rm -rf` through it would empty the
+        # persistent home on /data, the one thing this block promises not to do.
+        if mountpoint -q "$journal" 2>/dev/null; then
+            warn "The journal bind is still up, so nothing is reclaimed; journald is volatile for this boot anyway."
+            return 0
+        fi
+    fi
+    rm -rf "${journal:?}" || warn "The journal directory could not be reclaimed; journald is volatile for this boot anyway."
     log "Rig write minimization: the journal is in memory for this boot — the root may be the stick the miner runs from."
 }
 
@@ -336,7 +399,11 @@ provision_rig_miner() {
         warn "This machine is marked as a rig, but its settings are missing — install it again from the stick to choose a role."
         return 1
     fi
-    rig_minimize_writes
+    # `|| true` on purpose (#1817): the minimization is best-effort by construction, and this
+    # function is called BARE from the boot path (pithead-boot -> `pithead local-miner`, errexit
+    # armed) but under `|| true` from the wizard — a failure inside it passed first boot and
+    # killed every boot after, which is the one signature a full gate is needed to see.
+    rig_minimize_writes || true
     render_rig_miner_config || return 1
     if rigforge_setup_run; then
         log "The rig is mining: $(jq -r '.worker // "this machine"' "$PWD/rig.json" 2>/dev/null) -> $(jq -r '.pool // "no pool recorded"' "$PWD/rig.json" 2>/dev/null)."

@@ -51,6 +51,8 @@ async def _poll_until_matched(worker_client, ip, name, target, entry, attempts, 
         if rf is None:
             continue
         entry["rigforge"] = rf
+        if rf.get("stale"):
+            continue
         reported = parse_semver(rf.get("version"))
         if target is None or (reported and reported == target):
             return True

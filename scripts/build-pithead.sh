@@ -6,8 +6,8 @@
 # and an operator runs `./pithead` straight out of a checkout. So the split into sources cannot
 # introduce a runtime `source` — the file has to keep working as one self-contained script. It is
 # therefore built by CONCATENATION: lib/pithead/*.sh in LC_ALL=C name order, byte for byte, into
-# the committed `pithead`. Both the sources and the artifact are committed, and the artifact is
-# the thing that ships.
+# the committed `pithead`, under a banner naming this script as the generator. Both the sources
+# and the artifact are committed, and the artifact is the thing that ships.
 #
 # That design is only honest if the two cannot drift, which is what `--check` is for: it rebuilds
 # into a temporary file and refuses on any difference. `make lint` runs it, so a slice edited
@@ -98,7 +98,9 @@ list_slices() {
 # function body is skipped: `local x; readonly x=…` in two functions is two independent names, not
 # a collision, and recording it refused a build that runs fine. Function bodies are delimited the
 # way shfmt writes them — `name() {` at column 0 opens one, `}` at column 0 closes it, and a
-# `name() { …; }` one-liner opens nothing. Scoped to top-level slice order deliberately, matching
+# `name() { …; }` one-liner opens nothing. A bare `readonly`/`declare -r` inside a function is
+# global unless paired with `local`; this simple scope scan skips that latent shape. Scoped to
+# top-level slice order deliberately, matching
 # what the build script's own header promises — it does not attempt general control-flow analysis
 # (a function only ever called from inside a conditional that happens not to run first is out of
 # scope, same as it is for shellcheck).
@@ -215,18 +217,19 @@ build() {
     done <<<"$slices"
     validate_ordering "${ordered_files[@]}" || return 1
 
+    # Line 2 names the generator deterministically, so `--check` stays a byte comparison.
     local i=0
     while IFS= read -r f; do
         [ "$i" -eq 0 ] || printf '\n'
         cat "$f"
         i=$((i + 1))
-    done <<<"$slices"
+    done <<<"$slices" | awk -v n="$(printf '%s\n' "$slices" | wc -l | tr -d ' ')" 'NR == 1 { print; printf "# GENERATED FILE — do not edit. Built from lib/pithead/*.sh (%s slices, LC_ALL=C name order) by:\n#   scripts/build-pithead.sh\n# A drifted copy fails `scripts/build-pithead.sh --check` (make lint-pithead-parity).\n", n; next } 1'
 }
 
 write_artifact() {
     local tmp
-    # Build beside the artifact, then rename over it. Two reasons, and the mode is carried across
-    # explicitly so nothing is given up by not writing in place:
+    # Build beside the artifact, then rename over it. Two reasons, and the mode is set explicitly
+    # so nothing is given up by not writing in place:
     #
     #   - `cat >"$ARTIFACT"` truncates at OPEN time, before a single byte is written and whatever
     #     `set -e` does afterwards. A rebuild interrupted at that instant — Ctrl-C, a full disk, a
@@ -246,11 +249,9 @@ write_artifact() {
     # shellcheck disable=SC2064  # expand now: the trap must name THIS file, not whatever $tmp is later
     trap "rm -f -- '$tmp'" EXIT
     build >"$tmp"
-    if [ -e "$ARTIFACT" ]; then
-        chmod --reference="$ARTIFACT" "$tmp"
-    else
-        chmod 0755 "$tmp"
-    fi
+    # Always 0755: the artifact is tracked at that mode, an operator runs `./pithead`, release.sh
+    # bundles it as-is, and `chmod --reference` (carrying a mode across) is GNU-only — macOS refuses.
+    chmod 0755 "$tmp"
     mv -f "$tmp" "$ARTIFACT"
     echo "build-pithead: wrote $ARTIFACT from $(list_slices | wc -l | tr -d ' ') slice(s)."
 }
