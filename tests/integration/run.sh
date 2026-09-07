@@ -1255,14 +1255,9 @@ run_lifecycle() {
     fi
 }
 
-# Predicate: status reports a problem (non-zero) — used to detect node-down deterministically.
 _pred_status_down() { ! pithead status >/dev/null 2>&1; }
-
 # --- Fault-injection phase (--fault-injection) ------------------------------
-# Deliberately break monerod three ways and assert pithead's status verdicts plus the
-# dashboard's failover, then restore. Local mode only (needs a local monerod to break).
-# These are destructive-then-restored and slow (healthcheck + node-health debounce), so the
-# phase is opt-in.
+# Break local monerod three ways, assert status/failover, then restore; opt-in because debounces are slow.
 _monerod_is() { # _monerod_is <state> [<health>]
     local s
     s="$(service_state monerod)"
@@ -1272,6 +1267,11 @@ _pred_monerod_missing() { _monerod_is missing; }
 _pred_monerod_unhealthy() { _monerod_is running unhealthy; }
 _pred_monerod_healthy() { _monerod_is running healthy; }
 _pred_proxy_stopped() { [ "$(svc_state_of "$(service_state xmrig-proxy)")" != "running" ]; }
+_pred_failover_armed() {
+    local st
+    st="$(api_state)"
+    [ "$(jq_get "$st" '.monero_sync.reachable')" = "true" ] && [ "$(jq_get "$st" '.miner_released')" = "true" ] && [ "$(jq_get "$st" '.workers_rejected')" = "false" ] && [ "$(svc_state_of "$(service_state xmrig-proxy)")" = "running" ]
+}
 _pred_tor_stopped() { [ "$(svc_state_of "$(service_state tor)")" != "running" ]; }
 _pred_tor_healthy() {
     local s
@@ -1280,13 +1280,18 @@ _pred_tor_healthy() {
 }
 
 fault_node_down() {
+    if wait_for 180 5 "dashboard to observe monerod before failover fault" _pred_failover_armed; then
+        it_pass "node-down failover armed from a live monerod observation"
+    else
+        it_fail "node-down failover armed before fault" "dashboard never reported reachable monerod with the miner released and proxy admitted — fault not injected"
+        return
+    fi
     it_step "fault: stop monerod (required node down)…"
     rx "docker compose stop monerod" >/dev/null 2>&1
     wait_for 60 5 "status to report a problem" _pred_status_down || true
     pithead status >/dev/null 2>&1
     assert_rc "status non-zero when monerod is down" "$?" "1"
-    # The dashboard rejects workers (stops xmrig-proxy) after its node-health debounce so they
-    # fail over to backup pools (#31).
+    # After the node-health debounce, stopping xmrig-proxy sends workers to backup pools (#31).
     wait_for 180 10 "xmrig-proxy stopped by failover" _pred_proxy_stopped || true
     assert_eq "xmrig-proxy stopped for failover" "$(svc_state_of "$(service_state xmrig-proxy)")" "exited"
     it_step "recover: start monerod…"
@@ -1753,7 +1758,7 @@ run_hardening() {
         uuid_ok="$(_uuid4)"
         ok_cfg="$(printf '%s' "$ctrl_config" | jq -c '.dashboard.check_for_updates=false')"
         _spool_write "$cdir/requests/$uuid_ok.json" \
-            "$(jq -nc --argjson c "$ok_cfg" --arg id "$uuid_ok" '{id:$id,action:"preview",actor:"itest",config:$c}')"
+            "$(printf '%s' "$ok_cfg" | jq -c --arg id "$uuid_ok" '{id:$id,action:"preview",actor:"itest",config:.}')"
         # Wait for THIS preview to reach "previewed" before committing — mirrors production, where the
         # preview HTTP handler awaits its result and only then does the browser POST the commit. It also
         # confirms the runner CLAIMED the request (drained requests/), so the commit write below is a
@@ -1773,13 +1778,13 @@ run_hardening() {
             "$(rx "cat $(quote_arg "$cdir/audit/control.log") 2>/dev/null")" '"action":"commit"'
 
         # 3b. A SENSITIVE change (wallet swap) MUST be refused host-side, .env untouched — the
-        #     default-deny gate, exercised through the real spool rather than a unit test.
+        #     Use a checksum-valid fixture so this reaches approval, not address validation.
         local uuid_bad bad_cfg wallet_before
         uuid_bad="$(_uuid4)"
         wallet_before="$(env_on_box MONERO_WALLET_ADDRESS)"
-        bad_cfg="$(printf '%s' "$ctrl_config" | jq -c '.monero.wallet_address="4TESTWALLETdoNotUseHandsffGateRejectSensitiveKeyDefautDenyProbeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"')"
+        bad_cfg="$(printf '%s' "$ctrl_config" | jq -c '.monero.wallet_address="44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A"')"
         _spool_write "$cdir/requests/$uuid_bad.json" \
-            "$(jq -nc --argjson c "$bad_cfg" --arg id "$uuid_bad" '{id:$id,action:"preview",actor:"itest",config:$c}')"
+            "$(printf '%s' "$bad_cfg" | jq -c --arg id "$uuid_bad" '{id:$id,action:"preview",actor:"itest",config:.}')"
         st="$(_wait_control_status "$cdir" "$uuid_bad" "" 60 || echo timeout)"
         assert_eq "sensitive (wallet) spool preview staged host-side (#33)" "$st" "previewed"
         _spool_write "$cdir/requests/$uuid_bad.json" \
@@ -2210,7 +2215,7 @@ run_rigforge_control() {
 
     # Build the control-on config: enable the channel and ensure a login (control refuses without
     # one). Only mint a login when the box has none — an existing password hash is preserved across
-    # apply, so we never clobber a real one. The token rides --arg so it never hits a log or argv.
+    # apply, so we never clobber a real one. The token reaches jq through its process environment.
     local ctrl_config
     ctrl_config="$(printf '%s' "$BASELINE_CONFIG" | jq '.dashboard.control.enabled = true')"
     if [ -z "$(env_on_box DASHBOARD_AUTH_HASH_B64)" ]; then
@@ -2225,10 +2230,10 @@ run_rigforge_control() {
         # del() stays load-bearing: it drops a stray legacy key so a pre-2.0 baseline cannot trip
         # migrate_legacy_workers' both-set-to-different-values refusal on the apply below. The
         # baseline is restored verbatim at the end regardless.
-        ctrl_config="$(printf '%s' "$ctrl_config" | jq \
-            --arg n "$rig" --arg h "$RIG_HOST" --argjson cp "$RIG_CONTROL_PORT" --arg tok "${IT_RIG_TOKEN:-}" '
+        ctrl_config="$(printf '%s' "$ctrl_config" | IT_RIG_TOKEN="${IT_RIG_TOKEN:-}" jq \
+            --arg n "$rig" --arg h "$RIG_HOST" --argjson cp "$RIG_CONTROL_PORT" '
             del(.dashboard.workers)
-            | .workers.list = ((.workers.list // []) | map(select(.name != $n)) + [{name:$n, host:$h, control_port:$cp, token:$tok}])')"
+            | .workers.list = ((.workers.list // []) | map(select(.name != $n)) + [{name:$n, host:$h, control_port:$cp, token:env.IT_RIG_TOKEN}])')"
         it_step "injecting a workers.list[] descriptor for '$rig' at $RIG_HOST:$RIG_CONTROL_PORT (token masked in-container)"
     fi
 

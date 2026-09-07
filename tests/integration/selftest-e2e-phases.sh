@@ -143,7 +143,7 @@ assert_eq "targeted requests the rigforge-control WRITE phase (#1364)" \
     "$(has_phase "$TARGETED" --rigforge-control)" "yes"
 assert_eq "targeted launches EXACTLY its documented phases, and nothing else" \
     "$(phase_set "$TARGETED")" \
-    "--auth-fail-closed --lifecycle --rig-control-port --rig-host --rigforge --rigforge-control 8082 rig1 "
+    "--auth-fail-closed --lifecycle --rig-control-port --rig-host --rigforge --rigforge-control --scenario 8082 local-pruned-main-secure-tari rig1 "
 
 echo "== --mode matrix keeps everything it had =="
 MATRIX="$(compose_phases matrix 1)"
@@ -165,7 +165,7 @@ NOMINER="$(compose_phases targeted 0)"
 assert_eq "no borrowed miner => no write phase (there is no rig to write to)" \
     "$(has_phase "$NOMINER" --rigforge-control)" "no"
 assert_eq "no borrowed miner => EXACTLY the rig-free phases, plus --no-mining-asserts (#905)" \
-    "$(phase_set "$NOMINER")" "--auth-fail-closed --lifecycle --no-mining-asserts "
+    "$(phase_set "$NOMINER")" "--auth-fail-closed --lifecycle --no-mining-asserts --scenario local-pruned-main-secure-tari "
 
 contains() { # <haystack> <needle> -> "yes" | "no"
     case "$1" in *"$2"*) echo yes ;; *) echo no ;; esac

@@ -610,7 +610,7 @@ run_harness() {
     local phases
     case "$MODE" in
     check) phases="--check" ;;
-    targeted) phases="--auth-fail-closed --lifecycle" ;; # readiness/check run inline first (below); NOT here — run.sh returns after --readiness
+    targeted) phases="--scenario local-pruned-main-secure-tari --auth-fail-closed --lifecycle" ;; # readiness/check run inline first (below); NOT here — run.sh returns after --readiness
     matrix) phases="--safety-backup --lifecycle --fault-injection --auth-fail-closed --hardening --subnet" ;;
     esac
     # RigForge read (#185/#235/#260) + the WRITE paths (#513/#514/#516/#517/#1002b/#1236): both need a
