@@ -177,9 +177,9 @@ stack_backup() {
     # Acquire after every human prompt, then recheck both files and service state under the lock.
     mutation_lock_acquire backup
     backup_require_items "${required[@]}"
-    if command -v docker >/dev/null 2>&1; then
-        running=$(compose_active_ids) || error "Backup could not verify whether stack services are active; no archive was attempted."
-    fi
+    command -v docker >/dev/null 2>&1 ||
+        error "Backup could not verify whether stack services are active because docker is unavailable; no archive was attempted."
+    running=$(compose_active_ids) || error "Backup could not verify whether stack services are active; no archive was attempted."
     if [ -n "$running" ]; then
         [ -n "$initial_running" ] || [ "$assume_yes" -eq 1 ] ||
             error "Stack services started while backup was preparing. No archive was attempted; retry so the stop prompt can be shown."

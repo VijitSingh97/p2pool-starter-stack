@@ -56,6 +56,20 @@ restore_discard_stage() {
     RESTORE_STAGE_DIR=""
 }
 
+restore_destination_safe() { # <path> <file|dir>
+    local path="$1" kind="$2" probe="$1"
+    [ ! -L "$path" ] || return 1
+    if [ -e "$path" ]; then
+        if [ "$kind" = dir ]; then [ -d "$path" ]; else [ -f "$path" ]; fi || return 1
+    fi
+    probe=$(dirname "$probe")
+    while [ "$probe" != / ]; do
+        [ ! -L "$probe" ] || return 1
+        { [ ! -e "$probe" ] || [ -d "$probe" ]; } || return 1
+        probe=$(dirname "$probe")
+    done
+}
+
 restore_stage_archive() { # <archive> <encrypted:0|1> <passphrase>
     local archive="$1" encrypted="$2" pass="$3" names details name unsafe=0
     local staged_cfg staged_env paths_file err="" path trusted match env_path i=0
@@ -119,6 +133,18 @@ restore_recheck_destinations() {
         fi
     done
     RESTORE_ALLOWED_DIRS=("${staged[@]}")
+    for path in "${RESTORE_FIXED_PATHS[@]}"; do
+        restore_destination_safe "$path" file || {
+            restore_discard_stage
+            error "Restore refused an unsafe fixed-file destination — nothing was restored. Replace destination symlinks or non-directory parents, then retry."
+        }
+    done
+    for path in "${RESTORE_ALLOWED_DIRS[@]}"; do
+        restore_destination_safe "$path" dir || {
+            restore_discard_stage
+            error "Restore refused an unsafe data-directory destination — nothing was restored. Replace destination symlinks or non-directory parents, then retry."
+        }
+    done
 }
 
 restore_commit_stage() {

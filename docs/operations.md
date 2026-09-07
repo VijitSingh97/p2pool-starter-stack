@@ -585,11 +585,6 @@ are configured on the destination appliance. It puts the files back, fixes
 Tor key ownership so the onion address returns unchanged, and restores hashrate history and
 dashboard settings.
 
-> NOTE: The archive stores the source box's absolute paths, and `restore` puts every file back
-> exactly where it came from. On a machine laid out differently (another user, another install
-> directory), the files land in the old box's directory tree — not the install you ran `restore`
-> from. Recreate the original path (or move the install there) before restoring.
-
 > NOTE: After a restore, Caddy regenerates the dashboard's HTTPS certificate, so the browser shows
 > its "not trusted" warning once. Accept it as on first setup.
 
