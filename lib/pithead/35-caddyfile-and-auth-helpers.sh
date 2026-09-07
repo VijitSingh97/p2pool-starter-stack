@@ -10,9 +10,9 @@ sha256_hex() {
 hmac_sha256_hex() { # <key> <message>
     local key="$1" message="$2" key_hex="" byte oct i pad
     if [ "${#key}" -gt 64 ]; then
-        key_hex=$(printf '%s' "$key" | openssl dgst -sha256 -binary | od -An -v -tx1 | tr -d ' \n')
+        key_hex=$(printf '%s' "$key" | openssl dgst -sha256 -binary | od -An -v -tx1 | tr -d ' \n') || return 1
     else
-        key_hex=$(printf '%s' "$key" | od -An -v -tx1 | tr -d ' \n')
+        key_hex=$(printf '%s' "$key" | od -An -v -tx1 | tr -d ' \n') || return 1
     fi
     while [ "${#key_hex}" -lt 128 ]; do key_hex="${key_hex}00"; done
     _hmac_pad() {

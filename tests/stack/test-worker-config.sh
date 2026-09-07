@@ -142,7 +142,21 @@ run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
 assert_eq "read map uses the fixed HMAC derivation" "$(jq -r '.[] | select(.name=="rig1") | .read_token' "$WREAD")" "79432528d7ae32abcc791e8c3f86e100f01d7d535956b58b876da3c7660749b8"
 assert_eq "read map binds the descriptor's RigForge API port" "$(jq -r '.[] | select(.name=="rig1") | .port' "$WREAD")" "18081"
 assert_eq "read map is owner-only" "$(stat -c '%a' "$WREAD" 2>/dev/null || stat -f '%Lp' "$WREAD")" "600"
-case "$(cat "$MASKED" "$WREAD")" in
+HMAC_FAIL="$C/.hmac-failed"
+jq --arg token "$(printf 'x%.0s' {1..65})" '.workers.list[0].token=$token' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
+(
+    openssl() {
+        if [ "$*" = "dgst -sha256 -binary" ] && [ ! -e "$HMAC_FAIL" ]; then
+            touch "$HMAC_FAIL"
+            return 1
+        fi
+        command openssl "$@"
+    }
+    run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+)
+assert_eq "failed HMAC key normalization fires the control" "$([ -e "$HMAC_FAIL" ] && echo yes)" "yes"
+assert_eq "failed HMAC key normalization removes the read map" "$([ ! -e "$WREAD" ] && echo yes)" "yes"
+case "$(cat "$MASKED" "$WREAD" 2>/dev/null)" in
 *0123456789abcdef0123456789abcdef* | *tok_rig3secret*) bad "dashboard runtime holds no control token" "a control token leaked" ;;
 *) ok "dashboard runtime holds no control token" ;;
 esac
