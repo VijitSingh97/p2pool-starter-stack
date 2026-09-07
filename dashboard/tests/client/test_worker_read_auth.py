@@ -13,6 +13,12 @@ def _write(path, value):
     path.write_text(json.dumps(value))
 
 
+def _replace(path, value):
+    tmp = path.with_name(path.name + ".tmp")
+    _write(tmp, value)
+    tmp.replace(path)
+
+
 def _descriptor(host="10.0.0.5", port=8081):
     return {
         "workers": {
@@ -22,8 +28,8 @@ def _descriptor(host="10.0.0.5", port=8081):
     }
 
 
-def _read_map(host="10.0.0.5", port=8081):
-    return [{"name": "rig1", "host": host, "port": port, "read_token": "a" * 64}]
+def _read_map(host="10.0.0.5", port=8081, token="a" * 64):
+    return [{"name": "rig1", "host": host, "port": port, "read_token": token}]
 
 
 def test_read_map_joins_only_valid_pinned_masked_descriptor(tmp_path):
@@ -69,6 +75,35 @@ async def test_masked_control_token_uses_only_derived_read_bearer(monkeypatch):
     session = FakeSession(response=FakeResponse(200, {"ok": True}))
     await XMRigWorkerClient(session).get_stats("10.0.0.5", "rig1")
     assert session.calls[0][1]["Authorization"] == "Bearer " + "a" * 64
+
+
+@pytest.mark.asyncio
+async def test_persistent_client_reloads_adoption_and_rotated_read_token(tmp_path, monkeypatch):
+    config_path, read_path = tmp_path / "config.json", tmp_path / "worker-read-tokens.json"
+    _write(config_path, {"workers": {"api_port": 8081, "list": []}})
+    _write(read_path, [])
+    monkeypatch.setattr(cfg, "HOST_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(cfg, "WORKER_READ_TOKENS_PATH", str(read_path))
+    monkeypatch.setattr(cfg, "DASHBOARD_WORKERS", None)
+    monkeypatch.setattr(xc, "WORKER_ENDPOINTS", None)
+    monkeypatch.setattr(xc, "XMRIG_API_AUTH", "name")
+    session = FakeSession(response=FakeResponse(200, {"ok": True}))
+    client = XMRigWorkerClient(session)
+
+    await client.get_stats("10.0.0.5", "rig1")
+    _replace(config_path, _descriptor())
+    _replace(read_path, _read_map())
+    session._response = FakeResponse(200, {"ok": True})
+    await client.get_stats("10.0.0.5", "rig1")
+    _replace(read_path, _read_map(token="b" * 64))
+    session._response = FakeResponse(200, {"ok": True})
+    await client.get_stats("10.0.0.5", "rig1")
+
+    assert [headers["Authorization"] for _, headers in session.calls] == [
+        "Bearer rig1",
+        "Bearer " + "a" * 64,
+        "Bearer " + "b" * 64,
+    ]
 
 
 @pytest.mark.asyncio

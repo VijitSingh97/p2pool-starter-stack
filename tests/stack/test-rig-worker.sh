@@ -244,7 +244,7 @@ mkdir -p "$WA4/staged" "$WA4/results" "$WA4/audit" "$WA4/bin"
 cp "$WA3/config.json" "$WA4/config.json"
 cat >"$WA4/bin/curl" <<'EOF'
 #!/usr/bin/env bash
-out="" url=""; cat >/dev/null
+out="$(cat >/dev/null)" url=""
 while [ $# -gt 0 ]; do
     case "$1" in
     -o) out="$2"; shift 2 ;;
@@ -266,14 +266,12 @@ chmod +x "$WA4/bin/curl"
 u10="fafafafa-fafa-4afa-8afa-fafafafafafa"
 printf '{"id":"%s","action":"worker-apply","actor":"admin","worker":"rig1","changes":{"pools":["pool.example:3333"]}}\n' "$u10" >"$WA4/req.json"
 (
-    PATH="$WA4/bin:$PATH"
-    jq() {
-        if [ "$2" = '(.reason // "") | tostring | .[:500]' ] && [ ! -e "$WA4/.jq-failed" ]; then
-            touch "$WA4/.jq-failed"
-            return 1
-        fi
-        command jq "$@"
-    }
+    real_jq="$(command -v jq)"
+    export PATH="$WA4/bin:$PATH"
+    printf '#!/usr/bin/env bash\n[ "$2" != '\''(.reason // "") | tostring | .[:500]'\'' ] || [ -e "$JQ_FAIL_MARKER" ] || { touch "$JQ_FAIL_MARKER"; exit 1; }\nexec "$REAL_JQ" "$@"\n' >"$WA4/bin/jq"
+    chmod +x "$WA4/bin/jq"
+    hash -r
+    export REAL_JQ="$real_jq" JQ_FAIL_MARKER="$WA4/.jq-failed"
     CONTROL_WA_BUDGET=1 PITHEAD_CONFIG_FILE="$WA4/config.json" \
         run_sourced "$SANDBOX" control_process_request "$WA4/req.json" "$WA4" >/dev/null 2>&1
 )
@@ -450,7 +448,7 @@ cp "$WU/config.json" "$stale_dir/config.json"
 printf '%s' "v9.9.9" >"$stale_dir/staged/.rigforge-latest-tag"
 cat >"$stale_dir/bin/curl" <<EOF
 #!/usr/bin/env bash
-out="" url=""; cat >/dev/null
+out="\$(cat >/dev/null)" url=""
 while [ \$# -gt 0 ]; do
     case "\$1" in
     -o) out="\$2"; shift 2 ;;
@@ -476,7 +474,8 @@ chmod +x "$stale_dir/bin/curl"
 w11="56565656-5656-4256-9256-565656565656"
 printf '{"id":"%s","action":"worker-upgrade","actor":"admin","worker":"rig1","version":"v9.9.9"}\n' "$w11" >"$stale_dir/req.json"
 (
-    PATH="$stale_dir/bin:$PATH"
+    export PATH="$stale_dir/bin:$PATH"
+    hash -r
     sleep() { :; }
     CONTROL_WU_BUDGET=1 PITHEAD_CONFIG_FILE="$stale_dir/config.json" \
         run_sourced "$SANDBOX" control_process_request "$stale_dir/req.json" "$stale_dir" >/dev/null 2>&1
@@ -490,7 +489,7 @@ cp "$WU/config.json" "$to_dir/config.json"
 printf '%s' "v9.9.9" >"$to_dir/staged/.rigforge-latest-tag"
 cat >"$to_dir/bin/curl" <<'EOF'
 #!/usr/bin/env bash
-out="" url=""; cat >/dev/null
+out="$(cat >/dev/null)" url=""
 while [ $# -gt 0 ]; do
     case "$1" in
     -o) out="$2"; shift 2 ;;
@@ -592,7 +591,7 @@ printf '%s' "v9.9.9" >"$refuse_dir/staged/.rigforge-latest-tag"
 wu_long_err="$(printf 'A%.0s' $(seq 1 500))OVERFLOW-TAIL"
 cat >"$refuse_dir/bin/curl" <<EOF
 #!/usr/bin/env bash
-out="" url=""; cat >/dev/null
+out="\$(cat >/dev/null)" url=""
 while [ \$# -gt 0 ]; do
     case "\$1" in
     -o) out="\$2"; shift 2 ;;
