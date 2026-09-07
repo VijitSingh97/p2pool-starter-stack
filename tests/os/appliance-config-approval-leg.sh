@@ -10,7 +10,7 @@ approval_fixture_arm() {
     APPROVAL_FIXTURE_OWNER="os1966-$(date +%s)-$$-$RANDOM"
     [[ "$APPROVAL_FIXTURE_OWNER" =~ ^os1966-[0-9]+-[0-9]+-[0-9]+$ ]] || return 1
     APPROVAL_FIXTURE_ARMED=2
-    _ssh "set -eu; test ! -e /data/pithead/data/control/.os1966-active-owner; umask 077; printf '%s' '$APPROVAL_FIXTURE_OWNER' > /data/pithead/data/control/.os1966-active-owner" || return
+    _ssh "set -eu; test ! -e /data/pithead/data/control/.os1966-active-owner; test ! -e /data/pithead/data/control/.os1966-active-id; umask 077; printf '%s' '$APPROVAL_FIXTURE_OWNER' > /data/pithead/data/control/.os1966-active-owner" || return
     APPROVAL_FIXTURE_ARMED=1
     _ssh 'set -eu
 rm -rf /data/pithead/.os-approval-fixture
@@ -83,8 +83,11 @@ for f in /data/pithead/data/control/requests/*.json /data/pithead/data/control/.
     [ -f "$f" ] || continue
     jq -er --arg owner "$owner" '"'"'select(.actor == $owner) | .id | select(test("^[0-9a-f-]{36}$"))'"'"' "$f" >>"$ids" 2>/dev/null || true
 done
-[ ! -f /data/pithead/data/control/.os1966-active-id ] || cat /data/pithead/data/control/.os1966-active-id >>"$ids"
 [ ! -f /data/pithead/data/control/audit/control.log ] || jq -r --arg owner "$owner" '"'"'select(.actor == $owner) | .id // empty'"'"' /data/pithead/data/control/audit/control.log >>"$ids"
+if [ -f /data/pithead/data/control/.os1966-active-id ]; then
+    active=$(cat /data/pithead/data/control/.os1966-active-id)
+    if grep -qxF "$active" "$ids"; then printf "%s\n" "$active" >>"$ids"; fi
+fi
 sort -u "$ids" -o "$ids"
 while IFS= read -r id; do
     printf "%s" "$id" | grep -qE '"'"'^[0-9a-f-]{36}$'"'"' || continue
@@ -94,7 +97,9 @@ while IFS= read -r id; do
 done <"$ids"
 for f in /data/pithead/data/control/.claim.*; do
     [ -f "$f" ] || continue
-    jq -e --arg owner "$owner" '"'"'.actor == $owner'"'"' "$f" >/dev/null 2>&1 && mv -- "$f" /data/pithead/.os-approval-fixture/cancelled/
+    if jq -e --arg owner "$owner" '"'"'.actor == $owner'"'"' "$f" >/dev/null 2>&1; then
+        mv -- "$f" /data/pithead/.os-approval-fixture/cancelled/
+    fi
 done'
 }
 
@@ -103,16 +108,22 @@ approval_fixture_disarm() {
     approval_fixture_quiesce || rc=1
     [ "${APPROVAL_FIXTURE_ARMED:-0}" -ne 0 ] || return "$rc"
     _ssh "set -eu
-if test -f /data/pithead/data/control/.os1966-active-owner; then grep -qxF '$APPROVAL_FIXTURE_OWNER' /data/pithead/data/control/.os1966-active-owner; fi
+owned=0
+if test -f /data/pithead/data/control/.os1966-active-owner; then
+    grep -qxF '$APPROVAL_FIXTURE_OWNER' /data/pithead/data/control/.os1966-active-owner
+    owned=1
 "'
-rm -rf /data/pithead/.os-approval-fixture /etc/systemd/system/pithead-control.service.d/90-os-approval-fixture.conf
-rm -f /data/pithead/data/control/.os1966-active-id /data/pithead/data/control/.os1966-active-owner
+    rm -rf /data/pithead/.os-approval-fixture /etc/systemd/system/pithead-control.service.d/90-os-approval-fixture.conf
+    rm -f /data/pithead/data/control/.os1966-active-id /data/pithead/data/control/.os1966-active-owner
+fi
     systemctl daemon-reload
     systemctl start pithead-control.path
     systemctl is-active --quiet pithead-control.path
-    test ! -e /data/pithead/.os-approval-fixture
-    test ! -e /etc/systemd/system/pithead-control.service.d/90-os-approval-fixture.conf
-    ! systemctl cat pithead-control.service | grep -q /data/pithead/.os-approval-fixture' >/dev/null 2>&1 || rc=1
+    if test "$owned" = 1; then
+        test ! -e /data/pithead/.os-approval-fixture
+        test ! -e /etc/systemd/system/pithead-control.service.d/90-os-approval-fixture.conf
+        ! systemctl cat pithead-control.service | grep -q /data/pithead/.os-approval-fixture
+    fi' >/dev/null 2>&1 || rc=1
     [ "$rc" -eq 0 ] && APPROVAL_FIXTURE_ARMED=0
     return "$rc"
 }
@@ -380,6 +391,7 @@ _approval_self_test() {
     _approval_fixture_failure_self_test || f=$((f + 1))
     _approval_owner_selector_self_test || f=$((f + 1))
     _approval_preview_lifecycle_self_test || f=$((f + 1))
+    _approval_fixture_cleanup_self_test || f=$((f + 1))
     _runtime_epoch_self_test || f=$((f + 1))
     [ "$f" -eq 0 ] || {
         printf 'appliance-config-approval-leg self-test FAILED: %s checks\n' "$f"

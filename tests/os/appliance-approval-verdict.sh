@@ -138,6 +138,78 @@ _approval_preview_lifecycle_self_test() (
     [ "$(cat "$order_file")" = "arm preview bind " ]
 )
 
+_approval_fixture_cleanup_self_test() (
+    local root owner=os1966-1-2-3 owned=00000000-0000-4000-8000-000000000001
+    local other=00000000-0000-4000-8000-000000000002 restore_log ip=fixture
+    root=$(mktemp -d)
+    restore_log=$root/restore.log
+    trap 'rm -rf "$root"' EXIT
+    mkdir -p "$root/data/pithead/data/control/"{requests,staged,audit} \
+        "$root/data/pithead/.os-approval-fixture/bin" "$root/etc/systemd/system/pithead-control.service.d" "$root/bin" "$root/state"
+    cat >"$root/bin/systemctl" <<'FAKE'
+#!/usr/bin/env bash
+set -eu
+state=${APPROVAL_SYSTEMCTL_STATE:?}
+case "$1" in
+stop) rm -f "$state/$2" ;;
+start) : >"$state/$2" ;;
+is-active) shift; [ "${1:-}" = --quiet ] && shift; test -f "$state/$1" ;;
+daemon-reload) ;;
+cat) printf '[Service]\nExecStart=/usr/bin/true\n' ;;
+*) exit 90 ;;
+esac
+FAKE
+    chmod 700 "$root/bin/systemctl"
+    : >"$root/state/pithead-control.path"
+    _ssh() {
+        local command=${1//\/data\/pithead/$root\/data\/pithead}
+        command=${command//\/etc\/systemd\/system/$root\/etc\/systemd\/system}
+        APPROVAL_SYSTEMCTL_STATE="$root/state" PATH="$root/bin:$PATH" bash -c "$command"
+    }
+    approval_restore_pending() {
+        printf 'restored\n' >>"$restore_log"
+        APPROVAL_RESTORE_SNAPSHOT=""
+    }
+
+    # A stale active ID must prevent a new owner claim and leave its operator-owned work untouched.
+    printf '%s' "$other" >"$root/data/pithead/data/control/.os1966-active-id"
+    printf '{"actor":"operator","id":"%s"}\n' "$other" >"$root/data/pithead/data/control/requests/$other.json"
+    printf '{}\n' >"$root/data/pithead/data/control/staged/$other.json"
+    APPROVAL_FIXTURE_ARMED=0
+    approval_fixture_arm && return 1
+    [ "$APPROVAL_FIXTURE_ARMED" -eq 2 ] || return 1
+    [ ! -e "$root/data/pithead/data/control/.os1966-active-owner" ] || return 1
+    [ -f "$root/data/pithead/data/control/requests/$other.json" ] || return 1
+    [ -f "$root/data/pithead/data/control/staged/$other.json" ] || return 1
+    approval_fixture_disarm || return 1
+    [ -f "$root/state/pithead-control.path" ] || return 1
+    [ -f "$root/data/pithead/data/control/.os1966-active-id" ] || return 1
+    [ -f "$root/data/pithead/data/control/requests/$other.json" ] || return 1
+    [ -f "$root/data/pithead/data/control/staged/$other.json" ] || return 1
+
+    # Normal cleanup sees the owner ID twice: a marker without a newline and the audit row.
+    # It must delete only owner-evidenced artifacts, restore config, and restart the path.
+    printf '%s' "$owner" >"$root/data/pithead/data/control/.os1966-active-owner"
+    printf '%s' "$owned" >"$root/data/pithead/data/control/.os1966-active-id"
+    printf '{"actor":"%s","id":"%s"}\n' "$owner" "$owned" >"$root/data/pithead/data/control/audit/control.log"
+    printf '{}\n' >"$root/data/pithead/data/control/staged/$owned.json"
+    printf '{}\n' >"$root/data/pithead/data/control/staged/.$owned.approval-pending"
+    printf '{"actor":"operator","id":"%s"}\n' "$other" >"$root/data/pithead/data/control/.claim.zzz"
+    printf '{}\n' >"$root/data/pithead/data/control/staged/.$other.approval-pending"
+    APPROVAL_FIXTURE_ARMED=1 APPROVAL_FIXTURE_OWNER=$owner APPROVAL_RESTORE_SNAPSHOT=fixture
+    approval_fixture_cleanup || return 1
+    [ "$(cat "$restore_log")" = restored ] || return 1
+    [ -f "$root/state/pithead-control.path" ] || return 1
+    [ ! -e "$root/data/pithead/data/control/staged/$owned.json" ] || return 1
+    [ ! -e "$root/data/pithead/data/control/staged/.$owned.approval-pending" ] || return 1
+    [ -f "$root/data/pithead/data/control/requests/$other.json" ] || return 1
+    [ -f "$root/data/pithead/data/control/staged/$other.json" ] || return 1
+    [ -f "$root/data/pithead/data/control/.claim.zzz" ] || return 1
+    [ -f "$root/data/pithead/data/control/staged/.$other.approval-pending" ] || return 1
+    [ ! -e "$root/data/pithead/data/control/.os1966-active-owner" ] || return 1
+    [ ! -e "$root/data/pithead/data/control/.os1966-active-id" ] || return 1
+)
+
 _runtime_epoch_self_test() (
     local count_file ip=fixture n
     count_file=$(mktemp)
