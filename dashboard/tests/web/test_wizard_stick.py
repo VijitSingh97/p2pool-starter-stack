@@ -185,7 +185,7 @@ async def test_an_applied_disk_install_is_still_installing(client, installer):
 
 async def test_a_restore_after_a_stick_attempt_gets_the_install_narration_back(client, installer):
     """The SECOND install door. /submit is the choke point for every ROLE, not for every INSTALL:
-    /submit-restore reaches the same _gate_install_request. Stick attempt, host refuses, operator
+    /submit-restore reaches the same install-request validation. Stick attempt, host refuses, operator
     toggles "Restore from a backup" and picks the internal disk — a real install, which must
     narrate as one. Before the fix the marker kept the "1" the stick attempt left."""
     await _auth(client)

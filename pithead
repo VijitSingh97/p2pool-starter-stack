@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GENERATED FILE — do not edit. Built from lib/pithead/*.sh (56 slices, LC_ALL=C name order) by:
+# GENERATED FILE — do not edit. Built from lib/pithead/*.sh (57 slices, LC_ALL=C name order) by:
 #   scripts/build-pithead.sh
 # A drifted copy fails `scripts/build-pithead.sh --check` (make lint-pithead-parity).
 #
@@ -5563,7 +5563,7 @@ check_appliance_cert() {
     esac
 
     # Everything else appliance_site_names() adds beyond the base — always empty when
-    # dashboard.host is pinned (appliance_site_names' own auto-expansion guard), so a pin never
+    # dashboard.host is a DNS/IP pin (not a label), so such a pin never
     # even reaches the engine-dependent leniency below: there is nothing here it would need to
     # excuse. This is the only category that can contain a compose-bridge gateway.
     local tok extras=""
@@ -6732,9 +6732,9 @@ appliance_base_name() {
     fi
 }
 
-# "auto" (dashboard.host unset) expands to every address the appliance actually answers on — a
+# "auto" or a machine-name label expands to the appliance's local addresses — a
 # headless box reached by mDNS name, by IP, or from the console must have all three certified. An
-# explicit pin stays a single name on purpose: the site list collapsing was never the #1132 bug,
+# explicit DNS/IP pin stays a single name on purpose: the site list collapsing was never the #1132 bug,
 # only the certificate not following suit was.
 #
 # Deliberately engine-free: this runs from BOTH generate_caddyfile (render, always BEFORE `up`
@@ -6752,7 +6752,7 @@ appliance_site_names() {
     local base
     base=$(appliance_base_name)
     local names="$base"
-    if is_appliance && [ -z "${DASHBOARD_HOST:-}" ]; then
+    if is_appliance && { [ -z "${DASHBOARD_HOST:-}" ] || [ -n "$(appliance_hostname_label)" ]; }; then
         local extra
         for extra in $(hostname -I 2>/dev/null) localhost; do
             case " $names " in *" $extra "*) continue ;; esac
@@ -6906,6 +6906,9 @@ appliance_mint_cert() { # -> prints the SHA-256 fingerprint
             log "Re-minting the dashboard certificate — the machine now answers to a different set of names than the one it was minted for. Your browser will need to trust the new certificate."
         names=$(appliance_site_names)
         primary="${names%% *}"
+        # X.509's legacy display CN is limited to 64 characters. SAN retains the full DNS name,
+        # including .local when a valid 63-character machine label exceeds that display limit.
+        primary="${primary:0:64}"
         openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
             -keyout "$d/wizard.key" -out "$d/wizard.crt" \
             -subj "/CN=$primary" -addext "subjectAltName=$alt" \
@@ -8053,6 +8056,9 @@ resolve_dashboard_host() {
     [ "$allow_prompt" == "interactive" ] && ! [ -t 0 ] && allow_prompt=""
     if [ -n "${DASHBOARD_HOST:-}" ]; then
         HOST_IP="$DASHBOARD_HOST"
+        local machine_name
+        machine_name=$(appliance_hostname_label)
+        [ -z "$machine_name" ] || HOST_IP="$machine_name.local"
         log "Using dashboard hostname '$HOST_IP' from $CONFIG_FILE."
     elif [ "$allow_prompt" == "interactive" ]; then
         local default_host
@@ -8071,6 +8077,32 @@ resolve_dashboard_host() {
             HOST_IP=$(hostname)
         fi
     fi
+}
+
+# A bare dashboard.host label names the appliance. Existing DNS/IP pins remain certificate
+# addresses; Docker hosts never change identity. config.json on /data is the persistent source:
+# boot's render restores the kernel hostname after each reboot or A/B update, without /etc writes.
+appliance_hostname_label() {
+    is_appliance || return 0
+    local name="${DASHBOARD_HOST:-}"
+    [[ "$name" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] || return 0
+    [ "$name" != auto ] || return 0
+    printf '%s' "${name,,}"
+}
+
+# Only call after validation/confirmation, in setup, boot render or a successful apply.
+# Resolution and preview use the pure label helper above, never this privileged step.
+reconcile_appliance_hostname() {
+    [ "${PITHEAD_DRY_RUN:-0}" != 1 ] || return 0
+    local name
+    name=$(appliance_hostname_label)
+    [ -n "$name" ] || return 0
+    if [ "$(hostname)" != "$name" ]; then
+        sudo hostname "$name" || error "Could not set this appliance's hostname. Retry apply."
+    fi
+    # Avahi may already be running under the old name. try-restart leaves a not-yet-started
+    # boot unit alone, and also retries a previous failed announcement on an unchanged apply.
+    sudo systemctl try-restart avahi-daemon.service || error "Could not refresh this machine's local network name. Retry apply."
 }
 
 # Poll the running tor container for one hidden service's hostname file and echo the address.
@@ -9963,6 +9995,7 @@ setup() {
     check_stratum_exposure setup # WARN-only: public-IP host => unauthenticated stratum :3333 exposed (#113)
     load_preserved_state
     resolve_dashboard_host "interactive"
+    reconcile_appliance_hostname
     prepare_directories
     render_env    # bootstrap .env so Tor (and compose var substitution) have what they need
     provision_tor # populates the real onion addresses
@@ -10487,6 +10520,7 @@ render_derived() {
     load_preserved_state
     ensure_directories
     resolve_dashboard_host # non-interactive
+    reconcile_appliance_hostname
     DEPLOYMENT_COMPLETED=true
     render_env "$ENV_FILE"
     provision_node_onions
@@ -10667,6 +10701,7 @@ apply() {
             # Idempotent and sudo-free when the units already match.
             mutation_lock_acquire apply
             provision_control_runner
+            reconcile_appliance_hostname
             apply_refresh_appliance_tls # #1265: the mint doctor sends the operator here for
             log "No configuration changes detected. Nothing to apply."
             mutation_lock_release
@@ -10712,6 +10747,7 @@ apply() {
         warn "Fix the cause shown above, then re-run '$0 apply' (it will retry the recreate) — or '$0 up'."
         exit 1 # leave $apply_marker in place so the retry re-attempts the recreate
     fi
+    reconcile_appliance_hostname
     # Caddy mounts the Caddyfile read-only, so a content change alone won't recreate it.
     if [ "$caddy_changed" -eq 1 ]; then
         docker compose restart caddy

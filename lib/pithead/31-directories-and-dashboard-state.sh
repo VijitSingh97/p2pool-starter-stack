@@ -193,6 +193,9 @@ resolve_dashboard_host() {
     [ "$allow_prompt" == "interactive" ] && ! [ -t 0 ] && allow_prompt=""
     if [ -n "${DASHBOARD_HOST:-}" ]; then
         HOST_IP="$DASHBOARD_HOST"
+        local machine_name
+        machine_name=$(appliance_hostname_label)
+        [ -z "$machine_name" ] || HOST_IP="$machine_name.local"
         log "Using dashboard hostname '$HOST_IP' from $CONFIG_FILE."
     elif [ "$allow_prompt" == "interactive" ]; then
         local default_host

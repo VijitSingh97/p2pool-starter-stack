@@ -3,11 +3,13 @@
 // why. Kept DOM-free — every branch here is a boot state nobody can reach by hand.
 //
 // The fixtures are the producer's shape, taken from node_probe_one in 10-installer-preseed.sh: the
-// row keys, the seven reasons, and the host's own `detail` sentence for each.
+// row keys, the nine reasons, and the host's own `detail` sentence for each.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  needsNodeProbe,
+  NodeProbeProgress,
   NodeProbeReport,
   probeSummary,
 } from "../../mining_dashboard/web/static/nodeprobe.mjs";
@@ -32,6 +34,11 @@ const TARI = {
   port: 18142,
   checked: "connect",
   detail: "192.168.1.10:18142 accepted a TCP connection; the protocol behind it was NOT checked",
+};
+const TARI_GRPC = {
+  ...TARI,
+  checked: "grpc",
+  detail: "The node answered Tari's GetTipInfo gRPC call.",
 };
 
 // The generic reach sentence the host writes for any failure it cannot name more precisely — the
@@ -124,6 +131,13 @@ test("rows: a bare TCP connect renders QUALIFIED, never as a verified node", () 
   assert.notEqual(one(RPC).sentence, r.sentence);
 });
 
+test("rows: a live Tari gRPC call is a protocol check, not a bare port dial", () => {
+  const row = one(TARI_GRPC);
+  assert.match(row.name, /Tari/);
+  assert.match(row.sentence, /live check of the protocol/);
+  assert.doesNotMatch(row.sentence, /any socket that accepts/);
+});
+
 test("rows: only a strict true is a pass", () => {
   // The report is JSON from a shell script. A string "false" reading as a pass would show a green
   // row for an endpoint the host refused to provision against.
@@ -135,8 +149,18 @@ test("rows: only a strict true is a pass", () => {
 
 // --- why it failed ----------------------------------------------------------------------------
 
-test("reasons: each of the six failure reasons gets its own sentence", () => {
-  const reasons = ["protocol", "timeout", "refused", "auth", "missing-tool", "unknown"];
+test("reasons: each known failure reason gets its own sentence", () => {
+  const reasons = [
+    "protocol",
+    "timeout",
+    "refused",
+    "auth",
+    "missing-tool",
+    "address",
+    "dns",
+    "unusable",
+    "unknown",
+  ];
   const said = reasons.map((r) => one(failed(r)).sentence);
   assert.equal(new Set(said).size, reasons.length, said.join(" | "));
 });
@@ -153,8 +177,8 @@ test("reasons: refused reads as NOT REACHED, never as reached and declined", () 
 });
 
 test("reasons: auth is a dead end, not a reachability failure", () => {
-  // The node ANSWERED and wanted a login, and a remote-node config has nowhere to put one. Copy
-  // that lumps this in with `refused` sends the operator to re-check a working firewall.
+  // The node ANSWERED but rejected the configured login. Copy that lumps this in with `refused`
+  // sends the operator to re-check a working firewall.
   const s = one(failed("auth")).sentence;
   assert.match(s, /answered/);
   assert.match(s, /login/);
@@ -162,15 +186,15 @@ test("reasons: auth is a dead end, not a reachability failure", () => {
 });
 
 test("reasons: an unrecognised reason did not COMPLETE, and is never reported as NOT REACHED", () => {
-  // The probe grows a name-resolution reason next. Inventing a reachability claim for a value this
-  // page has never seen is the defect that fix exists to end, so the default must not make one.
-  for (const reason of ["dns", "", null, undefined, "ok"]) {
+  // Inventing a reachability claim for a value this page has never seen is the defect this exists
+  // to end, so the default must not make one.
+  for (const reason of ["", null, undefined, "ok"]) {
     const s = one(failed(reason)).sentence;
     assert.equal(s, "The check did not complete.", JSON.stringify(reason));
   }
   // The sibling that proves the assertion above is not vacuous: a reason it DOES know reads
   // differently, so "did not complete" is not simply what every row says.
-  assert.notEqual(one(failed("refused")).sentence, "The check did not complete.");
+  assert.notEqual(one(failed("dns")).sentence, "The check did not complete.");
 });
 
 test("reasons: missing-tool blames THIS machine, and drops the host's sentence that blames yours", () => {
@@ -221,6 +245,61 @@ test("skipped: a gap contradicts the headline, whatever the verdict says", () =>
   assert.match(card(report([RPC, ZMQ])), /Every node check this configuration asks for passed/);
 });
 
+test("headline: a false row defeats a malformed true roll-up (#1943)", () => {
+  const out = card(report([RPC, failed("protocol")], { ok: true }));
+  assert.doesNotMatch(out, /Every node check this configuration asks for passed/);
+  assert.match(out, /could not be verified/);
+  assert.match(out, /Not verified/);
+  assert.match(card(report([RPC, ZMQ])), /Every node check this configuration asks for passed/);
+});
+
+test("progress: names the exact protocol checks while a submit is waiting", () => {
+  const cfg = { monero: { mode: "remote" }, tari: { mode: "remote" } };
+  assert.equal(needsNodeProbe(cfg), true);
+  const out = renderToString(html`<${NodeProbeProgress} config=${cfg} />`);
+  assert.match(out, /Reaching your remote nodes/);
+  assert.match(out, /configured login/);
+  assert.match(out, /ZMQ protocol handshake/);
+  assert.match(out, /GetTipInfo/);
+  assert.equal(renderToString(html`<${NodeProbeProgress} config=${{}} />`), "");
+});
+
+test("seam: submit shows the probe step, then keeps fields and renders its refusal", async () => {
+  const inst = new WizardApp({});
+  inst.setState = (patch) => Object.assign(inst.state, patch);
+  inst.state.stage = "setup";
+  inst.state.cfg = {
+    monero: {
+      mode: "remote",
+      remote: { host: "node.example", rpc_port: 18081, zmq_port: 18083 },
+    },
+    tari: { mode: "off" },
+  };
+  inst.state.reference = structuredClone(inst.state.cfg);
+  inst.state.jsonText = JSON.stringify(inst.state.cfg);
+  const before = inst.state.jsonText;
+  const refusal = report([failed("auth", { host: "node.example" })]);
+  let answer;
+  const real = globalThis.fetch;
+  globalThis.fetch = () => new Promise((resolve) => (answer = resolve));
+  const pending = inst.submit({ preventDefault() {} });
+  await Promise.resolve();
+  assert.equal(inst.state.probing, true);
+  assert.match(renderToString(inst.renderSetup()), /Reaching your remote nodes/);
+  answer({ ok: false, json: async () => ({ error: "login rejected", node_probe: refusal }) });
+  await pending;
+  assert.equal(inst.state.probing, false);
+  assert.equal(inst.state.submitting, false);
+  assert.equal(inst.state.jsonText, before);
+  assert.deepEqual(inst.state.nodeProbe, refusal);
+  assert.match(renderToString(inst.renderSetup()), /could not be verified/);
+  globalThis.fetch = async () => { throw new Error("offline"); };
+  await inst.submit({ preventDefault() {} });
+  assert.equal(inst.state.submitting, false);
+  assert.match(inst.state.error, /Could not reach this machine/);
+  globalThis.fetch = real;
+});
+
 // --- rendered -----------------------------------------------------------------------------------
 
 test("rendered: a failure names the endpoint, the address, the reason and the host's detail", () => {
@@ -249,7 +328,7 @@ test("rendered: the consequence is the surface's sentence, and only a failure ha
 });
 
 test("rendered: the report offers no control — it gates nothing", () => {
-  // The gate is the host's: preflight_remote_nodes refuses to provision and hands the form back.
+  // The gate is the wizard server's: it refuses to stage the configuration and hands the form back.
   // A client-side disable would take away the only way out of a failed probe, which is to correct
   // the address and submit again.
   const out = card(report([failed("refused")]), "Setup does not continue.");
@@ -296,7 +375,7 @@ test("seam: the setup screen paints what /api/wizard-state actually serves as no
   assert.match(out, /port is open/);
   // The consequence sentence belongs to this surface, and this is the only place it is written.
   assert.match(out, /Setup does not continue/);
-  // The host's one-line error still stands above it — the report explains that line, never
+  // The server's one-line error still stands above it — the report explains that line, never
   // replaces it.
   assert.match(out, /cannot reach the remote Monero node/);
 });
@@ -310,7 +389,7 @@ test("seam: a machine that was never probed gets the ordinary form, with nothing
 });
 
 test("seam: the submit button stays live under a failed probe", async () => {
-  // The gate is the host's. The operator's only way out is to correct the address and submit
+  // The gate is the server's. The operator's only way out is to correct the address and submit
   // again, so a failing report must not take the button away.
   const out = await setupScreen(report([failed("refused")]));
   const submit = out.match(/<button type="submit"[^>]*>/)?.[0] || "";
