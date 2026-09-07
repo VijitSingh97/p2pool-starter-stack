@@ -393,8 +393,9 @@ one version and one GitHub Release.
    previous build, and reached a bench. The commit stamp catches a stale *tree*; the comparisons
    catch a stale *artifact*, including inside the container image, which is where it hid. It mounts the artifact
    and checks everything a green boot cannot prove: no test SSH key or marker shipped, the
-   grubenv sits where `load_env` reads it, the kernel root is a probed PARTUUID, all six
-   docker-export artefacts are fixed, the engine bridge and cosign are aboard, and
+   grubenv sits where `load_env` reads it, the kernel root is a probed PARTUUID, slot labels
+   carry the built version and empty-slot state, all six docker-export artefacts are fixed,
+   the engine bridge and cosign are aboard, and
    pithead-boot is enabled (and podman-restart is NOT — it started the stack into its own
    oneshot cgroup and systemd SIGKILLed the containers it had just spawned). Every check exists because its absence shipped, or nearly
    shipped, once.
