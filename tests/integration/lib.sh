@@ -269,12 +269,11 @@ rx() {
     if [ "$IT_MODE" = "local" ]; then
         (cd "$IT_REMOTE_DIR" && bash -c "$snippet")
     else
-        local remote
+        local remote stdin_flag=(-n)
         remote="cd $(quote_arg "$IT_REMOTE_DIR") && { $snippet; }"
-        # -n: never read OUR stdin. rx runs inside `while read … done < <(scenario_matrix)` loops;
-        # an ssh that inherits stdin drains the loop's remaining input, silently running only the
-        # first scenario. rx never needs stdin (push_config has its own piped ssh), so -n is safe.
-        ssh -n "${IT_SSH_OPTS[@]}" "$IT_SSH_DEST" "$remote"
+        # Default -n protects scenario loops; --stdin opts in for a dedicated input pipe.
+        [ "${2:-}" != --stdin ] || stdin_flag=()
+        ssh "${stdin_flag[@]}" "${IT_SSH_OPTS[@]}" "$IT_SSH_DEST" "$remote"
     fi
 }
 

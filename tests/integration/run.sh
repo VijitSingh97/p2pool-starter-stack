@@ -970,7 +970,7 @@ assert_metrics_via_caddy() {
         curl_auth="$(printf 'user = %s\n' "$(printf '%s:%s' "$(env_on_box DASHBOARD_AUTH_USER)" "$IT_DASHBOARD_PASSWORD" | jq -Rs .)")"
     fi
     # -k: the LAN cert is Caddy's internal CA (tls internal); trust isn't what this asserts.
-    body="$(printf '%s\n' "$curl_auth" | rx "curl -ksS --max-time 15 -K - --resolve $(quote_arg "$host:$port:127.0.0.1") $(quote_arg "$scheme://$host/metrics")" 2>/dev/null)"
+    body="$(printf '%s\n' "$curl_auth" | rx "curl -ksS --max-time 15 -K - --resolve $(quote_arg "$host:$port:127.0.0.1") $(quote_arg "$scheme://$host/metrics")" --stdin 2>/dev/null)"
     if metrics_has_pithead_sample "$body"; then
         it_pass "/metrics serves pithead_ samples through Caddy (#379)"
     else
@@ -2391,14 +2391,14 @@ run_rigforge_reverse() { # <rig-name> <orig-max_temp_c-or-empty>
 # POST a change straight to the rig's control API from the bench (the same dial the host runner makes,
 # minus the dashboard) and echo the rig's change_id. Needs IT_RIG_TOKEN + RIG_HOST. Used only by #516.
 _rig_control_apply() { # <changes-json> -> echoes change_id
-    printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "${IT_RIG_TOKEN:-}" | jq -Rs .)" | rx "curl -fsS --max-time 15 -K - -X POST -H 'Content-Type: application/json' --data $(quote_arg "$1") $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/apply")" 2>/dev/null | jq -r '.change_id // empty' 2>/dev/null
+    printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "${IT_RIG_TOKEN:-}" | jq -Rs .)" | rx "curl -fsS --max-time 15 -K - -X POST -H 'Content-Type: application/json' --data $(quote_arg "$1") $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/apply")" --stdin 2>/dev/null | jq -r '.change_id // empty' 2>/dev/null
 }
 
 # Poll the rig's /status for <change_id> reaching <want-status>. Returns 0 on match within the window.
 _rig_control_await() { # <change_id> <want-status> [timeout-s=30]
     local id="$1" want="$2" deadline=$((SECONDS + ${3:-30})) sbody
     while [ "$SECONDS" -lt "$deadline" ]; do
-        sbody="$(printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "${IT_RIG_TOKEN:-}" | jq -Rs .)" | rx "curl -fsS --max-time 10 -K - $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/status")" 2>/dev/null)"
+        sbody="$(printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "${IT_RIG_TOKEN:-}" | jq -Rs .)" | rx "curl -fsS --max-time 10 -K - $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/status")" --stdin 2>/dev/null)"
         if [ "$(printf '%s' "$sbody" | jq -r '.change_id // empty' 2>/dev/null)" = "$id" ] &&
             [ "$(printf '%s' "$sbody" | jq -r '.status // empty' 2>/dev/null)" = "$want" ]; then
             return 0

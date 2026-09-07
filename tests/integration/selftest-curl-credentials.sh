@@ -21,6 +21,7 @@ mv "$TMP/bin/bash.fixed" "$TMP/bin/bash"
 cat >"$TMP/bin/ssh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >>"$ARGV_LOG"
+for arg; do [ "$arg" != -n ] || exec </dev/null; done
 exec "$REAL_BASH" -c "${!#}"
 SH
 cat >"$TMP/bin/curl" <<'SH'
@@ -83,8 +84,11 @@ for IT_MODE in local ssh; do
     _rig_control_await fixture-change applied 1
     check_transport header "Authorization: Bearer $IT_RIG_TOKEN"
     # Same static command and stdin script that the restore's on_bench transports.
-    test "$(rx 'bash -s' <"$TMP/restore-probe")" = rpc-ok
+    test "$(rx 'bash -s' --stdin <"$TMP/restore-probe")" = rpc-ok
     check_transport user "fixture-user:$IT_DASHBOARD_PASSWORD"
 done
+# Ordinary SSH commands must still leave scenario-loop input unread.
+test -z "$(printf 'fixture loop input\n' | rx cat)"
+test "$(printf 'fixture pipe input\n' | rx cat --stdin)" = 'fixture pipe input'
 test "$IT_FAIL" -eq 0
-printf 'curl credential transport: 10 local/SSH probe checks passed\n'
+printf 'curl credential transport: 10 local/SSH probes and 2 stdin controls passed\n'
