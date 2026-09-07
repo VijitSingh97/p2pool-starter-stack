@@ -39,10 +39,9 @@ restore_setup_archive_within_limits() { # <names-file> <verbose-file> [max-membe
 }
 
 restore_setup_tar_list() { # <archive> <tar-list-option> <output> [max-KiB] [seconds]
-    (
-        ulimit -f "${4:-4096}"
-        exec timeout "${5:-30}" tar --quoting-style=escape "$2" "$1"
-    ) >"$3" 2>/dev/null
+    timeout "${5:-30}" bash -c \
+        'ulimit -f "$1"; exec tar --quoting-style=escape "$2" "$3"' \
+        _ "${4:-4096}" "$2" "$1" >"$3" 2>/dev/null
 }
 
 restore_setup_publish_file() { # <source> <destination>
