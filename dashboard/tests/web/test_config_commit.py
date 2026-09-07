@@ -37,24 +37,14 @@ class ApprovalBot:
     config_approval_enabled = True
 
     def __init__(self):
-        self.pending = False
+        self.paused = False
 
-    def request_config_approval(self, preview_id, actor, suffixes, values):
-        assert values[0]["new"].endswith("12345678")
-        self.pending = True
-
-    def take_config_approval(self, preview_id, actor, suffixes):
-        if not self.pending:
-            return None
-        return {
-            "preview_id": preview_id,
-            "actor": actor,
-            "approver": "tg-7",
-            "payout_suffixes": suffixes,
-        }
+    async def pause_for_host_approval(self):
+        self.paused = True
+        return True
 
 
-async def test_sensitive_commit_binds_approval_to_caddy_actor_and_preview_id(
+async def test_sensitive_commit_sends_only_suffixes_and_caddy_actor_to_host(
     config_client, config_spool
 ):
     rid = str(uuid.uuid4())
@@ -82,14 +72,12 @@ async def test_sensitive_commit_binds_approval_to_caddy_actor_and_preview_id(
     headers = {"X-Pithead-Control": "1", "X-Auth-User": "real-admin"}
     resp = await config_client.post("/api/control/commit", json=request, headers=headers)
     assert resp.status == 202
-    assert (await resp.json())["status"] == "awaiting-approval"
-    (config_spool / "results" / f"{rid}.json").write_text(json.dumps({"status": "applied"}))
-    resp = await config_client.post("/api/control/commit", json=request, headers=headers)
-    assert resp.status == 200
+    assert (await resp.json())["status"] == "pending"
     spooled = json.loads((config_spool / "requests" / f"{rid}.json").read_text())
     assert spooled["actor"] == "real-admin"
-    assert spooled["approval"]["approver"] == "tg-7"
-    assert spooled["approval"]["preview_id"] == rid
+    assert spooled["approval"] == {"payout_suffixes": {"monero": "12345678"}}
+    assert "approver" not in spooled["approval"]
+    assert "preview_id" not in spooled["approval"]
 
 
 async def test_hostile_approval_shape_is_rejected_before_spooling(config_client, config_spool):

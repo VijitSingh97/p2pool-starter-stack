@@ -1016,9 +1016,12 @@ The flow mirrors the CLI's `apply`:
    commit runs `pithead apply -y` on the host and recreates only the containers whose config
    changed. Your typed confirmation rides to the host gate, which requires it before a
    confirm-gated change proceeds — a change confirmed this way is recorded in the audit log as a
-   `commit-confirmed` action, distinct from an ordinary commit. An approval-required commit is
-   bound to that preview id, dashboard user, and Telegram approver, and is recorded as
-   `commit-approved`.
+   `commit-confirmed` action, distinct from an ordinary commit. For an approval-required commit,
+   the host pauses the dashboard poller, creates a one-time token bound to the preview id, staged
+   config digest, dashboard user, payout suffixes, and expiry, then sends and polls the complete
+   non-secret preview itself. It accepts only the configured chat, exact prompt, and an allow-listed
+   Telegram user. The dashboard cannot assert the approver. The result is recorded as
+   `commit-approved` with both the dashboard actor and Telegram approver.
 
 Every reference setting belongs to an explicit policy class. The ordinary allowlist covers routine
 operations. A second, confirm-gated allowlist
@@ -1029,9 +1032,9 @@ enabling Monero pruning, the Monero outbound-peer count (bounded, but the bigges
 steady-state knob on the shared Tor daemon's load), and the remote Monero and Tari **node
 endpoints** ([#1888](https://github.com/p2pool-starter-stack/pithead/issues/1888)) — which commit
 only behind typed `APPLY`. Type-to-confirm is intent friction, not authentication. The approval
-class covers funds, traffic, control, authentication, and sensitive behavior; its envelope is bound
-to the preview id and signed-in dashboard actor, requires the existing Telegram operator identity,
-and adds the typed suffix check for payout destinations.
+class covers funds, traffic, control, authentication, and sensitive behavior; its host-owned record
+is bound to the preview id, staged digest, and signed-in dashboard actor, requires the existing
+Telegram operator identity, and adds the typed suffix check for payout destinations.
 The machine re-derives the changed paths and expected suffixes rather than trusting browser labels.
 Both edit modes use the same policy. Secrets are never included in preview or audit values.
 
@@ -1041,10 +1044,11 @@ The machine refuses them even if a request forges an approval envelope and direc
 use a configuration stick. This prevents the configuration page from weakening the identity or
 evidence needed to approve its own later changes.
 
-Approval is available when the Telegram bot's command interface is running and `allowed_ids`
-already names an operator. `telegram.control.enabled` may still be off; config approval reuses its
-identity list without enabling `/restart` or `/apply`. If no approval identity is configured, the
-page refuses a sensitive commit instead of treating the dashboard login as its own approval.
+Approval is available when the Telegram bot token, chat, and `allowed_ids` already name an operator.
+The command interface and `telegram.control.enabled` may stay off; configuration approval reuses
+the identity data without enabling status commands, `/restart`, or `/apply`. If no approval identity
+is configured, the page refuses a sensitive commit instead of treating the dashboard login as its
+own approval.
 
 A node-endpoint change is the one confirm-gated setting with a second gate behind the typed
 `APPLY`: before the commit is accepted, the host dials the endpoint you staged and refuses one it

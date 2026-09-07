@@ -27,11 +27,7 @@ from mining_dashboard.helper.utils import (
     format_xtm,
 )
 from mining_dashboard.service import control_service
-from mining_dashboard.service.config_approval import (
-    ConfigApprovalGate,
-    ControlGate,
-    config_prompt_payload,
-)
+from mining_dashboard.service.config_approval import ControlGate
 from mining_dashboard.service.earnings import (
     MICRO_PER_XTM,
     confirmed_payouts_summary,
@@ -644,22 +640,27 @@ class TelegramCommandBot:
         self.control_enabled = bool(self.enabled and control_enabled and self.allowed_ids)
         # Config approval uses the physical-presence Telegram identity list without enabling the
         # unrelated /restart and /apply verbs (or it could never approve that toggle while off).
-        self.config_approval_enabled = bool(self.enabled and self.allowed_ids)
+        # Configuration approval is host-driven and only needs the configured bot identity. It does
+        # not silently enable the dashboard's read-only command poller or the /restart,/apply verbs.
+        self.config_approval_enabled = bool(self._token and self.chat_id and self.allowed_ids)
         self._gate = ControlGate(confirm_timeout)
-        self._config_gate = ConfigApprovalGate(confirm_timeout)
+        self._config_confirm_timeout = float(confirm_timeout)
+        self._config_pause_until = 0.0
+        self._poll_idle = asyncio.Event()
+        self._poll_idle.set()
 
-    def request_config_approval(self, preview_id, actor, payout_suffixes, preview_values):
-        """Ask the allow-listed Telegram identity to approve one concrete staged preview."""
+    async def pause_for_host_approval(self):
+        """Yield Telegram polling while the root runner verifies a configuration approval."""
         if not self.config_approval_enabled:
             return False
-        accepted, token = self._config_gate.request(preview_id, actor, payout_suffixes)
-        if accepted and token:
-            self._send_config_confirm(token, actor, preview_values)
-        return accepted
-
-    def take_config_approval(self, preview_id, actor, payout_suffixes):
-        """Consume a Telegram-approved envelope once; mismatched browser retries fail closed."""
-        return self._config_gate.take(preview_id, actor, payout_suffixes)
+        self._config_pause_until = max(
+            self._config_pause_until, time.monotonic() + self._config_confirm_timeout + 15
+        )
+        try:
+            await asyncio.wait_for(self._poll_idle.wait(), timeout=self.long_poll + 12)
+        except TimeoutError:
+            return False
+        return True
 
     def _payout_summary(self, chain):
         """Confirmed-payout roll-up for ``chain`` (#787), or ``None`` when that chain's view-only
@@ -760,7 +761,11 @@ class TelegramCommandBot:
         logger.info("Telegram command interface enabled — polling for commands (over Tor).")
         await asyncio.to_thread(self._prime_offset)
         while True:
+            if time.monotonic() < self._config_pause_until:
+                await asyncio.sleep(min(0.25, self._config_pause_until - time.monotonic()))
+                continue
             try:
+                self._poll_idle.clear()
                 updates = await asyncio.to_thread(self._get_updates, self.long_poll)
             except asyncio.CancelledError:
                 raise
@@ -768,6 +773,8 @@ class TelegramCommandBot:
                 logger.debug("Telegram getUpdates failed (%s)", type(exc).__name__)
                 await asyncio.sleep(POLL_ERROR_BACKOFF_SECONDS)
                 continue
+            finally:
+                self._poll_idle.set()
             for update in updates:
                 self._offset = update.get("update_id", 0) + 1
                 await self._handle_update(update)
@@ -785,11 +792,7 @@ class TelegramCommandBot:
 
     def _get_updates(self, poll_timeout):
         """Blocking ``getUpdates`` over Tor. Called via ``to_thread`` from the loop."""
-        allowed = (
-            '["message","callback_query"]'
-            if self.control_enabled or self.config_approval_enabled
-            else '["message"]'
-        )
+        allowed = '["message","callback_query"]' if self.control_enabled else '["message"]'
         params = {"timeout": poll_timeout, "allowed_updates": allowed, "limit": GETUPDATES_LIMIT}
         if self._offset is not None:
             params["offset"] = self._offset
@@ -877,32 +880,6 @@ class TelegramCommandBot:
         # Same outer chat boundary as messages, then the control gate does the per-operator check.
         if str(chat.get("id")) != self.chat_id:
             return
-        if data.startswith("approve-config:"):
-            uid = str((callback.get("from") or {}).get("id", ""))
-            token = data[len("approve-config:") :]
-            rec = self._config_gate.confirm(token, uid, self.allowed_ids)
-            if rec is None:
-                logger.warning(
-                    "Configuration approval denied (stale/foreign token) for user id %s.",
-                    uid or "?",
-                )
-                await asyncio.to_thread(
-                    self._send,
-                    f"{_prefix(self.host_label)}⛔ Configuration change not approved in time "
-                    "(or not authorised) — denied.",
-                )
-                return
-            logger.info(
-                "Configuration preview %s approved by Telegram operator %s for dashboard actor %s.",
-                rec["preview_id"],
-                uid,
-                rec["actor"],
-            )
-            await asyncio.to_thread(
-                self._send,
-                f"{_prefix(self.host_label)}✅ Configuration change approved for {rec['actor']}.",
-            )
-            return
         if not self.control_enabled:
             return
         if not data.startswith("confirm:"):
@@ -978,18 +955,6 @@ class TelegramCommandBot:
             resp.raise_for_status()
         except Exception as exc:
             logger.debug("Telegram confirm prompt failed (%s)", type(exc).__name__)
-
-    def _send_config_confirm(self, token, actor, preview_values):
-        """Send the concrete host-produced, non-secret preview to the approval identity."""
-        url = f"{self._api_base}/bot{self._token}/sendMessage"
-        payload = config_prompt_payload(
-            self.chat_id, _prefix(self.host_label), token, actor, preview_values
-        )
-        try:
-            resp = requests.post(url, json=payload, timeout=10, proxies=self._proxies)
-            resp.raise_for_status()
-        except Exception as exc:
-            logger.debug("Telegram configuration approval prompt failed (%s)", type(exc).__name__)
 
     def _answer_callback(self, callback_id):
         """Acknowledge a callback query so the operator's client stops showing a spinner. Best-effort:

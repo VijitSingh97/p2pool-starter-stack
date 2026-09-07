@@ -176,13 +176,9 @@ class TestSubmit:
         req2 = json.loads((spool / "requests" / f"{rid2}.json").read_text())
         assert "confirm" not in req2
 
-    def test_commit_carries_the_server_built_approval_envelope(self, spool):
+    def test_commit_carries_only_typed_suffixes_for_host_approval(self, spool):
         intent = str(uuid.uuid4())
-        approval = {
-            "preview_id": intent,
-            "actor": "admin",
-            "payout_suffixes": {"monero": "12345678"},
-        }
+        approval = {"payout_suffixes": {"monero": "12345678"}}
         rid = control_service.submit(
             "commit", actor="admin", intent_id=intent, confirm="APPLY", approval=approval
         )

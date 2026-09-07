@@ -1,14 +1,10 @@
 """Approval preparation for a sensitive Configuration-view commit."""
 
-import asyncio
-
 from aiohttp import web
-
-from mining_dashboard.service import control_service
 
 
 async def approval_envelope(request, body, actor):
-    """Return ``(envelope, pending_response)`` after validating the second identity."""
+    """Pause dashboard polling and pass only typed suffixes to the host approval gate."""
     if body.get("approve") is not True:
         return None, None
     suffixes = body.get("payout_suffixes", {})
@@ -22,19 +18,8 @@ async def approval_envelope(request, body, actor):
         return None, web.json_response(
             {"id": body.get("id"), "status": "approval-unavailable"}, status=409
         )
-    approval = bot.take_config_approval(body.get("id"), actor, suffixes)
-    if approval is not None:
-        return approval, None
-    preview = await control_service.wait_result(body.get("id"))
-    if not preview or preview.get("status") != "previewed":
-        raise ValueError("preview is not available")
-    await asyncio.to_thread(
-        bot.request_config_approval,
-        body.get("id"),
-        actor,
-        suffixes,
-        preview.get("preview_values", []),
-    )
-    return None, web.json_response(
-        {"id": body.get("id"), "status": "awaiting-approval"}, status=202
-    )
+    if not await bot.pause_for_host_approval():
+        return None, web.json_response(
+            {"id": body.get("id"), "status": "approval-unavailable"}, status=409
+        )
+    return {"payout_suffixes": suffixes}, None

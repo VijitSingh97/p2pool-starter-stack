@@ -8,8 +8,8 @@ _control_host_remedy() {
     fi
 }
 
-control_approval_gate() { # <staged-file> [confirm-token] <id> <actor> [approval-json]
-    local staged="$1" confirm="${2:-}" id="$3" actor="$4" approval="${5:-null}" porcelain
+control_approval_gate() { # <staged-file> [confirm-token] <id> <actor> [approval-json] <control-dir>
+    local staged="$1" confirm="${2:-}" id="$3" actor="$4" approval="${5:-null}" cdir="$6" porcelain
     local approval_required=0 worker_sensitive=0
     # Fail closed if we cannot re-derive the change set (the staged config was validated at
     # preview, so a dry-run failure here means something changed — refuse).
@@ -102,8 +102,11 @@ control_approval_gate() { # <staged-file> [confirm-token] <id> <actor> [approval
     [ "${bad:-0}" -gt 0 ] && approval_required=1
     [ "$worker_sensitive" -eq 1 ] && approval_required=1
     printf '%s\n' "$porcelain" | grep -qE $'^DEST\t' && approval_required=1
-    if [ "$approval_required" -eq 1 ] && ! control_validate_approval "$staged" "$id" "$actor" "$approval" "$porcelain"; then
-        return 1
+    # Electricity price feeds are remote control inputs, unlike the local display currency and
+    # fixed-price values beside them. They need the same second identity even though dashboard.energy
+    # is config.json-only and therefore has no porcelain row.
+    if control_changed_config_paths "$staged" | grep -qx 'dashboard.energy.price_feed'; then
+        approval_required=1
     fi
     # Data-dir destination allowlist (#728). #719 made the four *_DATA_DIR moves confirm-gated, so a
     # dashboard operator who types APPLY can now RELOCATE a service's data dir. assert_safe_dir — the
@@ -159,7 +162,7 @@ control_approval_gate() { # <staged-file> [confirm-token] <id> <actor> [approval
         fi
         touch "${staged}.confirmed" 2>/dev/null || true
     fi
-    [ "$approval_required" -eq 1 ] && touch "${staged}.approved" 2>/dev/null || true
+    # The host-side Telegram verifier writes ${staged}.approved with its bound approval record.
     # Reachability probe (#1888) — the compensating control the confirm tier rests on for these keys
     # (42-): the typed token is friction, but a chain cannot be parked on a node that is not there.
     # Host-side, on the STAGED config, through the same preflight the wizard uses; nothing is
@@ -171,6 +174,15 @@ control_approval_gate() { # <staged-file> [confirm-token] <id> <actor> [approval
     if printf '%s' "$porcelain" | awk -F'\t' 'NF' | cut -f2 | grep -qxE "$endpoint_re"; then
         if ! probe_err=$(preflight_remote_nodes "$staged" 2>/dev/null); then
             printf 'this change points the stack at a node the host cannot use: %s' "$probe_err"
+            return 1
+        fi
+    fi
+    # Ask for the second identity only after every host-only perimeter, typed-confirmation, and
+    # endpoint-reachability check has passed. Invalid requests never consume the prompt budget.
+    if [ "$approval_required" -eq 1 ]; then
+        local approver
+        if ! approver=$(control_validate_approval "$staged" "$id" "$actor" "$approval" "$porcelain" "$cdir"); then
+            [ -n "$approver" ] && printf '%s' "$approver"
             return 1
         fi
     fi
@@ -290,6 +302,9 @@ control_preview() { # <request-file> <id> <actor> <control-dir>
              == (($ref[0].dashboard.energy // {}) + (.dashboard.energy // {}))' "$staged" >/dev/null 2>&1; then
             result=$(printf '%s' "$result" | jq '.changes += [{flag:"INFO",key:"dashboard.energy",msg:"Energy calculator settings (dashboard.energy) — electricity price / currency / XMR price updated."}]')
         fi
+        if control_changed_config_paths "$staged" | grep -qx 'dashboard.energy.price_feed'; then
+            result=$(printf '%s' "$result" | jq '.changes += [{flag:"APPROVAL",key:"dashboard.energy.price_feed",msg:"Electricity price feed endpoint changed — the host will contact this remote source for operating-cost data."}] | .approval_required = true')
+        fi
         control_write_result "$cdir/results" "$id" "$result"
         control_audit "$cdir/audit/control.log" "$id" "$actor" "preview" "previewed" "$(porcelain_keys "$out")"
     else
@@ -346,7 +361,7 @@ control_commit() { # <id> <actor> <control-dir> [confirm-token] [approval-json]
     # On refusal the gate's stdout is the reason; on approval it is the changed key names, which
     # the audit entries below record — WHAT changed, by name only (#349).
     local gate_out keys=""
-    if ! gate_out=$(control_approval_gate "$staged" "$confirm" "$id" "$actor" "$approval"); then
+    if ! gate_out=$(control_approval_gate "$staged" "$confirm" "$id" "$actor" "$approval" "$cdir"); then
         [ -n "$gate_out" ] || gate_out="approval denied"
         control_write_result "$cdir/results" "$id" "$(jq -n --arg e "$gate_out" '{status:"rejected",error:$e,ts:(now|floor)}')"
         rm -f "$staged" "${staged}.confirmed" "${staged}.approved"
@@ -358,13 +373,14 @@ control_commit() { # <id> <actor> <control-dir> [confirm-token] [approval-json]
     # when a typed confirmation carried an in-scope CONFIRM row past the perimeter. The distinct
     # `commit-confirmed` action separates a dashboard-confirmed disruptive apply from an ordinary
     # (INFO-only) dashboard commit in the tamper-evidence log. Host-CLI applies never reach this log.
-    local audit_action="commit"
+    local audit_action="commit" approver=""
     if [ -f "${staged}.confirmed" ]; then
         audit_action="commit-confirmed"
         rm -f "${staged}.confirmed"
     fi
     if [ -f "${staged}.approved" ]; then
         audit_action="commit-approved"
+        approver=$(jq -r '.approver // empty' "${staged}.approved" 2>/dev/null)
         rm -f "${staged}.approved"
     fi
     # Keep a pre-change backup; on failure it is named in the result and left in place. The
@@ -376,12 +392,12 @@ control_commit() { # <id> <actor> <control-dir> [confirm-token] [approval-json]
     if [ "$rc" -eq 0 ]; then
         control_reown_operator_files # the root apply wrote .env/Caddyfile as root — give them back (#33)
         control_write_result "$cdir/results" "$id" "$(jq -n '{status:"applied",ts:(now|floor)}')"
-        control_audit "$cdir/audit/control.log" "$id" "$actor" "$audit_action" "applied" "$keys"
+        control_audit "$cdir/audit/control.log" "$id" "$actor" "$audit_action" "applied" "$keys" "$approver"
     else
         # apply's own .apply-incomplete marker handles the container-recreate retry; the config
         # backup lets the operator revert by hand if the new config itself is the problem.
         control_write_result "$cdir/results" "$id" "$(jq -n --arg e "$(tail -c 2000 "$logf")" --arg b "${CONFIG_FILE}.bak-control" '{status:"failed",error:$e,backup:$b,ts:(now|floor)}')"
-        control_audit "$cdir/audit/control.log" "$id" "$actor" "$audit_action" "failed" "$keys"
+        control_audit "$cdir/audit/control.log" "$id" "$actor" "$audit_action" "failed" "$keys" "$approver"
     fi
     rm -f "$staged" "$logf" "${staged}.confirmed" "${staged}.approved"
 }

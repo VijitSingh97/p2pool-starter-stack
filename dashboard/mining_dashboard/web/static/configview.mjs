@@ -297,21 +297,13 @@ export class ConfigView extends Component {
         body.approve = true;
         body.payout_suffixes = this.state.payoutSuffixes;
       }
-      let out = null;
-      for (let attempt = 0; attempt < 120; attempt += 1) {
-        const res = await fetch("/api/control/commit", {
-          method: "POST",
-          headers: CONTROL_HEADERS,
-          body: JSON.stringify(body),
-        });
-        if (!res.ok && res.status !== 202) throw new Error(`HTTP ${res.status}`);
-        out = await res.json();
-        if (out.status !== "awaiting-approval") break;
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
-      if (!out || out.status === "awaiting-approval") {
-        throw new Error("Approval was not confirmed in time.");
-      }
+      const res = await fetch("/api/control/commit", {
+        method: "POST",
+        headers: CONTROL_HEADERS,
+        body: JSON.stringify(body),
+      });
+      if (!res.ok && res.status !== 202) throw new Error(`HTTP ${res.status}`);
+      let out = await res.json();
       if (out.status === "pending" || out.status === "previewed")
         out = await this.poll(id, "previewed");
       this.setState({ phase: "done", result: out });

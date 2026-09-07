@@ -1,5 +1,4 @@
-# Describe a changed env key for the apply preview. Prints "FLAG\tmessage" where FLAG is
-# DEST (disruptive — apply should confirm) or INFO. Always returns 0 (safe in $()).
+# Describe a changed env key for the apply preview. Prints "FLAG\tmessage"; always returns 0.
 describe_change() {
     local key="$1" old="$2" new="$3" flag="INFO" msg
     case "$key" in
@@ -340,6 +339,7 @@ describe_change() {
         # Secret — never echo the token value into the change preview / logs.
         msg="ntfy access token updated — the dashboard container is recreated."
         ;;
+    XMRIG_API_TOKEN | XVB_STANDBY_SOURCE) msg="Secret configuration value updated — the dashboard container is recreated." ;;
     NOTIFY_TOR)
         if [ "$new" == "true" ]; then
             msg="Webhook/ntfy alerts back on Tor — endpoints see a Tor exit, not this host's IP; the dashboard container is recreated."
