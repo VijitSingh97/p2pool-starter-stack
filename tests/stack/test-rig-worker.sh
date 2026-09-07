@@ -523,7 +523,7 @@ mkdir -p "$gh_dir/staged" "$gh_dir/results" "$gh_dir/audit" "$gh_dir/bin"
 cp "$WU/config.json" "$gh_dir/config.json"
 cat >"$gh_dir/bin/curl" <<'EOF'
 #!/usr/bin/env bash
-out="" url=""; cat >/dev/null
+out="" url=""
 while [ $# -gt 0 ]; do
     case "$1" in
     -o) out="$2"; shift 2 ;;
@@ -532,8 +532,8 @@ while [ $# -gt 0 ]; do
 done
 case "$url" in
 */releases/latest) printf '{"tag_name":"v9.9.9"}\n200' ;;
-*/upgrade) printf '{"change_id":"chg-9"}' >"$out"; printf '202' ;;
-*/status) printf '{"change_id":"chg-9","status":"applied"}' >"$out"; printf '200' ;;
+*/upgrade) cat >/dev/null; printf '{"change_id":"chg-9"}' >"$out"; printf '202' ;;
+*/status) cat >/dev/null; printf '{"change_id":"chg-9","status":"applied"}' >"$out"; printf '200' ;;
 *) printf '000' ;;
 esac
 exit 0
