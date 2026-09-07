@@ -13,7 +13,6 @@ dashboard/mining_dashboard/service/storage_service.py	1358
 dashboard/mining_dashboard/service/telegram_commands.py	1023
 dashboard/mining_dashboard/service/worker_config_store.py	448
 dashboard/mining_dashboard/sim/donation_model.py	539
-dashboard/mining_dashboard/web/infra_views.py	507
 dashboard/mining_dashboard/web/server.py	645
 dashboard/mining_dashboard/web/static/chart.mjs	681
 dashboard/mining_dashboard/web/static/components.mjs	1177

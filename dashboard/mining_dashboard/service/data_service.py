@@ -330,6 +330,10 @@ class DataService:
             # restored `rigforge_release` would keep serving stale per-worker badges until the
             # first poll cycle. The checker re-fetches on its cadence; drop it on restore.
             loaded_snapshot.pop("rigforge_release", None)
+            for worker in loaded_snapshot.get("workers", []):
+                rigforge = worker.get("rigforge") or {}
+                if rigforge and "generated_at" not in rigforge:
+                    rigforge["stale"] = True
             self.latest_data.update(loaded_snapshot)
             self.workers_rejected = bool(self.latest_data.get("workers_rejected", False))
             self.miner_released = bool(self.latest_data.get("miner_released", False))
