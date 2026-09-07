@@ -257,15 +257,17 @@ assert_eq "approved worker host landed" "$(jq -r '.workers.list[0].host' "$C/con
 assert_contains "worker repoint audit names workers.list" "$(grep '"action":"commit-approved","status":"applied"' "$AUDIT" | tail -n 1)" "workers.list"
 
 # A remote-worker append needs the same host approval and must remain a supported operation.
-jq -n --slurpfile live "$C/config.json" --arg id "$UUID3" '{id:$id,action:"preview",actor:"admin",config:($live[0] | .workers.list += [{name:"rig-2",host:"192.168.1.52",control_port:8082,token:"another-token"}])}' >"$REQS/$UUID3.json"
+APPEND_UUID="44444444-4444-4444-8444-444444444444"
+jq -n --slurpfile live "$C/config.json" --arg id "$APPEND_UUID" '{id:$id,action:"preview",actor:"admin",config:($live[0] | .workers.list += [{name:"rig-2",host:"192.168.1.52",control_port:8082,token:"another-token"}])}' >"$REQS/$APPEND_UUID.json"
 run_pending >/dev/null
-assert_eq "worker append preview requires approval" "$(jq -r '.approval_required' "$RESULTS/$UUID3.json")" "true"
-jq -n --arg id "$UUID3" '{id:$id,action:"commit",actor:"admin",approval:{payout_suffixes:{}}}' >"$REQS/$UUID3.json"
+assert_eq "worker append preview requires approval" "$(jq -r '.approval_required' "$RESULTS/$APPEND_UUID.json")" "true"
+jq -n --arg id "$APPEND_UUID" '{id:$id,action:"commit",actor:"admin",approval:{payout_suffixes:{}}}' >"$REQS/$APPEND_UUID.json"
 arm_fake_telegram
 run_pending >/dev/null
-assert_eq "approved worker append applies" "$(jq -r '.status' "$RESULTS/$UUID3.json")" "applied"
+assert_eq "approved worker append applies" "$(jq -r '.status' "$RESULTS/$APPEND_UUID.json")" "applied"
 assert_eq "approved worker append lands the new descriptor" "$(jq -r '.workers.list[] | select(.name=="rig-2") | .host' "$C/config.json")" "192.168.1.52"
-assert_contains "worker append audit names workers.list" "$(grep '"action":"commit-approved","status":"applied"' "$AUDIT" | tail -n 1)" "workers.list"
+assert_contains "worker append audit names workers.list" \
+    "$(jq -c --arg id "$APPEND_UUID" 'select(.id==$id and .action=="commit-approved" and .status=="applied")' "$AUDIT")" "workers.list"
 # A confirm-key in its heavy direction (prune disable) is now approval-gated too: it still needs
 # typed APPLY, but is no longer impossible for a shell-less appliance operator.
 jq -n --arg w "$WALLET" '{monero:{mode:"local",wallet_address:$w,node_username:"u",node_password:"p",prune:true},
@@ -408,6 +410,6 @@ else
     ok "invalid provenance id fails without deleting its retry marker"
 fi
 assert_contains "direct wizard audit failure re-enters the retry path" \
-    "$(sed -n '515,530p' "$ROOT/lib/pithead/12-firstboot-wizard.sh")" "setup_rc=1"
+    "$(sed -n '/if control_audit_provisioned/,/setup_rc=1/p' "$ROOT/lib/pithead/12-firstboot-wizard.sh")" "setup_rc=1"
 rm -rf "$PROV"
 unset PROV
