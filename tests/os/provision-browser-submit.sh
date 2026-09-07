@@ -100,8 +100,8 @@ setup_failure_state_retained() { # <wizard-state-json> <expected-wallet>
         .stage == "setup" and (.error | type == "string" and length > 0) and
         .config.monero.wallet_address == $m and .config.tari.mode == "local"' >/dev/null
 }
-
-# Move one required setup input so the host fails after validation, then restore it for retry.
+restore_setup_fault() { _ssh "mv /run/pithead-os-1966-docker-compose.yml /data/pithead/docker-compose.yml &&
+    test -s /data/pithead/docker-compose.yml && test ! -e /run/pithead-os-1966-docker-compose.yml"; }
 provision_setup_failure_recovery() { # <ip> <authenticated-cookie-jar> <old-token>
     local ip="$1" jar="$2" old_token="$3" handoff="" state code new_token="" tries=0
     local live=/data/pithead/docker-compose.yml backup=/run/pithead-os-1966-docker-compose.yml
@@ -115,7 +115,7 @@ provision_setup_failure_recovery() { # <ip> <authenticated-cookie-jar> <old-toke
     if [ "$code" = "200" ]; then
         ok "the valid setup is accepted before the host-side fault fires"
     else
-        _ssh "mv '$backup' '$live'" 2>/dev/null || true
+        restore_setup_fault || bad "post-validation fault cleanup failed after submit refusal"
         bad "faulted setup was not accepted for host processing (HTTP ${code:-none})"
         return 1
     fi
@@ -126,21 +126,21 @@ provision_setup_failure_recovery() { # <ip> <authenticated-cookie-jar> <old-toke
         tries=$((tries + 1))
     done
     if [ "$tries" -ge 24 ]; then
-        _ssh "mv '$backup' '$live'" 2>/dev/null || true
+        restore_setup_fault || bad "post-validation fault cleanup failed after handoff timeout"
         bad "faulted setup never reached its credentials handoff"
         return 1
     fi
     if ! curl -fsSk -b "$jar" -X POST "https://$ip/handoff-ack" -o /dev/null 2>/dev/null; then
-        _ssh "mv '$backup' '$live'" 2>/dev/null || true
+        restore_setup_fault || bad "post-validation fault cleanup failed after handoff refusal"
         bad "faulted setup credentials could not be acknowledged"
         return 1
     fi
     if ! _ssh "for i in \$(seq 60); do test -s /data/pithead/data/firstboot/error.txt && test -s '$backup' && test ! -e '$live' && exit 0; sleep 5; done; exit 1"; then
-        _ssh "mv '$backup' '$live'" 2>/dev/null || true
+        restore_setup_fault || bad "post-validation fault cleanup failed after setup timeout"
         bad "the armed host setup fault never returned a recorded failure"
         return 1
     fi
-    if _ssh "mv '$backup' '$live' && test -s '$live' && test ! -e '$backup'"; then
+    if restore_setup_fault; then
         ok "post-validation setup fault cleanup restores the exact Compose file"
     else
         bad "post-validation setup fault cleanup did not restore the Compose file"
