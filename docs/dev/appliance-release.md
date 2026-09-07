@@ -371,10 +371,14 @@ test node: confirm the preview warns, verify a commit without the literal `APPLY
 Never use the physical-media path for this approval check; that path remains deliberately unable
 to self-approve disruptive changes.
 
-The current automated approval row uses the stable `monero.out_peers` `CONFIRM` round trip and
-restores its original value. That proves the appliance approval path, but it does not prove a
-sensitive endpoint or payout edit, or that a node probe was consumed. Keep M16 and the
-integration row for #1898/#1943/#1946 open until a reserved reachable node proves that wider path.
+The automated battery first keeps the stable `monero.out_peers` `CONFIRM` round trip, then drives
+the sensitive path with fake test-only Telegram identifiers. Its transport recognizes only the
+fake approval calls and cannot fall through to the real provider. It proves missing and wrong
+identities stay refused, the host-generated preview and allow-listed callback bind the commit,
+and a dashboard password remains physical-presence-only. With the reserved-node environment
+inputs, it requires the real host preflight, rendered endpoints, p2pool's current-startup
+`uses chain_id` round trip, and restoration of the original local-node config. The payout-address
+confirmation and a real human Telegram click remain manual M16 evidence.
 
 RC1 addendum, still manual after the automated rows run:
 
@@ -396,14 +400,13 @@ RC1 addendum, still manual after the automated rows run:
 
 The custom-hostname row is now specific: the wizard's `fixture-box` name must agree across the
 kernel, rendered `HOST_IP`, dashboard header state, certificate DNS and LAN-IP SANs, and active
-Avahi with working mDNS resolution. The same identity must survive the unaided reboot and A/B
-update. Its day-two `fixture-next` preview must require approval and leave those readings unchanged.
-The approved commit remains part of M16 until #1959's approval interface freezes; after approval it
-must change the same readings, survive reboot and A/B update, and the preview-only control must
-show the old name throughout. #1959's payout/auth/control approval and the reserved-node
-`uses chain_id` consumer proof also remain open. #1956 has written the serial assertion for boot
-labels, but none of these tier-4 rows is PASS until the product branches are integrated into an
-image and the full battery runs.
+Avahi with working mDNS resolution. Its day-two `fixture-next` preview must leave those readings
+unchanged; missing and wrong approvals remain refused. The fake allow-listed callback then applies
+the host-generated preview, and `fixture-next` must survive the unaided reboot and A/B update.
+The reserved-node `uses chain_id` row is automated but still needs actual reachable node inputs;
+the payout confirmation and human approval click remain manual. #1956 has written the serial
+assertion for boot labels, but none of these tier-4 rows is PASS until the product branches are
+integrated into an image and the full battery runs.
 
 ## Cutting a release
 

@@ -39,7 +39,6 @@
 # battery rather than stopping at the first fault; the run exits non-zero if any assertion failed.
 # --keep leaves the VM + disks for inspection.
 set -uo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=tests/os/hugepages-boot-verdict.sh
 . "$SCRIPT_DIR/hugepages-boot-verdict.sh"
@@ -63,6 +62,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 . "$SCRIPT_DIR/appliance-hostname-leg.sh"
 # shellcheck source=tests/os/appliance-diagnostics-leg.sh
 . "$SCRIPT_DIR/appliance-diagnostics-leg.sh"
+# shellcheck source=tests/os/appliance-config-approval-leg.sh
+. "$SCRIPT_DIR/appliance-config-approval-leg.sh"
+# shellcheck source=tests/integration/mergemine-probe.sh
+. "$SCRIPT_DIR/../integration/mergemine-probe.sh"
 # shellcheck source=tests/os/reinstall-prefill-submit-leg.sh
 . "$SCRIPT_DIR/reinstall-prefill-submit-leg.sh"
 # shellcheck source=tests/os/setup-again-leg.sh
@@ -128,7 +131,6 @@ HARNESS_WALLET="44MnN1f3Eto8DZYUWuE5XZNUtE3vcRzt2j6PzqWpPau34e6Cf4fAxt6X2MBmrm6F
 # made-up placeholder is (correctly) rejected before the flow ever reaches the credentials
 # handoff. Same throwaway address the stack suite uses.
 HARNESS_TARI="126J92Yow5y9UoRFd1DNujPmVFq9C1ZeiYWT95UKxz5Y1rzbfjtHg4SCZS1dk83ivzt3m2XRQHTaYUk9SwmyeCvy5BJ"
-
 # Every remote call is bounded. CORRECTION (this comment used to claim Debian socket-activates sshd —
 # disproven): os/rootfs/Dockerfile only ever `systemctl enable`/`disable`s the plain ssh.service; no
 # ssh.socket unit is ever enabled. What actually gates it is os/overlay/pithead-ssh-host-keys.conf, a drop-in
@@ -395,13 +397,12 @@ require_clean_bench() {
         exit 2
     }
 }
-
 vm_destroy() {
     virsh destroy "$VM" >/dev/null 2>&1 || true
     virsh undefine "$VM" --nvram >/dev/null 2>&1 || true
 }
-
 cleanup() {
+    declare -F approval_fixture_disarm >/dev/null && approval_fixture_disarm
     # Preserve the console on failure. It is deleted with everything else on a green run, which
     # meant the one artefact that explains a boot failure was destroyed by the failure itself.
     if [ "$FAIL" -gt 0 ] && [ -s "$SERIAL" ] && [ ! -f "$SERIAL.failed" ]; then
@@ -418,7 +419,6 @@ cleanup() {
     rm -f "$DISK" "$SERIAL" "$SSH_ERR"
 }
 trap cleanup EXIT
-
 # Wait until the serial log matches a pattern, or time out. $1 pattern, $2 seconds.
 wait_serial() {
     local pat="$1" deadline=$(($(date +%s) + ${2:-180}))
@@ -1953,10 +1953,10 @@ phase_install() {
     phase_install_prefill_submit_leg "$target_disk" # #1846, last: nothing after it needs the disk
     rm -f "$target_disk" "$restore_archive" "$restore_target"
 }
-
 phase_provision() {
     info "phase: provision (wizard HTTP submit -> setup -> stack containers up)"
-    local img token jar scode PROVISION_DASHBOARD_HOST=fixture-box
+    # shellcheck disable=SC2034 # provision_browser_config reads both through Bash's dynamic scope.
+    local img token jar scode PROVISION_DASHBOARD_HOST=fixture-box PROVISION_FAKE_APPROVAL=1
     img=$(_build_image v1) || {
         bad "image build failed (/tmp/os-fault-build.log)"
         return
@@ -1966,7 +1966,6 @@ phase_provision() {
         return
     }
     ok "image boots ($ip)"
-
     # The wizard's one-time token, exactly where a human gets it: the console.
     local tries=0
     token=""
@@ -2118,6 +2117,7 @@ phase_provision() {
     fi
     phase_provision_control_regressions "$pv_user" "$pv_pass"
     phase_provision_hostname_regressions "$pv_user" "$pv_pass"
+    phase_provision_sensitive_regressions "$pv_user" "$pv_pass"
     # ---- Tor-only egress backstop (#855): the fail-closed firewall must actually DROP -------
     # The whole product is Tor-first; the guarantee is that nothing CAN bypass Tor even if an app is
     # misconfigured, compromised, or dials a raw public IP. On the appliance the engine is podman+netavark,
@@ -2304,7 +2304,7 @@ phase_provision() {
         bad "dashboard never answered after the reboot (last: $code)"
         return
     }
-    assert_appliance_hostname_identity fixture-box "unaided reboot" "$pv_user" "$pv_pass"
+    assert_appliance_hostname_identity fixture-next "unaided reboot" "$pv_user" "$pv_pass"
     # No unit may be quietly broken (#792 sat visible in --failed for two RCs, unasserted).
     local failed_units
     # Transient healthcheck ephemera excluded: podman drives container healthchecks through
@@ -2469,7 +2469,7 @@ phase_provision() {
     done
     if [ "$released" = 1 ]; then
         ok "the migrating slot committed and released the chain services"
-        assert_appliance_hostname_identity fixture-box "A/B update" "$pv_user" "$pv_pass"
+        assert_appliance_hostname_identity fixture-next "A/B update" "$pv_user" "$pv_pass"
     else
         bad "the migrating slot never reached the post-commit release — the hold deadlocked the gate it was built not to"
         return
