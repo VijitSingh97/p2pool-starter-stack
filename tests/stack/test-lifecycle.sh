@@ -821,6 +821,7 @@ lock_wiring_balance() { # <fn> [args...] -> "depth=<n> state=<free|held>"
     # that guard unfalsifiable — the case passed either way, which reads exactly like coverage.
     rm -rf "$LKWBAL"
     lock_wiring_fixture "$LKWBAL"
+    tar -czf "$LKWBAL/wiring-archive.tar.gz" -C / "${LKWBAL#/}/config.json" "${LKWBAL#/}/.env"
     rm -f "$LKWFREE"
     (cd "$LKWBAL" && PITHEAD_LOCK_FILE="$LKWFREE" PITHEAD_APPLIANCE=0 DOCKER_LOG=/dev/null \
         PATH="$LKW/bin:$PATH" env -u PITHEAD_LOCK_HELD \
@@ -833,7 +834,7 @@ assert_eq "upgrade gives its window back when it finishes" "$(lock_wiring_balanc
 assert_eq "backup gives its window back when it finishes" \
     "$(lock_wiring_balance stack_backup -y --no-encrypt)" "depth=0 state=free"
 assert_eq "restore gives its window back when it finishes" \
-    "$(lock_wiring_balance stack_restore -y "$LKW/wiring-archive.tar.gz")" "depth=0 state=free"
+    "$(lock_wiring_balance stack_restore -y "$LKWBAL/wiring-archive.tar.gz")" "depth=0 state=free"
 assert_eq "apply takes its window once and gives it back, however it reached the recreate" \
     "$(lock_wiring_balance apply -y)" "depth=0 state=free"
 # restart is the sixth verb with a window and the only one the block above did not name. Nothing
