@@ -91,7 +91,7 @@ mount "${LOOP}p1" /mnt/rauc-esp
 mkdir -p /mnt/rauc-esp/EFI/BOOT /mnt/rauc-esp/grub
 cp /mnt/rauc-sys/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /mnt/rauc-esp/EFI/BOOT/BOOTX64.EFI 2>/dev/null ||
     grub-mkimage -O x86_64-efi -o /mnt/rauc-esp/EFI/BOOT/BOOTX64.EFI -p /grub \
-        part_gpt fat ext2 normal linux echo search search_label configfile test loadenv regexp probe
+        part_gpt fat ext2 normal linux echo search search_label configfile test loadenv regexp probe serial terminal
 install -m 644 os/rauc/grub.cfg /mnt/rauc-esp/grub/grub.cfg
 # Seed boot state: slot A good, B empty. RAUC rewrites these on every install/mark.
 # The env block MUST live in GRUB's prefix directory: bare `load_env` reads $prefix/grubenv, and
@@ -99,7 +99,9 @@ install -m 644 os/rauc/grub.cfg /mnt/rauc-esp/grub/grub.cfg
 # silent no-op — ORDER keeps its built-in "A B" with both _OK=0, nothing is selectable, and every
 # boot falls to the default entry. RAUC writes the file correctly and the machine still ignores it.
 grub-editenv /mnt/rauc-esp/grub/grubenv create
-grub-editenv /mnt/rauc-esp/grub/grubenv set ORDER="A B" A_OK=1 A_TRY=0 B_OK=0 B_TRY=0
+OS_VERSION=$(tr -d '[:space:]' <VERSION)
+grub-editenv /mnt/rauc-esp/grub/grubenv set ORDER="A B" A_OK=1 A_TRY=0 B_OK=0 B_TRY=0 \
+    "A_VERSION=$OS_VERSION" "B_VERSION="
 
 # The /var overlay directories cannot be seeded here — /data does not exist until systemd-repart
 # creates it on the target machine's real disk. repart makes them itself at format time, via the

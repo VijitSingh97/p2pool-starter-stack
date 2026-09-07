@@ -293,7 +293,7 @@ COPY os/overlay/pithead-sync /usr/local/sbin/pithead-sync
 COPY os/overlay/pithead-mount-generator /usr/lib/systemd/system-generators/pithead-mount-generator
 COPY os/overlay/pithead-boot.service /etc/systemd/system/pithead-boot.service
 COPY os/overlay/pithead-setup-again.service /etc/systemd/system/pithead-setup-again.service
-COPY os/overlay/pithead-boot /usr/local/sbin/pithead-boot
+COPY os/overlay/pithead-boot os/overlay/pithead-boot-version /usr/local/sbin/
 # Physical-presence configuration channel (#786 sub-issue D): pithead-boot's one stage before render; no unit of its own.
 COPY os/overlay/pithead-media-config /usr/local/sbin/pithead-media-config
 # Hugepages sizing (#977): the sysctl.d reservation above is sized for the supported 16 GB machine;
@@ -339,7 +339,7 @@ RUN mkdir -p /etc/ssh/sshd_config.d \
 RUN mkdir -p /etc/systemd/system-preset \
     && printf 'disable *\n' > /etc/systemd/system-preset/00-pithead.preset \
     && systemctl mask systemd-firstboot.service
-RUN chmod +x /usr/local/sbin/pithead-sync /usr/local/sbin/pithead-boot /usr/local/sbin/pithead-media-config /usr/local/sbin/pithead-hugepages /usr/local/sbin/pithead-data-reset /usr/local/sbin/pithead-ssh-host-keys /usr/local/sbin/pithead-machine-id /usr/local/sbin/pithead-journal-persist /usr/lib/systemd/system-generators/pithead-mount-generator
+RUN chmod +x /usr/local/sbin/pithead-sync /usr/local/sbin/pithead-boot /usr/local/sbin/pithead-boot-version /usr/local/sbin/pithead-media-config /usr/local/sbin/pithead-hugepages /usr/local/sbin/pithead-data-reset /usr/local/sbin/pithead-ssh-host-keys /usr/local/sbin/pithead-machine-id /usr/local/sbin/pithead-journal-persist /usr/lib/systemd/system-generators/pithead-mount-generator
 # The updater is chosen per image. RAUC is a Debian package, so it is installed here when
 # selected; leaving PITHEAD_UPDATER empty builds the same rootfs with no updater at all.
 ARG PITHEAD_UPDATER=""
