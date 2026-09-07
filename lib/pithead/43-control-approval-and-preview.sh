@@ -30,19 +30,17 @@ control_approval_gate() { # <staged-file> [confirm-token] <id> <actor> [approval
     # outright; 2.0.0 removed it (#1832), so a staged config carrying it is now refused one step
     # later by the closed-schema check below, as an unknown key like any other typo.
     #
-    # A pure append remains the click-to-adopt flow. Repointing, deleting, or reordering an existing
-    # descriptor is sensitive because it changes a trusted rig host/token, so it joins the approval
-    # class rather than becoming a special host-only exception (#1959).
+    # Every descriptor change is sensitive: an append introduces a new remote host and access token,
+    # while repointing, deleting, or reordering changes an existing trust relationship. Adoption may
+    # still pre-fill the descriptor, but committing it needs the same second identity (#1959).
     if ! jq -e --slurpfile live "$CONFIG_FILE" '
-        ((($live[0].workers.list // []) | length) as $n
-             | (.workers.list // [])[0:$n] == ($live[0].workers.list // []))
+        (.workers.list // []) == ($live[0].workers.list // [])
         ' "$staged" >/dev/null 2>&1; then
         worker_sensitive=1
     fi
-    # SSRF floor on what an add-only append may point at (see _control_host_is_internal): every
-    # NEWLY appended entry's host — never an already-live one, already covered above — must clear
-    # this host's own loopback/link-local/internal-bridge reach. Read the live length fresh (not
-    # cached from the check above) so this stays correct however the prefix check above evolves.
+    # SSRF floor on worker hosts (see _control_host_is_internal). For an unchanged list there is
+    # nothing to inspect. For any changed list, validate every staged host so modification and append
+    # cannot smuggle a host inside this machine's own network.
     local live_n new_host
     live_n=$(jq -r --slurpfile live "$CONFIG_FILE" '($live[0].workers.list // []) | length' "$staged" 2>/dev/null) || live_n=0
     [ "$worker_sensitive" -eq 1 ] && live_n=0

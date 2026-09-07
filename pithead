@@ -10509,7 +10509,11 @@ control_telegram_approve() { # <staged-file> <id> <actor> <suffixes-json> <porce
         printf 'too many Telegram approval prompts recently — wait before trying again'
         return 1
     fi
-    printf '%s %s\n' "$now" "$actor" >>"$tmp" && mv "$tmp" "$ratef"
+    if ! { printf '%s %s\n' "$now" "$actor" >>"$tmp" && mv "$tmp" "$ratef"; }; then
+        rm -f "$tmp"
+        printf 'could not record the Telegram approval prompt budget — refusing the change'
+        return 1
+    fi
 
     nonce=$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-' || true)
     printf '%s' "$nonce" | grep -qE '^[0-9a-f]{32}$' || {
@@ -10582,7 +10586,12 @@ control_telegram_approve() { # <staged-file> <id> <actor> <suffixes-json> <porce
         printf 'Telegram did not accept the approval prompt — refusing the change'
         return 1
     }
-    jq --arg mid "$message_id" '. + {message_id:$mid}' "$pending" >"${pending}.tmp" && mv "${pending}.tmp" "$pending"
+    if ! { jq --arg mid "$message_id" '. + {message_id:$mid}' "$pending" >"${pending}.tmp" &&
+        mv "${pending}.tmp" "$pending"; }; then
+        rm -f "$pending" "${pending}.tmp" "$payload" "$response" "$updates"
+        printf 'could not bind the Telegram message to its approval record — refusing the change'
+        return 1
+    fi
 
     while [ "$(date +%s)" -lt "$deadline" ]; do
         poll_s=$((deadline - $(date +%s)))
@@ -10598,10 +10607,10 @@ control_telegram_approve() { # <staged-file> <id> <actor> <suffixes-json> <porce
             continue
         fi
         offset=$(jq -r '[.result[]?.update_id] | max // empty | . + 1' "$updates")
-        uid=$(jq -r --arg nonce "approve-config:$nonce" --arg chat "$chat" --arg mid "$message_id" '
+        uid=$(jq -r --arg nonce "approve-config:$nonce" --arg chat "$chat" --arg mid "$message_id" --arg text "$text" '
             .result[]?.callback_query
             | select(.data == $nonce and (.message.chat.id|tostring) == $chat
-                     and (.message.message_id|tostring) == $mid)
+                     and (.message.message_id|tostring) == $mid and .message.text == $text)
             | (.from.id|tostring)' "$updates" | tail -n 1)
         [ -n "$uid" ] || continue
         case " $(printf '%s' "$allowed" | tr ',\t\n' '   ') " in
@@ -10611,8 +10620,12 @@ control_telegram_approve() { # <staged-file> <id> <actor> <suffixes-json> <porce
                 printf 'the staged configuration changed while approval was pending — refusing it'
                 return 1
             }
-            jq --arg approver "tg-$uid" '. + {approver:$approver}' "$pending" >"${pending}.approved" &&
-                mv "${pending}.approved" "${staged}.approved"
+            if ! { jq --arg approver "tg-$uid" '. + {approver:$approver}' "$pending" >"${pending}.approved" &&
+                mv "${pending}.approved" "${staged}.approved"; }; then
+                rm -f "$pending" "${pending}.approved" "$payload" "$response" "$updates"
+                printf 'could not save the verified Telegram approver — refusing the change'
+                return 1
+            fi
             rm -f "$pending" "$payload" "$response" "$updates"
             printf 'tg-%s' "$uid"
             return 0
@@ -11008,19 +11021,17 @@ control_approval_gate() { # <staged-file> [confirm-token] <id> <actor> [approval
     # outright; 2.0.0 removed it (#1832), so a staged config carrying it is now refused one step
     # later by the closed-schema check below, as an unknown key like any other typo.
     #
-    # A pure append remains the click-to-adopt flow. Repointing, deleting, or reordering an existing
-    # descriptor is sensitive because it changes a trusted rig host/token, so it joins the approval
-    # class rather than becoming a special host-only exception (#1959).
+    # Every descriptor change is sensitive: an append introduces a new remote host and access token,
+    # while repointing, deleting, or reordering changes an existing trust relationship. Adoption may
+    # still pre-fill the descriptor, but committing it needs the same second identity (#1959).
     if ! jq -e --slurpfile live "$CONFIG_FILE" '
-        ((($live[0].workers.list // []) | length) as $n
-             | (.workers.list // [])[0:$n] == ($live[0].workers.list // []))
+        (.workers.list // []) == ($live[0].workers.list // [])
         ' "$staged" >/dev/null 2>&1; then
         worker_sensitive=1
     fi
-    # SSRF floor on what an add-only append may point at (see _control_host_is_internal): every
-    # NEWLY appended entry's host — never an already-live one, already covered above — must clear
-    # this host's own loopback/link-local/internal-bridge reach. Read the live length fresh (not
-    # cached from the check above) so this stays correct however the prefix check above evolves.
+    # SSRF floor on worker hosts (see _control_host_is_internal). For an unchanged list there is
+    # nothing to inspect. For any changed list, validate every staged host so modification and append
+    # cannot smuggle a host inside this machine's own network.
     local live_n new_host
     live_n=$(jq -r --slurpfile live "$CONFIG_FILE" '($live[0].workers.list // []) | length' "$staged" 2>/dev/null) || live_n=0
     [ "$worker_sensitive" -eq 1 ] && live_n=0
