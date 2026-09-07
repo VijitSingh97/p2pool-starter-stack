@@ -57,14 +57,14 @@ def _monerod(mode):
         thread.join()
 
 
-async def _zmq_server(reply):
+async def _zmq_server(reply, socket_type=b"PUB"):
     async def answer(reader, writer):
         await reader.readexactly(64)
         writer.write(reply)
         await writer.drain()
         if len(reply) == 64:
             await reader.readexactly(len(wizard_node_probe._ZMTP_READY))
-            ready = b"\x05READY\x0bSocket-Type\x00\x00\x00\x03PUB"
+            ready = b"\x05READY\x0bSocket-Type" + len(socket_type).to_bytes(4, "big") + socket_type
             writer.write(bytes((0x04, len(ready))) + ready)
             await writer.drain()
         writer.close()
@@ -176,8 +176,23 @@ async def test_zmtp_prefix_without_a_complete_greeting_never_passes():
     assert (ok, reason) == (False, "protocol")
 
 
+@pytest.mark.usefixtures("allow_test_loopback")
+async def test_zmtp_ready_requires_a_publication_capable_peer():
+    server = await _zmq_server(wizard_node_probe._ZMTP_GREETING, b"SUB")
+    port = server.sockets[0].getsockname()[1]
+    try:
+        ok, reason, _detail = await wizard_node_probe._monero_zmq("127.0.0.1", port)
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert (ok, reason) == (False, "protocol")
+
+
 async def test_success_binds_the_candidate_to_the_address_that_was_probed(monkeypatch):
+    calls = []
+
     async def resolved(_host, _port, _firewall):
+        calls.append(_host)
         return "10.20.30.40"
 
     monkeypatch.setattr(wizard_node_probe, "_resolved_address", resolved)
@@ -190,6 +205,7 @@ async def test_success_binds_the_candidate_to_the_address_that_was_probed(monkey
     cfg = _candidate()
     cfg["monero"]["remote"]["host"] = "node.example"
     assert (await wizard_node_probe.probe_remote_nodes(cfg))["ok"] is True
+    assert calls == ["node.example"]
     assert cfg["monero"]["remote"]["host"] == "10.20.30.40"
 
 

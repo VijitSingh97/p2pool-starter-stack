@@ -264,7 +264,8 @@ wins. Paste a whole `config.json` in there if you have one.
 The machine checks your answers first — including dialing any remote node you named, so a
 wrong host fails here with the reason and your answers kept, not after the disk is gone. The
 page lists every endpoint it tried and the address it used: a Monero node is checked twice, on
-its RPC port and its ZMQ port, and each of those completes a live protocol exchange. A Tari
+its RPC port and its ZMQ port, and each completes a live protocol exchange; ZMQ must identify a
+publisher. A Tari
 node must answer the base node's `GetTipInfo` gRPC call. A hostname that passes is pinned to
 the exact address the checks reached, so installation cannot resolve it to a different machine.
 Only when everything passes does the page show the things you must save:

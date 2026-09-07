@@ -109,7 +109,8 @@ irreversible — the same discipline the wizard server gives remote nodes.
 
 Before it stages a configuration, the wizard server asks every configured remote endpoint the
 same protocol-level question its mining consumer needs (#1889). Monero RPC must answer
-`get_info`, using the configured Digest login, and its ZMQ port must complete a ZMTP handshake.
+`get_info`, using the configured Digest login, and its ZMQ port must complete a ZMTP handshake
+with a publication-capable peer.
 A Tari base node must answer `GetTipInfo` over gRPC. The browser names those checks while they run.
 Failure keeps the operator's complete form in `last-attempt.json`, removes any install request,
 and returns the report as `node_probe`; nothing writes a `config.json` candidate.
