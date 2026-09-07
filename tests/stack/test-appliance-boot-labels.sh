@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 : "${STACK_SUITE:?is unset: this file is a tests/stack/run.sh fragment, not a script — run tests/stack/run.sh}"
 # Boot-label metadata lifecycle and the GRUB label algorithm (#1956).
+echo "== unit: boot menu version labels track RAUC slots (#1956) =="
 BL="$SANDBOX/boot-labels"
 mkdir -p "$BL/bin"
 cat >"$BL/bin/grub-editenv" <<'SH'
