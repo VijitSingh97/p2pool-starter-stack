@@ -25,7 +25,7 @@ separately, [below](#appliance-only-commands).
 | `./pithead rotate-dashboard-onion` | Mint a new dashboard onion address and client-auth keypair, retiring the old one. Run after a leaked address or key. |
 | `./pithead control-run-pending` | Drain the dashboard's control-request spool once. Fired by the `pithead-control` systemd path unit; run it by hand only when debugging the control channel. See [Editing config from the dashboard](#editing-config-from-the-dashboard). |
 | `./pithead render` | Regenerate every derived file (`.env`, the Caddyfile, service configs, host units) from `config.json` without touching containers. The appliance runs this every boot; run it by hand after replacing the program under an existing config. |
-| `./pithead support-bundle` | Collect a `chmod 600` diagnostics tarball for a bug report: host facts, `doctor` in prose and JSON, a masked config, a redacted `.env`, and the last 200 log lines per container with launch-line credentials, wallet addresses and the service onion scrubbed. Read-only, and nothing leaves the box — review it, then share it. |
+| `./pithead support-bundle` | Collect a `chmod 600` diagnostics tarball for a bug report: host facts, `doctor` in prose and JSON, a masked config, a redacted `.env`, and the last 200 log lines per container with launch-line credentials, wallet addresses and the service onion scrubbed — as is any Monero address or onion written anywhere else in the log text. Read-only, and nothing leaves the box — review it, then share it. |
 | `./pithead config-reset` | **DESTRUCTIVE**. Clear the configuration and reopen the setup wizard, keeping every data directory — chains, wallets, Tor onion keys and dashboard history all stay, so reconfiguring costs no resync. Type-to-confirm unless `-y` / `--yes`. |
 | `./pithead uninstall` | **DESTRUCTIVE**. The clean exit: stops the stack, removes its containers and images, the rendered `.env` and Caddyfile, this checkout's control-runner units, and the egress firewall rules. Keeps what's yours — `config.json`, `backups/`, and the data dirs — and lists them for manual removal. Type-to-confirm unless `-y` / `--yes`. |
 | `./pithead version` | Print the installed stack version on one line (also `-V` / `--version`). Offline; no update check. `doctor` repeats it in its header. |
@@ -35,6 +35,14 @@ Service names for `logs` match the containers: `p2pool`, `xmrig-proxy`, `tor`, `
 `docker-proxy`, `docker-control`, and `caddy` always; `monerod` only with `monero.mode: local`,
 `tari` only with `tari.mode: local`, and `wallet-rpc` / `tari-wallet` only when the matching
 `view_key` turns payout confirmation on. A service that isn't running has no logs to follow.
+
+On the appliance dashboard, **Advanced → Service diagnostics → Run health check** runs the same
+read-only `doctor` report once and groups its existing checks under each service and the machine.
+Open **Recent log** under a service to fetch its last 200 redacted lines on demand. A dashboard
+wait limit means the request may still be queued or running on the host; it does not by itself
+show that the control runner is stuck. The `wallet-rpc` and `tari-wallet` checks still appear,
+but their logs stay in the owner-only support bundle because their ordinary output can carry
+wallet material the browser log redactor cannot safely recognize.
 
 ### Appliance-only commands
 
@@ -112,8 +120,11 @@ takes it after its prompts, so a passphrase you have not typed yet holds nothing
 first-boot wizard holds it only while it deploys. `os-update` takes it just before it writes the
 spare slot, so a confirmation it is still waiting on holds nothing up either, and
 `rotate-secrets` takes it after its own confirmation and before it writes the copies of your old
-secrets, so a rotation that ends up waiting has not yet changed a credential. Read-only
-commands — `status`, `doctor` and `logs` among them — never take it and never wait.
+secrets, so a rotation that ends up waiting has not yet changed a credential. A one-click
+upgrade from the dashboard takes it before it writes over the install, so one that arrives while
+another command is running comes back refused with nothing changed, instead of overwriting the
+install underneath it. Read-only commands — `status`, `doctor` and `logs` among them — never take
+it and never wait.
 
 The lock covers one stack, not one directory. A bundle install keeps each release in its own
 `pithead-vX.Y.Z` directory beside the one before it (see [The deploy-box
@@ -324,9 +335,17 @@ before that identifier is assembled ([#1566](https://github.com/p2pool-starter-s
 so no rig can land a row on another rig's identifier — which used to drop the second detection
 rather than record it. Between these bounds, a rig holding one worker name is bounded in how many
 rows it adds, how large each one is, and whose rows it can displace. The cap is
-keyed on the name the device presents and a device chooses that freely, so one that rotates names
-draws a fresh budget per name ([#1566](https://github.com/p2pool-starter-stack/pithead/issues/1566)):
-read the bound as per name, not per device. A genuine occasional rig change still records
+keyed on the name the device presents and a device chooses that freely, so how many names may hold
+a live window at once is bounded as well ([#1695](https://github.com/p2pool-starter-stack/pithead/issues/1695)):
+past that ceiling a name not already holding a window is refused, which is what stops a device
+rotating names from drawing a fresh budget per name. A ceiling on names rather than one overall row
+budget, because an overall budget would be spent on every other rig's behalf; a name that already
+holds a window keeps it. It does NOT leave every established rig alone: holding a window means
+having produced an out-of-band detection within the last hour, so a rig whose changes all go
+through the dashboard holds none, and during a flood its first detection is refused and dropped.
+Read the protection as "a name already being audited keeps its budget", and expect that residual.
+It surfaces the same way the per-worker cap does, as one `rate-limited` marker for the episode
+that names no rotated name. A genuine occasional rig change still records
 normally; only a flood is capped, and the cap is visible — the marker names which detection tipped
 it, and the dashboard logs a warning.
 

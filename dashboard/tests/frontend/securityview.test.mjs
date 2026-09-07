@@ -12,6 +12,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  AuditRow,
+  auditActionLabel,
   buildLogQuery,
   fmtEpoch,
   pageFor,
@@ -101,6 +103,22 @@ test("audit entries render actor, outcome, and the changed key names", () => {
   assert.match(out, /Recent config changes/);
   assert.match(out, /XVB_ENABLED P2POOL_PORT/);
   assert.match(out, /<td class="status-ok">applied<\/td>/);
+});
+
+test("provisioning and failed apply history state what happened and link the outcome", () => {
+  assert.equal(auditActionLabel("provision"), "Provisioned by setup wizard");
+  const out = renderToString(AuditRow({
+    ts: "2026-09-07T01:02:03Z",
+    id: "11111111-1111-4111-8111-111111111111",
+    actor: "admin",
+    action: "commit-approved",
+    status: "failed",
+    keys: "monero.wallet_address",
+  }));
+  assert.match(out, /admin/);
+  assert.match(out, /Approved configuration change/);
+  assert.match(out, /Failed — view outcome/);
+  assert.match(out, /\/api\/control\/result\?id=11111111-1111-4111-8111-111111111111/);
 });
 
 test("audit: empty list says so instead of an empty table", () => {

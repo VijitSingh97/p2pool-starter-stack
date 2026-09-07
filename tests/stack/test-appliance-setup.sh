@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 : "${STACK_SUITE:?is unset: this file is a tests/stack/run.sh fragment, not a script — run tests/stack/run.sh}"
-# Appliance setup domain (#1105 Phase 1, develop-v2 lane): the firstboot provisioning path an
+# Appliance setup domain (#1105 Phase 1, appliance lane): the firstboot provisioning path an
 # appliance walks the first time it is powered on, and the uninstall contract that path has to
 # survive — the wizard's minted pairing token and its spool consume (#77 phase 3), the
 # restore-at-setup leg where firstboot_consume_restore adopts an operator's encrypted backup
@@ -155,6 +155,71 @@ rm -rf "$RCARRY"
 rm -f "$RSPOOL/applied" "$RS/config.json"
 printf 'CADDY-ORIG\n' >"$RS/Caddyfile" # fixtures back to their case-1 state for the cases below
 printf 'DBDATA-ORIG\n' >"$RS/data/dashboard/dashboard.db"
+
+# Expected-member policy is shared by the wizard and carried-archive doors (#1971).
+# These are ordinary fixture files. The added note is outside the backup item list.
+run_sourced "$RS" restore_setup_members "${RS#/}/config.json"
+assert_rc "member policy accepts a mapped configuration file" "$?" 0
+run_sourced "$RS" restore_setup_members "${RS#/}/data/tor/"
+assert_rc "member policy accepts a mapped data directory" "$?" 0
+run_sourced "$RS" restore_setup_members "${RS#/}/config.json/"
+assert_rc "member policy refuses a directory in place of configuration" "$?" 1
+run_sourced "$RS" restore_setup_members "${RS#/}/data/tor"
+assert_rc "member policy refuses a file in place of a data directory" "$?" 1
+out=$(PITHEAD_CONFIG_FILE="$RS/config.json" run_sourced "$RS" restore_setup_config_path)
+assert_eq "absolute config override is not prefixed with the working directory" "$out" "$RS/config.json"
+printf 'one\ntwo\n' >"$RS/restore-names"
+printf '%s\n' '-rw------- root/root 4 2026-01-01 00:00 one' '-rw------- root/root 5 2026-01-01 00:00 two' >"$RS/restore-verbose"
+run_sourced "$RS" restore_setup_archive_within_limits "$RS/restore-names" "$RS/restore-verbose" 2 9
+assert_rc "restore expansion limit accepts its exact bounds" "$?" 0
+run_sourced "$RS" restore_setup_archive_within_limits "$RS/restore-names" "$RS/restore-verbose" 1 9
+assert_rc "restore expansion limit rejects excess members" "$?" 1
+run_sourced "$RS" restore_setup_archive_within_limits "$RS/restore-names" "$RS/restore-verbose" 2 8
+assert_rc "restore expansion limit rejects excess bytes" "$?" 1
+mkdir "$RS/list-fixture"
+for n in $(seq 1 200); do printf x >"$RS/list-fixture/member-$n-abcdefghijklmnopqrstuvwxyz"; done
+tar -czf "$RS/list-fixture.tar.gz" -C "$RS/list-fixture" .
+if run_sourced "$RS" restore_setup_tar_list "$RS/list-fixture.tar.gz" -tvzf "$RS/list-output" 1 30; then out=accepted; else out=refused; fi
+assert_eq "archive listing is stopped at its output cap" "$out" refused
+rm -f "$RS/restore-names" "$RS/restore-verbose"
+RPSEED="$RS/preseed"
+mkdir "$RPSEED"
+cp "$rarchive" "$RPSEED/pithead-restore.enc"
+printf hunter2 >"$RPSEED/pithead-restore-pass"
+out=$(PITHEAD_PRESEED_DIR="$RPSEED" run_sourced "$RS" eval 'mount() { :; }; consume_preseed_restore && echo rc0')
+assert_contains "carried normal backup passes the shared member policy" "$out" rc0
+assert_eq "carried backup restores the original database" "$(cat "$RS/data/dashboard/dashboard.db")" DBDATA-ORIG
+assert_eq "carried backup consumes its passphrase" "$([ -e "$RPSEED/pithead-restore-pass" ] || echo gone)" gone
+# Restore publication replaces hostile live links and clamps archive-provided modes.
+chmod 644 "$RS/data/dashboard/dashboard.db"
+tar -czf "$RS/hostile-live.tar.gz" -C / "${RS#/}/config.json" "${RS#/}/data/dashboard/dashboard.db"
+printf sentinel >"$RS/outside-target"
+rm "$RS/data/dashboard/dashboard.db"
+ln -s "$RS/outside-target" "$RS/data/dashboard/dashboard.db"
+run_sourced "$RS" restore_apply "$RS/hostile-live.tar.gz" '' "$RS/restore-error"
+assert_rc "restore safely replaces a planted destination symlink" "$?" 0
+assert_eq "restore leaves the planted symlink target untouched" "$(cat "$RS/outside-target")" sentinel
+assert_eq "restored database is a regular file" "$([ -f "$RS/data/dashboard/dashboard.db" ] && [ ! -L "$RS/data/dashboard/dashboard.db" ] && echo yes)" yes
+assert_eq "restored database permissions are private" "$(stat -c '%a' "$RS/data/dashboard/dashboard.db")" 600
+printf 'ordinary note' >"$RS/unexpected.txt"
+printf 'BACKUP-CADDY' >"$RS/Caddyfile"
+tar -czf "$RS/unexpected.tar.gz" -C / "${RS#/}/config.json" "${RS#/}/.env" "${RS#/}/Caddyfile" "${RS#/}/unexpected.txt"
+printf 'CADDY-ORIG\n' >"$RS/Caddyfile"
+rm -f "$RS/config.json"
+cp "$RS/unexpected.tar.gz" "$RSPOOL/restore-archive"
+out=$(run_sourced "$RS" firstboot_consume_restore "$RSPOOL" 1 || echo "rc$?")
+assert_contains "wizard refuses an unexpected regular backup member" "$out" rc1
+assert_contains "member refusal identifies the backup layout" "$(cat "$RSPOOL/error.txt")" 'outside the appliance backup layout'
+assert_eq "invalid wizard backup does not surface a config" "$([ -e "$RS/config.json" ] || echo gone)" gone
+assert_eq "invalid wizard backup is not staged for installation" "$([ -e "$RCARRY/archive" ] || echo gone)" gone
+cp "$RS/unexpected.tar.gz" "$RPSEED/pithead-restore.enc"
+printf '' >"$RPSEED/pithead-restore-pass"
+out=$(PITHEAD_PRESEED_DIR="$RPSEED" run_sourced "$RS" eval 'mount() { :; }; consume_preseed_restore || echo "rc$?"' 2>&1)
+assert_contains "carried backup refuses an unexpected regular member" "$out" rc1
+assert_contains "carried member refusal identifies the backup layout" "$out" 'outside the appliance backup layout'
+assert_eq "member refusal applies no valid files beside the invalid member" "$(cat "$RS/Caddyfile")" CADDY-ORIG
+assert_eq "rejected carried backup is consumed" "$([ -e "$RPSEED/pithead-restore.enc" ] || echo gone)" gone
+rm -f "$RSPOOL/error.txt"
 
 # 2) Bad passphrase: rejected before anything is touched.
 printf 'CORRUPTED\n' >"$RS/Caddyfile"

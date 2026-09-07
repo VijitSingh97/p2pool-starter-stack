@@ -10,24 +10,22 @@
 # so honestly instead of promising a scheme it is not serving.
 stage_wizard_spool() { # <spool-dir> -> fingerprint on stdout
     local spool="$1"
-    mkdir -p "$spool"
-    # The wizard container runs as uid 1000 and must write the spool; transient dir, addresses
-    # only by design, removed at handoff.
-    chown 1000:1000 "$spool" 2>/dev/null || chmod 777 "$spool"
+    prepare_wizard_spool "$spool" || return 1
     # The wizard renders the EXACT config that will be written, defaults included, so it needs
     # the reference. It is a read-only schema, not a secret.
-    cp /opt/pithead/config.reference.json "$spool/config.reference.json" 2>/dev/null ||
-        cp "$PWD/config.reference.json" "$spool/config.reference.json" 2>/dev/null || true
-    chown 1000:1000 "$spool/config.reference.json" 2>/dev/null || true
-    # The rig role's pre-fill rides beside the reference — derived fresh each boot, like the
-    # disk inventory, so machine 2 on a fleet stick never opens on machine 1's discovery.
-    publish_rig_defaults "$spool"
+    local ref=/opt/pithead/config.reference.json
+    [ -f "$ref" ] || ref="$PWD/config.reference.json"
+    wizard_spool_publish "$spool" config.reference.json cat "$ref" || return 1
+    # The rig pre-fill and (#1318) the saved role ride beside the reference — derived fresh each
+    # boot, like the disk inventory, so machine 2 on a fleet stick never opens on machine 1's.
+    publish_rig_defaults "$spool" || return 1
+    publish_saved_role "$spool" || return 1
     # The data-wipe note (#1121): same "derived fresh every boot" rule, for the same fleet-stick
     # reason — see publish_data_wipe_note.
-    publish_data_wipe_note "$spool"
+    publish_data_wipe_note "$spool" || return 1
     # Installer mode reads the disk list from here too; a retry with no list is the same dead end
     # in a different shape.
-    installer_mode_available && publish_disk_inventory "$spool"
+    if installer_mode_available; then publish_disk_inventory "$spool" || return 1; fi
     # Copies the canonical pair off /data — minting only happens the first time, so the
     # fingerprint the console prints stays the machine's one certificate across retries.
     wizard_mint_cert "$spool" 2>/dev/null || true
@@ -38,8 +36,7 @@ stage_wizard_spool() { # <spool-dir> -> fingerprint on stdout
 # two card paths sit past their handoff-ack, and the bare keep-reinstall has no card and never waits (#1482).
 wizard_install_begin() { # <spool-dir>
     mutation_lock_acquire firstboot-install
-    touch "$1/installing"
-    chown 1000:1000 "$1/installing" 2>/dev/null || true
+    wizard_spool_publish "$1" installing true
 }
 
 # The switch-off every install path ends on, and where the window closes — held across the poweroff for the reason
@@ -94,12 +91,11 @@ firstboot_wizard() {
         fi
     fi
     # A machine already carrying the rig role mines, and asks nothing — not even on a stick that
-    # could offer the installer, because a run-from-USB rig's stick IS that rig's system, not a
-    # fleet tool. Reached only on the boot that ACCEPTS the role (a disk install's first boot,
-    # just above): once the marker exists, pithead-boot owns every later boot and this unit's
-    # own condition skips it. The miner is best-effort here for the same reason it is in pithead-boot
-    # — a rig whose pool moved must still come up and keep retrying, not brick its own boot.
-    if [ "$(machine_role)" = "rig" ]; then
+    # could offer the installer: a run-from-USB rig's stick IS that rig's system, not a fleet tool.
+    # Reached only on the boot that ACCEPTS the role (a disk install's first boot, just above); a
+    # boot from the menu's "Set up again" entry (#1318) skips this and opens the page beside the role.
+    # The miner is best-effort, as in pithead-boot: a pool that moved must not brick the boot.
+    if [ "$(machine_role)" = "rig" ] && ! setup_again_mode; then
         _console "This machine is a RigForge rig ($(jq -r '.worker // "unnamed"' "$PWD/rig.json" 2>/dev/null) -> $(jq -r '.pool // "no pool recorded"' "$PWD/rig.json" 2>/dev/null))."
         provision_rig_miner || true
         return 0
@@ -126,14 +122,15 @@ firstboot_wizard() {
                     warn "Could not remove the consumed pre-seed from $PRESEED_DIR — it holds credentials; delete it."
             fi
         fi
-        if [ -f "$PWD/config.json" ]; then
+        if [ -f "$PWD/config.json" ] && ! setup_again_mode; then
             log "config.json already present (pre-seeded) — skipping the wizard and running setup."
-            # A pre-seeded config that names no password gets one too: skipping the wizard must
-            # not mean skipping the login.
+            # A pre-seeded config that names no password still gets a login.
             ensure_appliance_dashboard_password || true
             apply_appliance_defaults || true
             record_machine_role "$(machine_role_from_config "$PWD/config.json")"
             setup
+            control_consume_provisioning_marker "$PRESEED_DIR/pithead-setup-wizard" ||
+                warn "Provisioning succeeded, but its setup-wizard history marker could not be recorded; it was kept for retry."
             return
         fi
     fi
@@ -148,7 +145,7 @@ firstboot_wizard() {
     export_build_provenance
     image="${PITHEAD_REGISTRY}/pithead-dashboard:${STACK_VERSION}"
     spool="$PWD/data/firstboot"
-    stage_wizard_spool "$spool" >/dev/null
+    stage_wizard_spool "$spool" >/dev/null || error "Could not prepare the setup page files."
 
     local installer=0 operator_preseed=0
     [ -f "$PRESEED_DIR/pithead-config.json" ] && operator_preseed=1
@@ -158,9 +155,9 @@ firstboot_wizard() {
         # The pre-fill is derived fresh every boot, never inherited: the stick's spool
         # survives between machines, and machine 2 must not open on machine 1's answers —
         # the same staleness rule the per-session flow-marker clear below enforces.
-        rm -f "$spool/last-attempt.json"
-        if [ "$operator_preseed" -eq 1 ] && jq -c . "$PRESEED_DIR/pithead-config.json" >"$spool/last-attempt.json" 2>/dev/null; then
-            chown 1000:1000 "$spool/last-attempt.json" 2>/dev/null || true
+        rm -f "$spool/last-attempt.json" "$spool/install-attempt.json" \
+            "$spool/auth-mode" "$spool/config-changes.json" "$spool/setup-failed"
+        if [ "$operator_preseed" -eq 1 ] && wizard_spool_publish "$spool" last-attempt.json jq -c . "$PRESEED_DIR/pithead-config.json" 2>/dev/null; then
             log "Pre-seeded configuration found — the page opens with it filled in."
         elif prefill_from_previous_install "$spool"; then
             log "Found the previous installation's settings on the target disk — the page opens with them filled in (secrets left out)."
@@ -187,7 +184,7 @@ firstboot_wizard() {
         # Re-stage per session, and re-derive the fingerprint with it: the accept path removes the
         # spool, so a retry that reused a cert_fp computed once would advertise HTTPS and a
         # fingerprint for a certificate the container can no longer read (#1063).
-        cert_fp=$(stage_wizard_spool "$spool")
+        cert_fp=$(stage_wizard_spool "$spool") || error "Could not prepare the setup page files."
         [ -n "$cert_fp" ] || warn "Could not generate a setup certificate — the setup page will be plain HTTP."
         # Every wizard session starts with CLEAN flow state. The spool lives on this medium's
         # /data, which survives reboots — so a fleet stick that installed machine 1 still
@@ -198,7 +195,7 @@ firstboot_wizard() {
         rm -f "$spool/handoff.json" "$spool/handoff-ack" "$spool/installing" \
             "$spool/installed" "$spool/applied" "$spool/install-request" \
             "$spool/rig-request.json" "$spool/role" \
-            "$spool/restore-archive" "$spool/restore-passphrase"
+            "$spool/restore-archive" "$spool/restore-passphrase" "$spool/keep-role" "$spool/stick"
         # A pre-seeded token is the operator's own choice and stays fixed across restarts of
         # this loop; without one, mint a fresh secret every round.
         token=$(preseed_token) || token=$(wizard_mint_token)
@@ -209,12 +206,10 @@ firstboot_wizard() {
             -e WIZARD_TLS_KEY="${cert_fp:+/wizard-spool/wizard.key}" \
             -v "$spool":/wizard-spool \
             "$image" -m mining_dashboard.wizard >/dev/null || {
-            # `error` writes to stderr, which systemd routes to /dev/console — ONE device,
-            # whichever the kernel cmdline named LAST. On a box whose monitor is not that device
-            # the failure is invisible, so the newest thing on screen stays "preparing the setup
-            # page" and a STOPPED box reads as a slow one for as long as the operator is willing
-            # to wait. That is how a three-minute failure was mistaken for an hour of progress.
-            # _console reaches every physical console, which is the whole point here.
+            # `error` writes to stderr = /dev/console, ONE device (whichever the cmdline named
+            # LAST); on a box whose monitor is the other one the failure is invisible and a STOPPED
+            # box reads as a slow one — a three-minute failure was once taken for an hour of
+            # progress. _console reaches every physical console, which is the whole point here.
             _console "" "Setup has STOPPED — this box is no longer preparing a page." \
                 "The container engine could not start the setup page." \
                 "Diagnose with: journalctl -u pithead-firstboot -b"
@@ -254,6 +249,8 @@ firstboot_wizard() {
             } >"$dev" 2>/dev/null || true
         done
         while :; do
+            # #1318 "Keep it": the page wrote keep-role — nothing on /data was touched; return.
+            wizard_keep_requested "$spool" && return 0
             # A keep-everything reinstall arrives as a bare install-request with no config
             # candidate: the preserved /data keeps config, login and chains, so there is
             # nothing to validate and no credentials to hand off — install and switch off.
@@ -261,12 +258,13 @@ firstboot_wizard() {
             # with keep as its erase policy (restore the config, keep the synced chains), and
             # this shortcut once swallowed it — the machine "keep"-installed a blank disk and
             # the operator's backup never reached it. The archive must be consumed first.
-            if [ "$installer" -eq 1 ] && [ -f "$spool/install-request" ] &&
-                [ "$(cut -f2 "$spool/install-request" 2>/dev/null)" = "keep" ] &&
-                [ ! -f "$spool/config.json" ] && [ ! -f "$spool/restore-archive" ]; then
+            if [ "$installer" -eq 1 ] && wizard_spool_has "$spool" install-request &&
+                [ "$(wizard_spool_read "$spool" install-request 2>/dev/null | cut -f2)" = "keep" ] &&
+                [ ! -e "$spool/config.json" ] && [ ! -L "$spool/config.json" ] &&
+                [ ! -e "$spool/restore-archive" ] && [ ! -L "$spool/restore-archive" ]; then
                 wizard_install_begin "$spool"
                 local irc=0
-                consume_install_request "$spool" || irc=$?
+                consume_install_request "$spool" keep || irc=$?
                 if [ "$irc" -ne 0 ]; then
                     rm -f "$spool/installing"
                     wizard_install_failed_page "$spool" "Reinstall"
@@ -287,27 +285,25 @@ firstboot_wizard() {
             fi
             if [ "$rrc" -eq 0 ]; then
                 log "Rig settings accepted."
-                local rig_worker rig_pool
+                local rig_worker rig_pool rig_token
                 rig_worker=$(jq -r '.worker // ""' "$PWD/rig.json" 2>/dev/null)
                 rig_pool=$(jq -r '.pool // ""' "$PWD/rig.json" 2>/dev/null)
-                # The rig's card: the worker name and where it points. No dashboard, no login —
-                # a rig serves neither, so there is nothing to save; the same ack still gates
-                # the erase on the installation medium.
-                jq -n --arg w "$rig_worker" --arg s "stratum+tcp://$rig_pool" \
-                    '{role: "rig", worker: $w, stratum: $s}' >"$spool/handoff.json"
-                chown 1000:1000 "$spool/handoff.json" 2>/dev/null || true
+                rig_token=$(rig_access_token) || rig_token="" # empty here = the render leg refuses below
+                # The rig's card: worker, pool, the control token (#1836 — minted once, shown ONCE: a rig serves
+                # no page after this) and this box's address for the adopt form. No login. The same ack still gates the erase.
+                jq -n --arg w "$rig_worker" --arg s "stratum+tcp://$rig_pool" --arg t "$rig_token" --arg a "$(hostname -I 2>/dev/null | awk '{print $1}')" \
+                    '{role: "rig", worker: $w, stratum: $s, token: $t, address: $a}' | write_handoff_card "$spool"
                 local hwait=0
-                while [ ! -f "$spool/handoff-ack" ] && [ "$hwait" -lt 600 ]; do
+                while ! wizard_spool_has "$spool" handoff-ack && [ "$hwait" -lt 600 ]; do
                     sleep 2
                     hwait=$((hwait + 2))
                 done
-                if [ "$installer" -eq 1 ] && [ -f "$spool/install-request" ]; then
+                if [ "$installer" -eq 1 ] && wizard_spool_has "$spool" install-request; then
                     # Rig onto a disk: identical erase discipline to the coordinator install —
                     # the ack releases it, and a missing human hands the form back intact.
-                    if [ ! -f "$spool/handoff-ack" ]; then
+                    if ! wizard_spool_has "$spool" handoff-ack; then
                         rm -f "$spool/handoff.json" "$spool/install-request" "$PWD/rig.json"
-                        printf 'The rig card was never confirmed — nothing was installed. Submit again when you are ready.' >"$spool/error.txt"
-                        chown 1000:1000 "$spool/error.txt" 2>/dev/null || true
+                        printf 'The rig card was never confirmed — nothing was installed. Submit again when you are ready.' | wizard_spool_publish "$spool" error.txt cat
                         continue
                     fi
                     wizard_install_begin "$spool"
@@ -319,8 +315,7 @@ firstboot_wizard() {
                     mount -o remount,rw /boot/efi 2>/dev/null || true
                     if ! install -m 600 "$PWD/rig.json" /boot/efi/pithead-rig.json; then
                         rm -f "$spool/installing" "$spool/handoff.json" "$spool/handoff-ack" "$spool/install-request" "$PWD/rig.json"
-                        printf 'Could not stage the rig settings for the installed system — nothing was installed.' >"$spool/error.txt"
-                        chown 1000:1000 "$spool/error.txt" 2>/dev/null || true
+                        printf 'Could not stage the rig settings for the installed system — nothing was installed.' | wizard_spool_publish "$spool" error.txt cat
                         mutation_lock_release
                         continue
                     fi
@@ -338,8 +333,7 @@ firstboot_wizard() {
                 # Run from this medium — or an installed machine choosing the rig role: the
                 # answers stay on THIS machine's /data and the marker closes the wizard window.
                 record_machine_role rig
-                touch "$spool/applied"
-                chown 1000:1000 "$spool/applied" 2>/dev/null || true
+                wizard_spool_publish "$spool" applied true
                 sleep 8 # long enough for the page's poll to show the saved state
                 "$engine" rm -f pithead-wizard >/dev/null 2>&1 || true
                 _console "Rig settings saved: $rig_worker -> stratum+tcp://$rig_pool."
@@ -370,9 +364,8 @@ firstboot_wizard() {
                 # on the page, with the attempt kept for editing — not minutes into provisioning.
                 local pf_err
                 if ! pf_err=$(preflight_remote_nodes "$PWD/config.json"); then
-                    printf '%s' "$pf_err" | tail -c 300 >"$spool/error.txt"
-                    jq -c . "$PWD/config.json" >"$spool/last-attempt.json" 2>/dev/null
-                    chown 1000:1000 "$spool/error.txt" "$spool/last-attempt.json" 2>/dev/null || true
+                    printf '%s' "$pf_err" | tail -c 300 | wizard_spool_publish "$spool" error.txt cat
+                    wizard_spool_publish "$spool" last-attempt.json jq -c . "$PWD/config.json" 2>/dev/null
                     # Same bare-keep hazard as a rejected restore: the config candidate is gone,
                     # so a staged keep install-request would install WITHOUT it on the next pass.
                     rm -f "$PWD/config.json" "$spool/install-request"
@@ -393,9 +386,8 @@ firstboot_wizard() {
                 # validator's own error() exit cannot take this loop with it, and CONFIG_FILE
                 # (readonly) is aimed by the env var rather than reassigned.
                 if ! post_err=$(PITHEAD_CONFIG_FILE="$PWD/config.json" bash -c "source '${BASH_SOURCE[0]}' && parse_and_validate_config" 2>&1); then
-                    printf '%s' "$post_err" | tail -c 300 >"$spool/error.txt"
-                    jq -c . "$PWD/config.json" >"$spool/last-attempt.json" 2>/dev/null
-                    chown 1000:1000 "$spool/error.txt" "$spool/last-attempt.json" 2>/dev/null || true
+                    printf '%s' "$post_err" | tail -c 300 | wizard_spool_publish "$spool" error.txt cat
+                    wizard_spool_publish "$spool" last-attempt.json jq -c . "$PWD/config.json" 2>/dev/null
                     rm -f "$PWD/config.json" "$spool/install-request"
                     warn "The machine's own defaults collide with this configuration: $post_err"
                     sleep 2
@@ -414,10 +406,9 @@ firstboot_wizard() {
                 # credentials must not vanish with it.
                 jq -n --arg u "$dash_user" --arg p "$dash_pass" \
                     --arg d "https://$(hostname).local" --arg s "$stratum_addr" \
-                    '{username:$u,password:$p,dashboard:$d,stratum:$s}' >"$spool/handoff.json"
-                chown 1000:1000 "$spool/handoff.json" 2>/dev/null || true
+                    '{username:$u,password:$p,dashboard:$d,stratum:$s}' | write_handoff_card "$spool"
                 local hwait=0
-                while [ ! -f "$spool/handoff-ack" ] && [ "$hwait" -lt 600 ]; do
+                while ! wizard_spool_has "$spool" handoff-ack && [ "$hwait" -lt 600 ]; do
                     sleep 2
                     hwait=$((hwait + 2))
                 done
@@ -425,19 +416,15 @@ firstboot_wizard() {
                     # Combined install+configure (one page on the USB). The ack releases the
                     # ERASE, so a missing human means no install: hand the form back intact
                     # rather than destroy a disk on a timeout.
-                    if [ ! -f "$spool/handoff-ack" ]; then
+                    if ! wizard_spool_has "$spool" handoff-ack; then
                         rm -f "$spool/handoff.json" "$spool/install-request"
-                        printf 'Credentials were never confirmed — nothing was installed. Submit again when you are ready.' >"$spool/error.txt"
-                        jq -c . "$PWD/config.json" >"$spool/last-attempt.json" 2>/dev/null
-                        chown 1000:1000 "$spool/error.txt" "$spool/last-attempt.json" 2>/dev/null || true
+                        printf 'Credentials were never confirmed — nothing was installed. Submit again when you are ready.' | wizard_spool_publish "$spool" error.txt cat
+                        wizard_spool_publish "$spool" last-attempt.json jq -c . "$PWD/config.json" 2>/dev/null
                         rm -f "$PWD/config.json"
                         continue
                     fi
                     wizard_install_begin "$spool"
-                    # Stage the ACCEPTED config (password already baked) onto the running ESP —
-                    # the installer carries pre-seed files to the target's ESP, and the first
-                    # boot from disk provisions itself headlessly from it. The credentials the
-                    # operator just saved are exactly the ones that machine will serve.
+                    # Stage the accepted config onto the ESP; the installer carries it to the target.
                     # A fleet stick's own pre-seed is set aside first and restored after: the
                     # accepted config carries THIS machine's generated password, and leaving it
                     # on the stick would hand every later machine the first one's secrets.
@@ -460,11 +447,11 @@ firstboot_wizard() {
                     else
                         install -m 600 "$PWD/config.json" /boot/efi/pithead-config.json || staged_ok=0
                     fi
+                    install -m 600 /dev/null /boot/efi/pithead-setup-wizard || staged_ok=0
                     if [ "$staged_ok" -ne 1 ]; then
                         rm -f "$spool/installing" "$spool/handoff.json" "$spool/handoff-ack" "$spool/install-request"
-                        printf 'Could not stage the configuration for the installed system — nothing was installed.' >"$spool/error.txt"
-                        chown 1000:1000 "$spool/error.txt" 2>/dev/null || true
-                        rm -f "$PWD/config.json" /boot/efi/pithead-restore.enc /boot/efi/pithead-restore-pass
+                        printf 'Could not stage the configuration for the installed system — nothing was installed.' | wizard_spool_publish "$spool" error.txt cat
+                        rm -f "$PWD/config.json" /boot/efi/pithead-restore.enc /boot/efi/pithead-restore-pass /boot/efi/pithead-setup-wizard
                         rm -rf "$carry"
                         mutation_lock_release
                         continue
@@ -485,25 +472,23 @@ firstboot_wizard() {
                     # The carried restore never rides on either: the passphrase beside the
                     # archive makes the pair plaintext-equivalent, and the target has its own
                     # copy now.
-                    rm -f /boot/efi/pithead-restore.enc /boot/efi/pithead-restore-pass
+                    rm -f /boot/efi/pithead-restore.enc /boot/efi/pithead-restore-pass /boot/efi/pithead-setup-wizard
                     rm -rf "$carry"
                     if [ "$irc" -ne 0 ]; then
                         rm -f /boot/efi/pithead-config.json "$spool/installing" "$spool/handoff.json" "$spool/handoff-ack"
-                        jq -c . "$spool/last-attempt.json" >/dev/null 2>&1 || true
+                        wizard_spool_has "$spool" last-attempt.json || true
                         wizard_install_failed_page "$spool" "Install"
                         continue
                     fi
                     wizard_install_finish "$engine" "Installation complete — switching off now." "It will provision itself with the configuration you just confirmed."
                     return
                 fi
-                # Installed machine, config accepted: record what it IS. The installer path
-                # above never reaches here — its role lands on the TARGET, at its first boot.
+                # Installed machine: its accepted role lands here, not on the installer path.
                 record_machine_role "$(machine_role_from_config "$PWD/config.json")"
                 sleep 2
                 "$engine" rm -f pithead-wizard >/dev/null 2>&1 || true
                 rm -rf "$spool"
-                # Subshell on purpose: error() exits, and a provisioning failure must NOT
-                # dead-end the machine. Without this, config.json exists, the wizard's condition
+                # Subshell on purpose: error() exits. Without this, config.json exists, the wizard's condition
                 # never re-arms, and a box with no shell has no recovery path at all. Output is
                 # teed: the console keeps its live narration, and the tail becomes the reopened
                 # page's error — a refusal that lives only in console scrollback cost a bench
@@ -518,31 +503,33 @@ firstboot_wizard() {
                 # away before it can be read.
                 { (setup) 2>&1 | tee "$setup_log"; } || setup_rc=$?
                 if [ "$setup_rc" -eq 0 ]; then
-                    rm -f "$setup_log"
-                    return
+                    if control_audit_provisioned "$PWD/data/control"; then
+                        rm -f "$setup_log"
+                        return
+                    fi
+                    printf '[ERROR] Provisioning finished, but its setup history could not be recorded. Retry to complete setup history safely.\n' >>"$setup_log"
+                    setup_rc=1
                 fi
                 # The machine KEEPS its configuration (#1059) — this used to move it aside, which
                 # on this path can only cost. The reasoning, and why the removal that remains is
-                # conditional, is at wizard_keep_failed_config's definition. Which of the two
-                # failures this was, and whether a copy is taken at all, is wizard_setup_failed's.
+                # conditional, is at wizard_keep_failed_config's definition and wizard_setup_failed.
                 local kept_copy=0
                 if wizard_setup_failed "$setup_rc"; then kept_copy=1; fi
-                mkdir -p "$spool"
-                chown 1000:1000 "$spool" 2>/dev/null || chmod 777 "$spool"
+                prepare_wizard_spool "$spool" || return 1
                 # The reopened page gets BOTH halves of a usable retry: the reason it failed, and
                 # the configuration that failed — nobody re-pastes a 95-character address the
                 # machine still holds. The accept path wiped the spool, so both are restored here.
-                grep -a "\[ERROR\]" "$setup_log" | tail -n 1 | tr -d '[:cntrl:]' | tail -c 300 >"$spool/error.txt"
-                [ -s "$spool/error.txt" ] || printf 'Provisioning failed — see the machine console for detail.' >"$spool/error.txt"
+                grep -a "\[ERROR\]" "$setup_log" | tail -n 1 | tr -d '[:cntrl:]' | tail -c 300 | wizard_spool_publish "$spool" error.txt cat
+                [ -n "$(wizard_spool_read "$spool" error.txt)" ] || printf 'Provisioning failed — see the machine console for detail.' | wizard_spool_publish "$spool" error.txt cat
+                wizard_spool_publish "$spool" setup-failed true || return 1
                 # Prefill from what THIS run failed on. The copy when it was made, the live file
                 # otherwise — never a config.json.failed left by an earlier attempt, which would
                 # hand the operator back answers they had already moved past.
                 if [ "$kept_copy" -eq 1 ]; then
-                    jq -c . "$PWD/config.json.failed" >"$spool/last-attempt.json" 2>/dev/null || true
+                    wizard_spool_publish "$spool" last-attempt.json jq -c . "$PWD/config.json.failed" 2>/dev/null || true
                 elif [ -f "$PWD/config.json" ]; then
-                    jq -c . "$PWD/config.json" >"$spool/last-attempt.json" 2>/dev/null || true
+                    wizard_spool_publish "$spool" last-attempt.json jq -c . "$PWD/config.json" 2>/dev/null || true
                 fi
-                chown 1000:1000 "$spool/error.txt" "$spool/last-attempt.json" 2>/dev/null || true
                 rm -f "$setup_log"
                 break # outer loop re-mints a token and restarts the wizard container
             fi

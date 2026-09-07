@@ -160,14 +160,16 @@ REF="$(cd "$HERE/../.." && pwd)/config.reference.json"
 # picks up that appears in NEITHER list fails below by name, so the schema cannot drift past it.
 MUST_REDACT="monero.wallet_address monero.node_username monero.node_password monero.view_key
 tari.wallet_address tari.view_key tari.spend_public_key p2pool.stratum_password xvb.donor_id
-xmrig_proxy.donor_id dashboard.auth.username dashboard.auth.password workers.api_token
+dashboard.auth.username dashboard.auth.password workers.api_token
 ssh.authorized_key healthchecks.ping_url telegram.bot_token notifications.ntfy.token"
 # Survivors, each for a stated reason — over-redaction is safe for secrets and not for anything
 # else: a bundle with its endpoints stripped is useless for the debugging it exists for.
-#   xvb.url / xmrig_proxy.url  public service endpoints
+#   xvb.url                    a public service endpoint
 #   workers.api_auth           an auth MODE string ("token"/"none"), not a credential
 #   telegram.chat_id           a routing id, not a secret
-MUST_SURVIVE="xvb.url xmrig_proxy.url workers.api_auth telegram.chat_id"
+#   telegram.control.allowed_ids[]  routing ids, the same class as telegram.chat_id
+MUST_SURVIVE="xvb.url workers.api_auth telegram.chat_id
+telegram.control.allowed_ids[]"
 # ⛔ NOT a survivor on merit. `notifications.ntfy.url` IS a capability URL and ought to be
 # redacted; a line-wise filter cannot reach it, because the key is the bare word "url" and only
 # its NESTING distinguishes it from xvb.url. Asserted at its CURRENT behaviour so the gap is
@@ -186,7 +188,19 @@ MUST_SURVIVE="xvb.url xmrig_proxy.url workers.api_auth telegram.chat_id"
 # measured against config.reference.json it reaches nothing, which is why this pin stays. The
 # vocabulary entry is the price of the invariant, not evidence of coverage; this row is the
 # evidence, and it asserts the value is NOT reached.
-KNOWN_GAP="notifications.ntfy.url"
+# ⛔ `notifications.webhooks[]` is the SAME gap one shape over, invisible here until #1723: the
+# whole URL is the bearer secret (#848), redact() reaches no part of it, and the array ships empty
+# so no walk produced a path to classify. The bundle is covered as ntfy.url's is, by
+# render_masked_config's per-entry mask; this row measures the STREAM filter alone.
+# ⛔ `xvb.standby.source` is the third of these, and it is a NAME gap rather than a shape one:
+# `render_masked_config` masks it by path, redact() carries no suffix that reaches the bare word
+# `source`, and until #1723 widened the screen this file could not see it to say so.
+KNOWN_GAP="notifications.ntfy.url notifications.webhooks[] xvb.standby.source"
+# Arrays OF OBJECTS: not a gap in redact() but in what an EMPTY value document can say about a
+# schema. Their `.token` entries are masked by render_masked_config (#172) and covered at tier 1
+# in tests/stack/test-worker-config.sh; populate it and `.token` returns to the name rule through
+# the screen above. The deprecated dashboard.workers[] twin went with the alias in 2.0.0 (#1832).
+ELEMENT_SHAPE_UNKNOWN="workers.list[]"
 
 SENTINEL="S3nt1nelVALUE" # short, alphanumeric: reachable by the NAME rule and by no other
 SCREENED="$(
@@ -196,8 +210,18 @@ import json, re, sys
 # INVARIANT: this screen must be a SUPERSET of redact()'s JSON name list, or a field carrying
 # that suffix is never classified and the drift alarm above cannot fire for it. `wallet` is here
 # for exactly that reason — it is in redact() and is reachable by no other alternative.
+# `source` is here for xvb.standby.source, which CONTROL_SECRET_PATHS masks and no other
+# alternative reaches — found by cross-checking that list against this one (#1723).
 SCREEN = re.compile(r"(password|passwd|secret|token|login|username|user|key|wallet|address"
-                    r"|seed|mnemonic|credential|urls?|hash_b64|pw_fp|auth|_id)$")
+                    r"|seed|mnemonic|credential|urls?|hash_b64|pw_fp|auth|_id|source)$")
+
+
+# An ARRAY is classified on its own account, whatever its name and whether the reference
+# populates it (#1723). Two blind spots meet: an empty list yields no element to screen, and a
+# scalar element's path ends in "[]", which no `$`-anchored suffix can match.
+# The list is yielded WHOLE rather than as a sentinel, so its LENGTH reaches the classifier as a
+# measurement (#1748) — ELEMENT_SHAPE_UNKNOWN's premise is that the reference carries no element,
+# and that had been a sentence in the output rather than something read from the document.
 
 
 def walk(node, path=""):
@@ -205,6 +229,7 @@ def walk(node, path=""):
         for k, v in node.items():
             yield from walk(v, f"{path}.{k}" if path else k)
     elif isinstance(node, list):
+        yield path + "[]", node
         for v in node:
             yield from walk(v, path + "[]")
     else:
@@ -212,7 +237,10 @@ def walk(node, path=""):
 
 
 for path, value in walk(json.load(open(sys.argv[1], encoding="utf-8"))):
-    if isinstance(value, str) and SCREEN.search(path.split(".")[-1]):
+    if isinstance(value, list):
+        print(path)
+        print("@@%s %d" % (path, len(value)))  # the array's length, for the entry condition below
+    elif isinstance(value, str) and SCREEN.search(path.split(".")[-1]):
         print(path)
 # The invariant above, MECHANICALLY (#1590): it shipped as a comment and was already false once,
 # at `wallet`. Both lists are READ OUT of lib.sh — a list restated here is the drift this asserts.
@@ -232,7 +260,8 @@ PY
 )"
 # Violations are prefixed, so one python run reports both the population and the invariant.
 VOCAB_BAD="$(printf '%s\n' "$SCREENED" | sed -n 's/^!!//p')"
-SCREENED="$(printf '%s\n' "$SCREENED" | grep -v '^!!')"
+ARRAY_LEN="$(printf '%s\n' "$SCREENED" | sed -n 's/^@@//p')"
+SCREENED="$(printf '%s\n' "$SCREENED" | grep -v '^@@' | grep -v '^!!')"
 [ -n "$SCREENED" ] || it_fail "screen over config.reference.json returns fields" "empty population"
 if [ -n "$VOCAB_BAD" ]; then
     it_fail "redact()'s two suffix vocabularies agree, and the screen covers them" "$VOCAB_BAD"
@@ -249,11 +278,22 @@ in_list() { # <field> <list>
 }
 
 for field in $SCREENED; do
-    key="${field##*.}"
-    out="$(printf '  "%s": "%s",\n' "$key" "$SENTINEL" | redact)"
-    if ! in_list "$field" "$MUST_REDACT $MUST_SURVIVE $KNOWN_GAP"; then
+    # Probe each field in the SHAPE the schema gives it — a scalar probe over an array field would
+    # measure a line the bundle never contains, which is a green row about nothing.
+    case "$field" in
+    *"[]")
+        key="${field%"[]"}"
+        key="${key##*.}"
+        out="$(printf '  "%s": ["%s"],\n' "$key" "$SENTINEL" | redact)"
+        ;;
+    *)
+        key="${field##*.}"
+        out="$(printf '  "%s": "%s",\n' "$key" "$SENTINEL" | redact)"
+        ;;
+    esac
+    if ! in_list "$field" "$MUST_REDACT $MUST_SURVIVE $KNOWN_GAP $ELEMENT_SHAPE_UNKNOWN"; then
         it_fail "config.reference.json field $field is classified" \
-            "new sensitive-looking field — add it to MUST_REDACT or MUST_SURVIVE with a reason"
+            "new sensitive-looking field or array — classify it, with a reason, in MUST_REDACT / MUST_SURVIVE / KNOWN_GAP / ELEMENT_SHAPE_UNKNOWN"
         continue
     fi
     if in_list "$field" "$MUST_REDACT"; then
@@ -266,12 +306,31 @@ for field in $SCREENED; do
     # The gap gets a label that cannot be misread as approval. A green row saying a secret-bearing
     # field "survives redaction" is exactly the confidence this file exists to refuse.
     if in_list "$field" "$KNOWN_GAP"; then
-        assert_contains "KNOWN GAP (#1630) — $field is NOT redacted by the STREAM filter" "$out" "$SENTINEL"
+        case "$field" in
+        *webhooks*) gap_ref="#848" ;;
+        *standby.source) gap_ref="#1723" ;;
+        *) gap_ref="#1630" ;;
+        esac
+        assert_contains "KNOWN GAP ($gap_ref) — $field is NOT redacted by the STREAM filter" "$out" "$SENTINEL"
+        continue
+    fi
+    # No assertion is possible against an EMPTY object array, and a passing row here would read as
+    # coverage it does not have. That emptiness is the bucket's whole premise, so it is READ from
+    # the schema (#1748): asserted, the row went on printing it over a reference that had gained
+    # an element, and an element named outside the screen's vocabulary reds nothing else either.
+    if in_list "$field" "$ELEMENT_SHAPE_UNKNOWN"; then
+        elems="$(printf '%s\n' "$ARRAY_LEN" | awk -v f="$field" '$1 == f { print $2; exit }')"
+        if [ "$elems" = "0" ]; then
+            it_warn "NOT MEASURED (#1723): $field is an array of objects and the reference carries 0 elements, read from the schema — its .token entries are covered by render_masked_config and by tier 1, not by this filter."
+        else
+            it_fail "$field is in ELEMENT_SHAPE_UNKNOWN and the reference carries no element" \
+                "the reference carries ${elems:-no measured count} — this bucket asserts nothing BECAUSE there was no element to probe, so reclassify $field against what its element actually holds"
+        fi
         continue
     fi
     assert_contains "$field survives redaction" "$out" "$SENTINEL"
 done
-it_warn "KNOWN GAP (#1630): $KNOWN_GAP is a capability URL that redact() cannot reach — nesting is invisible to a line-wise filter. Captured bundles are covered by the path-keyed pass in capture_artifacts, not by this filter."
+it_warn "KNOWN GAPS (#1630, #848, #1723): $KNOWN_GAP are values render_masked_config masks that redact() cannot reach — nesting, list position and a name no suffix carries are all invisible to a line-wise filter. Captured bundles are covered by the path-keyed pass in capture_artifacts, not by this filter."
 
 # A value containing an escaped quote must be replaced WHOLE. A pattern stopping at the first
 # quote would leave the tail behind, which is the partial-redaction failure this file exists for.

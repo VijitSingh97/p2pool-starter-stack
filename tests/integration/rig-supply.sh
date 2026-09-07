@@ -38,12 +38,9 @@
 # legs will dial it — and reports which case it took, because "the harness does not report which case
 # it took" is half of what #1378 is about.
 #
-# On the token: run.sh already runs `curl -H "Authorization: Bearer $IT_RIG_TOKEN"` through rx(), which
-# under --local is a plain bash -c on the bench, so a short-lived bench-side argv is a hygiene level
-# this harness already accepts. What must NOT happen is the token landing in the argv of the detached
-# nohup'd runner, which lives for the whole run and is world-readable in /proc/PID/cmdline. So the
-# token travels on on_bench's STDIN and reaches the runner as an ENVIRONMENT entry (/proc/PID/environ
-# is owner-only). It never touches the bench's disk, the SSH command string, or any log.
+# The token travels on on_bench's STDIN and reaches the runner as an ENVIRONMENT entry
+# (/proc/PID/environ is owner-only). Probes feed curl configuration through stdin too, so neither
+# the shell/SSH command nor curl argv carries the token. It never touches the bench's disk or logs.
 
 # BORROWED FROM THE SOURCER, declared rather than left to be discovered: `ok`, `warn`, `on_miner` and
 # `on_bench` are defined in e2e.sh (:73/:74/:171/:172), which sources this file at :38 — BEFORE any of
@@ -55,14 +52,16 @@ RIGFORGE_CONFIG="${RIGFORGE_CONFIG:-/opt/rigforge/config.json}"
 # luck, so an override here cannot silently dial a different port than the phase's legs do.
 RIG_CONTROL_PORT="${RIG_CONTROL_PORT:-8082}"
 RIG_HOST="${RIG_HOST:-}"
+RIG_NAME="${RIG_NAME:-}"
 IT_RIG_TOKEN="${IT_RIG_TOKEN:-}"
+RIGFORGE_BOOTSTRAP_VERSION="${RIGFORGE_BOOTSTRAP_VERSION:-}"
 
 # Resolve + prove the write phase's two inputs. ALWAYS returns 0, deliberately: the caller chains this
 # with && before appending the phase flags, and an under-supplied phase must still run — its
 # dashboard-side legs are real coverage, and turning a known gap into a failed release gate would be a
 # worse instrument than the one we are fixing. The warnings below are the honest report.
 rig_supply() {
-    local read_cmd unpriv_rc=0 sudo_rc=0
+    local read_cmd name_cmd unpriv_rc=0 sudo_rc=0 name_rc=0
     RIG_HOST="${RIG_HOST:-$MINER_HOST}"
     if [ -z "$IT_RIG_TOKEN" ]; then
         read_cmd="jq -r '.ACCESS_TOKEN // empty' $(quote_arg "$RIGFORGE_CONFIG")"
@@ -86,8 +85,20 @@ rig_supply() {
             }
         fi
     fi
+    if [ -z "$RIG_NAME" ]; then
+        name_cmd="jq -r '.NAME // empty' $(quote_arg "$RIGFORGE_CONFIG")"
+        RIG_NAME="$(on_miner "$name_cmd")" || name_rc=$?
+        if [ "$name_rc" != 0 ]; then
+            RIG_NAME="$(on_miner "sudo -n $name_cmd")" || RIG_NAME=""
+        fi
+    fi
     if [ -z "$RIG_HOST" ]; then
         warn "write phase UNDER-SUPPLIED (#1378): no rig host — set MINER_HOST or RIG_HOST."
+        return 0
+    fi
+    if [[ ! "$RIG_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        warn "write phase UNDER-SUPPLIED: $RIGFORGE_CONFIG did not provide a safe non-empty NAME for the borrowed rig."
+        RIG_NAME=""
         return 0
     fi
     if [ -z "$IT_RIG_TOKEN" ]; then
@@ -103,10 +114,8 @@ rig_supply() {
     # Dial from the BENCH, not from here: the bench is the box run.sh's legs dial, and it is the one
     # whose reachability the phase depends on. The token travels on stdin and stays there — `curl -K -`
     # reads its config from stdin, so the bearer never enters curl's argv, which is world-readable at
-    # mode 444 in /proc/<curl>/cmdline for the life of the dial. run.sh's own rx() curl does put a token
-    # in a bench-side argv, and that is a level this harness already accepts — but "we already have this
-    # exposure" is an argument against blocking on it, not for adding another instance in new code.
-    if printf 'header = "Authorization: Bearer %s"\n' "$IT_RIG_TOKEN" |
+    # mode 444 in /proc/<curl>/cmdline for the life of the dial.
+    if printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$IT_RIG_TOKEN" | jq -Rs .)" |
         on_bench "curl -fsS -o /dev/null --max-time 10 -K - $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/status")"; then
         ok "write phase supplied: $BENCH_HOST reached the rig control API at $RIG_HOST:$RIG_CONTROL_PORT"
     else

@@ -287,7 +287,7 @@ def test_worker_auth_name_sends_bearer_name():
     # A rig whose name doesn't match what the API expects is a 401, surfaced as api_ok False.
     with FakeWorkerApi(auth="name", name="someone-else") as fake:
         bad = _probe_worker(fake, auth="name", name="rig1")
-        assert bad == {"api_ok": False}
+        assert bad == {"api_ok": False, "adopted": False}
 
 
 def test_worker_per_worker_token_forces_token_auth():
@@ -298,7 +298,7 @@ def test_worker_per_worker_token_forces_token_auth():
     # Wrong token → real 401 → api_ok False (the documented misconfiguration failure mode).
     with FakeWorkerApi(auth="token", token="s3cr3t") as fake:
         bad = _probe_worker(fake, auth="none", token="wrong")
-        assert bad == {"api_ok": False}
+        assert bad == {"api_ok": False, "adopted": True}
 
 
 def test_worker_fleet_token_mode_sends_shared_token():
@@ -403,9 +403,9 @@ def test_worker_config_prefill_parses_over_the_wire():
     with FakeWorkerApi(auth="none") as fake:
         payload = _probe_worker(fake, auth="none")
     cfg = parse_rigforge(payload)["config"]
-    # Exactly the writable keys, with the rig's own values — not our record of what we last pushed.
+    # Exactly the writable keys, with the rig's own values; pools[].pass is the producer's {"__secret__": true} marker, kept as-is (rigforge#415, #1548).
     assert cfg == {
-        "pools": [{"url": "itest-proxy:3333"}],
+        "pools": [{"url": "itest-proxy:3333", "pass": {"__secret__": True}}],
         "DONATION": 1,
         "autotune": "disabled",
         "watchdog": "enabled",

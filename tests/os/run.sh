@@ -57,11 +57,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 . "$SCRIPT_DIR/data-floor-fallback-leg.sh"
 # shellcheck source=tests/os/aged-version.sh
 . "$SCRIPT_DIR/aged-version.sh"
-
+# shellcheck source=tests/os/provision-browser-submit.sh
+. "$SCRIPT_DIR/provision-browser-submit.sh"
+# shellcheck source=tests/os/reinstall-prefill-submit-leg.sh
+. "$SCRIPT_DIR/reinstall-prefill-submit-leg.sh"
+# shellcheck source=tests/os/setup-again-leg.sh
+. "$SCRIPT_DIR/setup-again-leg.sh"
+. "$SCRIPT_DIR/boot-label-serial-verdict.sh"
 IMAGE=""
 KEEP=0
 PHASE="all"
-
 VM="pithead-os-test"
 DISK="/srv/code/bench-vm/pithead-os-test.img"
 SERIAL="/tmp/pithead-os-serial.log"
@@ -125,25 +130,23 @@ HARNESS_WALLET="44MnN1f3Eto8DZYUWuE5XZNUtE3vcRzt2j6PzqWpPau34e6Cf4fAxt6X2MBmrm6F
 # handoff. Same throwaway address the stack suite uses.
 HARNESS_TARI="126J92Yow5y9UoRFd1DNujPmVFq9C1ZeiYWT95UKxz5Y1rzbfjtHg4SCZS1dk83ivzt3m2XRQHTaYUk9SwmyeCvy5BJ"
 
-# Every remote call is bounded. CORRECTION (this comment used to claim Debian socket-activates
-# sshd — disproven): os/rootfs/Dockerfile only ever `systemctl enable`/`disable`s the plain
-# ssh.service; no ssh.socket unit is ever enabled. What actually gates it is
-# os/overlay/pithead-ssh-host-keys.conf, a drop-in that adds RequiresMountsFor=/data plus an
-# ExecStartPre chain (generate the host key onto /data, then `sshd -t`) — so ssh.service cannot
-# even begin starting until data.mount is active, and /data is freshly mkfs'd and grown by
-# systemd-repart (os/rootfs/repart.d/40-data.conf) on every first boot. A guest whose sshd has
-# not started yet therefore just refuses the connection (nothing is listening); it does not stall
-# the handshake. The five-hour stall this bound exists for (2026-08-15: one boot-phase probe held
-# for five hours against a guest that answered ssh normally the whole time, and the phase reported
-# "SSH never came up" the instant that probe was killed) was an unbounded remote call outliving
-# its own caller's deadline, not sshd's start order — bounding every call here is what fixed it,
-# regardless of which cause produces the next stall. SSH_TIMEOUT is the per-call ceiling. The
-# default is deliberately far larger than any legitimate call (the longest here is the 1800 s
-# local-miner wait; a slot copy on slow storage is the other long one): this exists ONLY to stop
-# an infinite hang, so it must never be the thing that ends real work — if a call is legitimately
-# slower than this, raise it rather than let the ceiling arbitrate.
-# ponytail: polling loops lower it to a few seconds — a stalled handshake must read as "not ready
-# yet" so the loop re-evaluates its own deadline, which is the whole point of having one.
+# Every remote call is bounded. CORRECTION (this comment used to claim Debian socket-activates sshd —
+# disproven): os/rootfs/Dockerfile only ever `systemctl enable`/`disable`s the plain ssh.service; no
+# ssh.socket unit is ever enabled. What actually gates it is os/overlay/pithead-ssh-host-keys.conf, a drop-in
+# that adds RequiresMountsFor=/data plus an ExecStartPre chain (generate the host key onto /data, then `sshd
+# -t`) — so ssh.service cannot even begin starting until data.mount is active, and /data is freshly mkfs'd and
+# grown by systemd-repart (os/rootfs/repart.d/40-data.conf) on every first boot. A guest whose sshd has not
+# started yet therefore just refuses the connection (nothing is listening); it does not stall the handshake.
+# The five-hour stall this bound exists for (2026-08-15: one boot-phase probe held for five hours against a
+# guest that answered ssh normally the whole time, and the phase reported "SSH never came up" the instant that
+# probe was killed) was an unbounded remote call outliving its own caller's deadline, not sshd's start order —
+# bounding every call here is what fixed it, regardless of which cause produces the next stall. SSH_TIMEOUT is
+# the per-call ceiling. The default is deliberately far larger than any legitimate call (the longest here is
+# the 1800 s local-miner wait; a slot copy on slow storage is the other long one): this exists ONLY to stop an
+# infinite hang, so it must never be the thing that ends real work — if a call is legitimately slower than
+# this, raise it rather than let the ceiling arbitrate. ponytail: polling loops lower it to a few seconds — a
+# stalled handshake must read as "not ready yet" so the loop re-evaluates its own deadline, which is the whole
+# point of having one.
 _ssh() {
     timeout "${SSH_TIMEOUT:-5400}" ssh -i "$KEY" -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 "root@$ip" "$@" 2>"$SSH_ERR"
@@ -155,6 +158,30 @@ _wait_ssh() { # $1 seconds — the definition of "not bricked"
         sleep 5
     done
     return 1
+}
+_boot_id() { _ssh cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '\r\n' | grep .; } # rc 1 when unreadable
+# A reboot is OBSERVED, never assumed (#1651): wait for a boot id DIFFERENT from $1. `sleep 10; _wait_ssh` reconnected
+# to the still-running old boot whenever the shutdown outlasted the sleep (or the reboot command never landed) and
+# read the OLD marker as the verdict. Reports how many probes the old boot answered, so a near-miss is visible.
+_wait_new_boot() { # $1 = boot id before the reboot, $2 = seconds
+    local deadline=$(($(date +%s) + $2)) SSH_TIMEOUT="${SSH_PROBE_TIMEOUT:-20}" now='' stale=0
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        now=$(_boot_id)
+        [ -n "$now" ] && [ "$now" != "$1" ] && break
+        [ "$now" = "$1" ] && stale=$((stale + 1))
+        sleep 5
+    done
+    [ "$stale" -eq 0 ] || info "the old boot $1 answered $stale probe(s) after the reboot command before going down"
+    [ -n "$now" ] && [ "$now" != "$1" ] && return 0
+    info "no new boot within $2 s — boot id ${now:-unreadable}, was $1"
+    return 1
+}
+_reboot_wait() { # $1 = the command that reboots the guest, $2 = seconds to wait for the new boot
+    local before
+    before=$(_boot_id) || info "could not read the boot id before '$1' — a reconnect and a reboot would look alike"
+    [ -n "$before" ] || return 1
+    _ssh "$1" >/dev/null 2>&1 || true # the session dies with the reboot
+    _wait_new_boot "$before" "$2"
 }
 # Classify why _wait_ssh gave up, using only signals that do NOT need a working SSH session — the
 # guest either isn't running, isn't the one we're still probing, or is running and refusing the
@@ -495,17 +522,14 @@ phase_boot() {
         bad "$verdict"
     fi
 
-    # #895: machine-id must be assigned once and then STAY — an empty-baked image with no restore
-    # unit regenerates a transient id on EVERY boot. #1659 rides the same reboot: journald starts on
-    # the transient id and, before the fix, kept it all boot — a new journal directory per boot and
-    # `journalctl -b` empty on every boot but the first. journal_boot_verdict is fixture-tested (tier 1).
+    # #895: machine-id must be assigned once and then STAY. #1659 and #1791 ride the same reboot:
+    # journald keeping the transient id (a new journal dir per boot), and the /var overlay racing the
+    # #1030 bind for /var/log/journal (a split boot list). Both verdicts are fixture-tested (tier 1).
     local id_before id_after jd_before jd_after jb
     id_before=$(_ssh cat /etc/machine-id)
     jd_before=$(_ssh 'ls /var/log/journal | wc -l' | tr -d '\r\n ')
     if [ -n "$id_before" ]; then
-        _ssh reboot >/dev/null 2>&1 || true
-        sleep 10
-        if _wait_ssh 240; then
+        if _reboot_wait reboot 240; then
             id_after=$(_ssh cat /etc/machine-id)
             [ -n "$id_after" ] && [ "$id_before" = "$id_after" ] && ok "machine-id stable across a reboot ($id_before)" ||
                 bad "machine-id changed across a reboot (before: $id_before, after: ${id_after:-none})"
@@ -513,6 +537,7 @@ phase_boot() {
             jb=$(_ssh 'journalctl -b -q --no-pager -u pithead-machine-id 2>/dev/null | wc -l' | tr -d '\r\n ')
             printf '     · journal dirs %s -> %s; journalctl -b: %s kernel lines, %s from pithead-machine-id\n' "$jd_before" "$jd_after" "$(_ssh 'journalctl -b -k -q --no-pager 2>/dev/null | wc -l' | tr -d '\r\n ')" "$jb"
             verdict=$(journal_boot_verdict "$jd_before" "$jd_after" "$jb") && ok "$verdict" || bad "$verdict"
+            verdict=$(journal_home_verdict "$(_ssh "$JOURNAL_HOME_PROBE" 2>/dev/null | tr -d '\r')") && ok "$verdict" || bad "$verdict"
         else
             bad "guest never returned after the machine-id reboot check"
         fi
@@ -543,7 +568,7 @@ phase_update() {
     # not: a redefinition capturing a local outlives the phase, and the NEXT phase in an
     # --phase all run then calls it with the variable gone — an unbound-variable crash that no
     # standalone phase run can ever reproduce. The top-level helpers already do this job.
-    local ip="" marker bundle
+    local ip="" marker bundle menu_mark menu_verdict
 
     info "building v1 test image (test SSH key + marker v1)"
     local img
@@ -629,9 +654,7 @@ phase_update() {
         return
     }
     ok "v2 installed into the spare slot"
-    _ssh "$(_boot_spare_cmd)" || true
-    sleep 10
-    _wait_ssh 300 || {
+    _reboot_wait "$(_boot_spare_cmd)" 300 || {
         bad "guest never returned after booting the spare slot"
         return
     }
@@ -640,9 +663,7 @@ phase_update() {
         bad "expected v2 in the spare slot, got '$marker'"
         return
     }
-    _ssh reboot || true # uncommitted -> the bootloader must fall back on its own
-    sleep 10
-    _wait_ssh 300 || {
+    _reboot_wait reboot 300 || { # uncommitted -> the bootloader must fall back on its own
         bad "guest never returned after the no-commit reboot"
         return
     }
@@ -657,9 +678,7 @@ phase_update() {
         bad "the second v2 install failed on the guest"
         return
     }
-    _ssh "$(_boot_spare_cmd)" || true
-    sleep 10
-    _wait_ssh 300 || {
+    _reboot_wait "$(_boot_spare_cmd)" 300 || {
         bad "guest never returned after the second install"
         return
     }
@@ -668,17 +687,16 @@ phase_update() {
         return
     }
     ok "committed the booted update"
-    _ssh reboot || true
-    sleep 10
-    _wait_ssh 300 || {
+    menu_mark=$(wc -c <"$SERIAL" 2>/dev/null | tr -d ' ')
+    _reboot_wait reboot 300 || {
         bad "guest never returned after the post-commit reboot"
         return
     }
     marker=$(_ssh cat /etc/pithead-test-marker)
     [ "$marker" = "v2" ] && ok "COMMIT: a committed update persists across reboot" ||
         bad "expected v2 after commit, got '$marker'"
-    # #894/#895: host identity must survive the A/B swap — it lives on /data, which an update
-    # never touches, unlike the system slot an update replaces wholesale.
+    menu_verdict=$(boot_label_serial_verdict "$SERIAL" "$menu_mark" "$(tr -d '[:space:]' <VERSION)" B A) && ok "$menu_verdict" || bad "$menu_verdict"
+    # #894/#895: host identity on /data must survive the system-slot swap.
     local id_v2 hostkey_fp_v2
     id_v2=$(_ssh cat /etc/machine-id)
     hostkey_fp_v2=$(_ssh ssh-keygen -lf /data/ssh/ssh_host_ed25519_key 2>/dev/null | awk '{print $2}')
@@ -713,9 +731,7 @@ phase_update() {
     # and everything after belongs to the boot leg 4 actually runs against.
     local serial_mark
     serial_mark=$(wc -c <"$SERIAL" 2>/dev/null | tr -d ' ')
-    _ssh "$(_rollback_cmd)" || true
-    sleep 10
-    _wait_ssh 300 || {
+    _reboot_wait "$(_rollback_cmd)" 300 || {
         bad "guest never returned after an operator rollback"
         return
     }
@@ -901,8 +917,12 @@ PYEOF
 # bundle download are pointed at a bench-local server through the root-owned test seam
 # (os-update-test-base); RAUC signature verification still runs for real against the slot
 # keyring, so the bad-signature refusal is genuine, not simulated.
+_leg4_srv_stop() { # the bench release server and its dir, torn down at every leg-4 exit; reads the caller's locals
+    kill "$srv_pid" 2>/dev/null
+    rm -rf "$srv"
+}
 phase_update_dashboard() { # <good-bundle-path> <serial-byte-offset-before-this-boot>
-    local good_bundle="$1" serial_mark="${2:-0}" marker
+    local good_bundle="$1" serial_mark="${2:-0}" marker before
     info "leg 4 — dashboard OS-update action end-to-end (provision, then check/download/verify/install/reboot)"
     if ! _wizard_provision_capture "$serial_mark"; then
         bad "leg 4: could not provision the stack through the wizard (${WIZ_FAIL_REASON:-no dashboard, no control channel})"
@@ -963,8 +983,7 @@ phase_update_dashboard() { # <good-bundle-path> <serial-byte-offset-before-this-
     fi
     _ssh "printf 'http://$host_addr:$port' > /data/pithead/os-update-test-base" || {
         bad "leg 4: could not plant the update-server seam on the guest"
-        kill "$srv_pid" 2>/dev/null
-        rm -rf "$srv"
+        _leg4_srv_stop
         return
     }
 
@@ -984,14 +1003,12 @@ phase_update_dashboard() { # <good-bundle-path> <serial-byte-offset-before-this-
     local aged
     if ! aged=$(aged_version "${tag#v}"); then
         bad "leg 4: cannot age the running version ${tag#v} — nothing sorts below it (tests/os/aged-version.sh)"
-        kill "$srv_pid" 2>/dev/null
-        rm -rf "$srv"
+        _leg4_srv_stop
         return
     fi
     if ! _ssh "printf '%s\n' '$aged' > /data/pithead/VERSION"; then
         bad "leg 4: could not age the guest's running version to $aged"
-        kill "$srv_pid" 2>/dev/null
-        rm -rf "$srv"
+        _leg4_srv_stop
         return
     fi
 
@@ -1003,8 +1020,7 @@ phase_update_dashboard() { # <good-bundle-path> <serial-byte-offset-before-this-
         ok "leg 4: check derived the published release ($tag, $(printf '%s' "$out" | jq -r '.size') bytes)"
     else
         bad "leg 4: check did not derive the release (got: $(printf '%s' "$out" | cut -c1-200))"
-        kill "$srv_pid" 2>/dev/null
-        rm -rf "$srv"
+        _leg4_srv_stop
         return
     fi
 
@@ -1083,8 +1099,7 @@ phase_update_dashboard() { # <good-bundle-path> <serial-byte-offset-before-this-
         ok "leg 4: the good bundle verifies (signature + compatible + version)"
     else
         bad "leg 4: the good bundle failed verify (got: $(printf '%s' "$out" | cut -c1-200))"
-        kill "$srv_pid" 2>/dev/null
-        rm -rf "$srv"
+        _leg4_srv_stop
         return
     fi
     out=$(_os_step '{"action":"install"}' 900)
@@ -1092,8 +1107,11 @@ phase_update_dashboard() { # <good-bundle-path> <serial-byte-offset-before-this-
         ok "leg 4: install wrote the spare slot through the dashboard action"
     else
         bad "leg 4: install did not complete (got: $(printf '%s' "$out" | cut -c1-200))"
-        kill "$srv_pid" 2>/dev/null
-        rm -rf "$srv"
+        # The runner deletes .install.log on a failed install and the result carries only a whitelisted last line
+        # (#1651: one gate red said "[ERROR] rauc install failed", guest gone) — keep the guest's own account.
+        SSH_TIMEOUT=120 _ssh "{ echo '== pithead-control.service (the root runner)'; journalctl -b -u pithead-control.service -o short-iso --no-pager -n 200; echo '== journal rauc/os-install lines'; journalctl -b -o short-iso --no-pager | grep -aiE 'rauc|os.install|os-update' | tail -300; echo '== rauc status'; rauc status; echo '== df'; df -h /data /tmp; echo '== free'; free -m; echo '== oom'; dmesg | grep -aiE 'oom|killed process'; } 2>&1" >"$SERIAL.leg4-install" || true
+        [ -s "$SERIAL.leg4-install" ] && info "install diagnostics kept at $SERIAL.leg4-install" || info "install diagnostics capture came back EMPTY (guest unreachable, or the 120 s cap hit) — read $SERIAL.failed"
+        _leg4_srv_stop
         return
     fi
     if [ "$(_ssh "jq -r '.to' /data/pithead/data/os-update/in-flight.json" 2>/dev/null)" = "${tag#v}" ]; then
@@ -1111,12 +1129,11 @@ phase_update_dashboard() { # <good-bundle-path> <serial-byte-offset-before-this-
     marker=$(_ssh cat /etc/pithead-test-marker)
     [ "$marker" = "v1" ] && ok "leg 4: nothing auto-rebooted — still on v1 until the operator says so" ||
         bad "leg 4: expected to still be on v1 before the reboot intent, got '$marker'"
-    _os_step '{"action":"reboot"}' 30 >/dev/null 2>&1 || true # the machine goes away mid-poll
-    sleep 15
-    _wait_ssh 420 || {
+    before=$(_boot_id) || info "could not read the boot id before the reboot intent — a reconnect and a reboot would look alike"
+    [ -n "$before" ] && _os_step '{"action":"reboot"}' 30 >/dev/null 2>&1 || true # the machine goes away mid-poll; no id, no reboot
+    [ -n "$before" ] && _wait_new_boot "$before" 420 || {
         bad "leg 4: guest never returned after the dashboard reboot intent"
-        kill "$srv_pid" 2>/dev/null
-        rm -rf "$srv"
+        _leg4_srv_stop
         return
     }
     marker=$(_ssh cat /etc/pithead-test-marker)
@@ -1141,8 +1158,7 @@ phase_update_dashboard() { # <good-bundle-path> <serial-byte-offset-before-this-
     else
         bad "leg 4: /api/state does not carry the updated verdict — the banner would never show"
     fi
-    kill "$srv_pid" 2>/dev/null
-    rm -rf "$srv"
+    _leg4_srv_stop
 }
 
 phase_install() {
@@ -1348,16 +1364,16 @@ phase_install() {
     fi
 
     # ---- reinstall leg: the path that must NOT lose data --------------------------------
-    # A disk that already carries a pithead layout is reinstalled in place: the system slot is
-    # replaced, /data — the wallets and the synced chain — survives. This is the promise that
-    # costs a user days of re-syncing if it breaks, so it gets its own leg: plant a sentinel in
-    # /data, reinstall over the disk, and require the sentinel afterwards.
+    # A disk that already carries a pithead layout is reinstalled in place; /data must survive.
     info "reinstall leg — a second install over the same disk must preserve /data"
     _ssh "echo chain-data-survives > /data/pithead/reinstall-sentinel &&
           mkdir -p /data/pithead/data/monero /data/pithead/data/tari &&
           echo synced-chain > /data/pithead/data/monero/chain-sentinel &&
-          echo synced-chain > /data/pithead/data/tari/chain-sentinel" || {
-        bad "could not plant the reinstall sentinels"
+          echo synced-chain > /data/pithead/data/tari/chain-sentinel &&
+          tmp=\$(mktemp /data/pithead/.config.legacy.XXXXXX) &&
+          jq '.xmrig_proxy={enabled:false} | del(.xvb)' /data/pithead/config.json >\"\$tmp\" &&
+          chmod 600 \"\$tmp\" && mv \"\$tmp\" /data/pithead/config.json" || {
+        bad "could not plant the reinstall sentinels and 1.x-shaped config"
         return
     }
     _ssh "systemctl poweroff" 2>/dev/null || true
@@ -1386,18 +1402,9 @@ phase_install() {
     else
         bad "inventory does not flag the installed disk as carrying data"
     fi
-    # ---- reinstall pre-fill: the previous machine's answers, never its secrets ----------
-    # The host mounted the target's data partition read-only at wizard start and published
-    # the stripped previous config as the page's pre-fill (pithead:2350,
-    # prefill_from_previous_install). A wallet-address match on the page's own state API alone
-    # cannot tell "the branch read the target disk and published it" from "the page shows that
-    # value for some other reason" — #1038 found this leg green for four consecutive batteries
-    # while never proving the branch itself had run. Pairing the outcome with the branch's OWN
-    # record — the exact log line it prints ONLY on that path (StandardOutput=journal+console
-    # per pithead-firstboot.service, so it lands on $SERIAL) — is what tells the two apart, the
-    # same discrimination #1212 needed for hugepages; reinstall_prefill_verdict is fixture-tested
-    # at tier 1 (tests/stack/run.sh) for exactly that reason. Runs BEFORE the wipe legs on
-    # purpose — they destroy the config the pre-fill was read from.
+    # ---- reinstall pre-fill: previous answers and removed aliases, never secrets --------
+    # Pair the page state with this boot's own pre-fill log; #1038 proved a matching wallet alone
+    # cannot identify the producer. This runs before the wipe legs destroy the source config.
     token=""
     tries2=0
     while [ -z "$token" ] && [ "$tries2" -lt 40 ]; do
@@ -1415,13 +1422,19 @@ phase_install() {
             branch_logged=1
         printf '%s' "$pf_state" | grep -q "\"wallet_address\": \"${HARNESS_WALLET:0:8}" &&
             wallet_prefilled=1
-        # The provisioned config held a generated dashboard password; the merged state may
-        # only ever show the reference's empty default for any "password" key.
+        # The provisioned config held a generated dashboard password; it must stay stripped.
         printf '%s' "$pf_state" | grep -Eq '"password": "[^"]' && password_leaked=1
         if pf_verdict=$(reinstall_prefill_verdict "$branch_logged" "$wallet_prefilled" "$password_leaked"); then
             ok "$pf_verdict"
         else
             bad "$pf_verdict"
+        fi
+        if printf '%s' "$pf_state" | jq -e '
+            .config.xvb.enabled == false and (.config | has("xmrig_proxy") | not) and
+            (.config_changes | index("xmrig_proxy.enabled → xvb.enabled"))' >/dev/null; then
+            ok "reinstall pre-fill migrates the removed xmrig_proxy key to xvb"
+        else
+            bad "reinstall pre-fill kept or dropped the removed 1.x XvB setting instead of migrating it"
         fi
     else
         bad "no wizard session for the pre-fill check (token: ${token:-none})"
@@ -1930,24 +1943,22 @@ phase_install() {
         [ -n "$new_onion" ] && [ -n "$tor_hostname" ] && break
         sleep 15
     done
-    # .env is itself an archive member that load_preserved_state replays verbatim whenever it is
-    # already non-empty (pithead:6155-6166) — new_onion == orig_onion here proves only that the
-    # CONFIG FILE made the round trip, which holds even if the Tor data dir (the actual onion
-    # PRIVATE KEYS) was dropped from the backup: the stale address string rides along in .env while
-    # Tor silently mints a fresh, unrelated hidden service underneath it (#1090). The only
-    # comparison that proves the keys themselves came back is against Tor's OWN hostname file,
-    # sourced from the restored key material rather than from the archived config.
+    # .env is an archive member load_preserved_state replays verbatim when non-empty (pithead:6155-6166),
+    # so new_onion == orig_onion proves only that the CONFIG FILE made the round trip — true even when
+    # the Tor data dir (the onion PRIVATE KEYS) was dropped and Tor mints a fresh service underneath
+    # (#1090). Only Tor's OWN hostname file, from the restored key material, proves the keys came back.
     if [ -n "$new_onion" ] && [ -n "$tor_hostname" ] && [ "$new_onion" = "$orig_onion" ] && [ "$tor_hostname" = "$orig_onion" ]; then
         ok "restore leg: restored machine kept the ORIGINAL Tor identity, not a regenerated one"
     else
         bad "restore leg: onion identity not restored (.env: $orig_onion -> ${new_onion:-none}, Tor's own hostname: ${tor_hostname:-none})"
     fi
+    phase_install_prefill_submit_leg "$target_disk" # #1846, last: nothing after it needs the disk
     rm -f "$target_disk" "$restore_archive" "$restore_target"
 }
 
 phase_provision() {
     info "phase: provision (wizard HTTP submit -> setup -> stack containers up)"
-    local img token jar body scode
+    local img token jar scode
 
     img=$(_build_image v1) || {
         bad "image build failed (/tmp/os-fault-build.log)"
@@ -1978,10 +1989,9 @@ phase_provision() {
     }
 
     jar=$(mktemp)
-    # https, and PROVE the cookie landed: auth against :80 once hit the new TLS redirect, whose
-    # 301 carries no cookie — curl -f called that success, the jar stayed empty, and the
-    # unauthenticated submit's redirect then ALSO read as success. Two phantom green checks in a
-    # row while nothing was written. Status codes and the jar are asserted now, not inferred.
+    # https, and PROVE the cookie landed: auth against :80 once hit the TLS redirect, whose 301
+    # carries no cookie — curl -f called that success, the jar stayed empty, and the unauthenticated
+    # submit's redirect ALSO read as success. Status codes and the jar are asserted, not inferred.
     curl -fsSk -c "$jar" -d "token=$token" "https://$ip/auth" -o /dev/null 2>/dev/null || {
         bad "token was not accepted"
         rm -f "$jar"
@@ -1992,27 +2002,25 @@ phase_provision() {
         rm -f "$jar"
         return
     }
-    # Minimal honest config: a checksum-valid primary Monero address (see HARNESS_WALLET — the
-    # old dummy crash-looped p2pool, #829). Tari's gate is deliberately format-free host-side
-    # and p2pool tolerates a bad merge-mine address, so a labelled dummy stays obviously fake.
-    # Everything else keeps its default — which is itself part of what this proves.
-    # local_miner=true: the Both role (#796) — the same submit must also light the built-in
-    # RigForge worker, asserted in the local-miner leg below.
-    body="monero_wallet=$HARNESS_WALLET&tari_wallet=$HARNESS_TARI&pool=mini&local_miner=true"
-    scode=$(curl -sSk -b "$jar" --data "$body" "https://$ip/submit" -o /dev/null -w '%{http_code}' 2>/dev/null)
+    provision_node_preflight_retention "$ip" "$jar" || {
+        rm -f "$jar"
+        return
+    }
+    provision_setup_failure_recovery "$ip" "$jar" "$token" || {
+        rm -f "$jar"
+        return
+    }
+    scode=$(provision_browser_submit "$ip" "$jar")
     [ "$scode" = "200" ] || {
         bad "config submit did not return 200 (got ${scode:-none} — a 30x means the session was not accepted)"
         rm -f "$jar"
         return
     }
-    # The jar lives on: the handoff below is authenticated too, and a real operator's session
-    # does not end at submit. (Deleting it here made the handoff poll silently unauthenticated,
-    # which read as "the appliance never published credentials" — it had.)
+    # The jar lives on: the handoff below is authenticated too (deleting it here once made the poll silently unauthenticated).
     ok "config submitted through the wizard"
-    # The credentials handoff: the host publishes the generated login and HOLDS provisioning
-    # until it is acknowledged — the page goes dark afterwards, so the card must come first.
-    # The login is kept: the OS-update presence check below drives the authenticated state API.
-    local handoff_body=""
+    # The credentials handoff: the host publishes the generated login and HOLDS provisioning until
+    # it is acknowledged (the page goes dark after). The login is kept for the OS-update check below.
+    local handoff_body="" page_err=""
     tries=0
     while [ "$tries" -lt 24 ]; do
         handoff_body=$(curl -sSk -b "$jar" -m 5 "https://$ip/api/handoff" 2>/dev/null)
@@ -2020,14 +2028,21 @@ phase_provision() {
             ok "generated credentials published to the page"
             break
         fi
+        page_err=$(provision_page_error "$ip" "$jar")
+        [ -z "$page_err" ] || break # the host refused: say what it said, not that it timed out
         sleep 5
         tries=$((tries + 1))
     done
-    [ "$tries" -lt 24 ] || {
-        bad "no credentials handoff appeared on the page"
+    [ "$tries" -lt 24 ] && [ -z "$page_err" ] || {
+        bad "no credentials handoff appeared on the page${page_err:+ — the page says: $page_err}"
         rm -f "$jar"
         return
     }
+    if printf '%s' "$handoff_body" | jq -r '.password // ""' | grep -qE '^[A-Za-z0-9]{32}$'; then
+        ok "the card carries a generated 32-character password (auth_mode=auto, #1846)"
+    else
+        bad "the card's password is not a generated one: $(printf '%s' "$handoff_body" | jq -c '.password // null')"
+    fi
     scode=$(curl -sSk -b "$jar" -X POST "https://$ip/handoff-ack" -o /dev/null -w '%{http_code}' 2>/dev/null)
     [ "$scode" = "200" ] || {
         bad "handoff acknowledgement did not return 200 (got ${scode:-none})"
@@ -2095,10 +2110,6 @@ phase_provision() {
         return
     fi
 
-    # ---- OS-update presence: the appliance state must carry os_update ------------------------
-    # The header renders the OS update control (and suppresses the DIY tarball Upgrade button)
-    # exactly when /api/state.os_update exists — seeded host-side for appliances only. Absent, an
-    # operator has no reachable update path and the first update after GA means a reflash.
     local pv_user pv_pass
     pv_user=$(printf '%s' "$handoff_body" | jq -r '.username // "admin"' 2>/dev/null)
     pv_pass=$(printf '%s' "$handoff_body" | jq -r '.password // ""' 2>/dev/null)
@@ -2108,19 +2119,19 @@ phase_provision() {
     else
         bad "no os_update in /api/state — the appliance has no reachable OS-update control"
     fi
+    phase_provision_control_regressions "$pv_user" "$pv_pass"
 
     # ---- Tor-only egress backstop (#855): the fail-closed firewall must actually DROP -------
-    # The whole product is Tor-first; the guarantee is that nothing CAN bypass Tor even if an app
-    # is misconfigured, compromised, or dials a raw public IP. On the appliance the engine is
-    # podman+netavark, and the old DOCKER-USER rules land in a chain no forwarded packet traverses
-    # — the firewall was fail-OPEN while doctor and the boot log called it enforced. This leg dials
-    # clearnet FROM a mining-net container by raw IP and asserts the drop. It is the check whose
-    # absence let a leaking appliance ship green: it FAILS against the orphaned-chain code and
-    # PASSES once the nft table is installed. monerod sits on mining_net (172.28.0.x) and syncs
-    # regardless of the mining hold, so it is the honest origin for the dial.
-    # monerod's baked archive is the largest and loads last — dashboard+caddy answering (above)
-    # does not mean monerod exists yet. A `podman exec` against a missing container fails exactly
-    # like a missing curl binary, which used to blame the wrong thing (#887). Wait for it first.
+    # The whole product is Tor-first; the guarantee is that nothing CAN bypass Tor even if an app is
+    # misconfigured, compromised, or dials a raw public IP. On the appliance the engine is podman+netavark,
+    # and the old DOCKER-USER rules land in a chain no forwarded packet traverses — the firewall was fail-OPEN
+    # while doctor and the boot log called it enforced. This leg dials clearnet FROM a mining-net container by
+    # raw IP and asserts the drop. It is the check whose absence let a leaking appliance ship green: it FAILS
+    # against the orphaned-chain code and PASSES once the nft table is installed. monerod sits on mining_net
+    # (172.28.0.x) and syncs regardless of the mining hold, so it is the honest origin for the dial. monerod's
+    # baked archive is the largest and loads last — dashboard+caddy answering (above) does not mean monerod
+    # exists yet. A `podman exec` against a missing container fails exactly like a missing curl binary, which
+    # used to blame the wrong thing (#887). Wait for it first.
     local monerod_deadline=$(($(date +%s) + 300)) monerod_present=0
     while [ "$(date +%s)" -lt "$monerod_deadline" ]; do
         case "$(_ssh "podman ps --format '{{.Names}}'" 2>/dev/null)" in
@@ -2170,16 +2181,15 @@ phase_provision() {
     # come up without any hands: setup renders its config, runs its appliance-mode setup, and
     # the miner dials the machine's own stratum.
     #
-    # The leg used to demand an accepted share, and that end of the chain cannot exist here:
-    # on a fresh machine the product itself HOLDS p2pool and xmrig-proxy until the local
-    # chains sync (#35 — the dashboard logs the hold and stops both), and a KVM guest
-    # syncing Monero over Tor onto a 40 GiB scratch disk never clears that gate. No budget
-    # fixes a state the product enforces on purpose. The share assertion lives where a synced
-    # node exists — the release e2e on the bench, which accepted in under two minutes the day
-    # this leg was rewritten. What the harness CAN prove, it now does, link by link: the
-    # miner runs, the hold is the deliberate one (p2pool stopped CLEAN — a crash-looping
-    # p2pool, the #829 failure this leg first caught, dies non-zero under the same gate), and
-    # the rendered worker config points at this machine's own stratum.
+    # The leg used to demand an accepted share, and that end of the chain cannot exist here: on a
+    # fresh machine the product itself HOLDS p2pool and xmrig-proxy until the local chains sync
+    # (#35 — the dashboard logs the hold and stops both), and a KVM guest syncing Monero over Tor
+    # onto a 40 GiB scratch disk never clears that gate. No budget fixes a state the product
+    # enforces on purpose. The share assertion lives where a synced node exists — the release e2e
+    # on the bench. What the harness CAN prove, it now does, link by link: the miner runs, the hold
+    # is the deliberate one (p2pool stopped CLEAN — a crash-looping p2pool, the #829 failure this
+    # leg first caught, dies non-zero under the same gate), and the rendered worker config points
+    # at this machine's own stratum.
     local mtries=0 miner_up=0
     while [ "$mtries" -lt 36 ]; do
         if _ssh "systemctl is-active --quiet xmrig && pgrep -x xmrig >/dev/null"; then
@@ -2194,6 +2204,17 @@ phase_provision() {
     else
         bad "the built-in miner never came up (unit: $(_ssh 'systemctl is-active xmrig' 2>/dev/null || echo unknown))"
         info "  local-miner journal tail: $(_ssh "journalctl -u pithead-firstboot -n 5 --no-pager -o cat" 2>/dev/null | tr '\n' ' ' | cut -c1-200)"
+    fi
+    # #1724: the pool has a SECOND writer — xmrig runs as root and grows nr_hugepages through sysfs
+    # before a large-page allocation, so the declared ceiling bounds the sizer alone. verify-image
+    # pins the drop-in that SHIPPED; this reads what systemd LOADED, the pool, and the 1 GiB pool the
+    # sizer never writes. Verdict + the ARMING caveat on it: tests/os/hugepages-boot-verdict.sh.
+    if [ "$miner_up" -eq 1 ]; then
+        local mhp mro m1g mv
+        mhp=$(_ssh "awk '/^HugePages_Total/{print \$2}' /proc/meminfo" | tr -d '\r\n') || mhp=""
+        mro=$(_ssh "systemctl show xmrig -p ReadOnlyPaths --value" | tr -d '\r\n') || mro=""
+        m1g=$(_ssh "cat /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages" | tr -d '\r\n') || m1g=""
+        if mv=$(hugepages_miner_verdict "$mhp" "$mro" "$m1g"); then ok "$mv"; else bad "$mv"; fi
     fi
     # The deliberate pre-sync state: the dashboard's sync gate (#35) holds mining until the
     # chains catch up, and says so. Its absence would mean mining died some OTHER way.
@@ -2233,12 +2254,12 @@ phase_provision() {
     fi
 
     # ---- reboot leg: the provisioned stack must return UNAIDED ---------------------------
-    # pithead-boot owns recovery (#792): render the derived layer, compose up, health-gated slot
-    # commit. Nothing may drive it here: no pithead command, no wizard. The failure mode this
-    # guards is a mining appliance that sits dark after every power blip until a human logs in.
-    # The Caddyfile is corrupted FIRST (#790): derived files are regenerated on every boot by
-    # construction, so a stale or broken one must not survive — this is the defect that shipped
-    # new code against a days-old Caddyfile on hardware and killed TLS.
+    # pithead-boot owns recovery (#792): render the derived layer, compose up, health-gated slot commit.
+    # Nothing may drive it here: no pithead command, no wizard. The failure mode this guards is a mining
+    # appliance that sits dark after every power blip until a human logs in. The Caddyfile is corrupted FIRST
+    # (#790): derived files are regenerated on every boot by construction, so a stale or broken one must not
+    # survive — this is the defect that shipped new code against a days-old Caddyfile on hardware and killed
+    # TLS.
     info "reboot leg — the stack must come back on its own (pithead-boot)"
     _ssh "echo '# corrupted by the harness — a regenerated boot must not serve this' > /data/pithead/Caddyfile" 2>/dev/null ||
         bad "could not corrupt the Caddyfile before the reboot"
@@ -2247,9 +2268,7 @@ phase_provision() {
     # pithead-boot's own loader running on a provisioned machine (#798).
     _ssh "rm -f /data/pithead/data/.loaded-*.sha" 2>/dev/null ||
         bad "could not drop the digest records before the reboot"
-    _ssh reboot 2>/dev/null || true
-    sleep 10
-    _wait_ssh 300 || {
+    _reboot_wait reboot 300 || {
         bad "guest never returned from the reboot"
         return
     }
@@ -2369,13 +2388,13 @@ phase_provision() {
     fi
 
     # ---- commit-gate honesty (#852): the gate must REFUSE a mining-dead slot ----------------
-    # The slot self-committed above off a HEALTHY stack. But "the dashboard answers" is a subset
-    # of "the stack is alive": a slot whose monerod/p2pool crashed while caddy+dashboard keep
-    # serving is exactly the healthy-looking-but-dead slot a curl-only gate committed. The real
-    # gate is `pithead doctor --json` (os/overlay/pithead-boot); assert its DECISION both ways on
-    # this running stack. Reboot/fallback can't show it here — RAUC's commit is sticky, so the
-    # already-committed slot won't re-arm — so we drive the gate command the boot path runs and
-    # check its exit code. This is the assertion whose absence let the curl-only gate ship green.
+    # The slot self-committed above off a HEALTHY stack. But "the dashboard answers" is a subset of "the stack
+    # is alive": a slot whose monerod/p2pool crashed while caddy+dashboard keep serving is exactly the
+    # healthy-looking-but-dead slot a curl-only gate committed. The real gate is `pithead doctor --json`
+    # (os/overlay/pithead-boot); assert its DECISION both ways on this running stack. Reboot/fallback can't
+    # show it here — RAUC's commit is sticky, so the already-committed slot won't re-arm — so we drive the
+    # gate command the boot path runs and check its exit code. This is the assertion whose absence let the
+    # curl-only gate ship green.
     _gate() { _ssh "cd /data/pithead && PITHEAD_ENGINE=podman ./pithead doctor --json >/dev/null 2>&1"; }
     # Healthy, mid initial sync with mining held (#35): the gate must COMMIT. A gate that rejected
     # this would never commit a fresh box — the over-tightening the sync-tolerant rule guards.
@@ -2398,12 +2417,11 @@ phase_provision() {
     unset -f _gate
 
     # ---- migration hold (#851): a data_migration update starts the chain only POST-commit ----
-    # The deadlock rule's automatic-fallback half: on the first boot of a flagged bundle,
-    # pithead-boot must bring the stack up WITHOUT the chain services, commit on that reduced
-    # stack, and only then start monerod — so a failed health check still falls back onto /data
-    # the old OS can read. The journal lines are the race-free evidence (the hold and the
-    # release are both logged); the podman poll additionally proves monerod never ran while the
-    # slot was uncommitted.
+    # The deadlock rule's automatic-fallback half: on the first boot of a flagged bundle, pithead-boot must
+    # bring the stack up WITHOUT the chain services, commit on that reduced stack, and only then start monerod
+    # — so a failed health check still falls back onto /data the old OS can read. The journal lines are the
+    # race-free evidence (the hold and the release are both logged); the podman poll additionally proves
+    # monerod never ran while the slot was uncommitted.
     info "migration leg — build a data_migration bundle, install via os-update, boot it"
     local mig_bundle
     mig_bundle=$(PITHEAD_DATA_MIGRATION=true PITHEAD_MIN_OS_VERSION="$(tr -d ' \n' <VERSION)" _build_bundle vmig) || {
@@ -2432,9 +2450,7 @@ phase_provision() {
         bad "no migration-pending marker after installing a data_migration bundle"
         return
     fi
-    _ssh reboot || true
-    sleep 10
-    _wait_ssh 300 || {
+    _reboot_wait reboot 300 || {
         bad "guest never returned after booting the migration bundle"
         return
     }
@@ -2528,9 +2544,8 @@ _detach_media_stick() {
     virsh detach-device "$VM" "$DISK.stick.xml" --config --live >/dev/null 2>&1
 }
 
-# Does $1 (a raw disk with one FAT partition) still carry pithead-config.json at its root? Used
-# after a boot to prove the applied stick was consumed. Host-side, so the disk must already be
-# detached from the guest.
+# Does $1 (a raw disk with one FAT partition) still carry pithead-config.json at its root? Used after a boot
+# to prove the applied stick was consumed. Host-side, so the disk must already be detached from the guest.
 _media_stick_has_config() {
     local path="$1" loop mnt tries=0 rc=1
     loop=$(losetup -Pf --show "$path")
@@ -2655,13 +2670,12 @@ phase_media() {
         ok "the node credentials do not churn on a media apply" ||
         bad "monero node credentials were regenerated by a stick that never named them"
 
-    # The end-to-end proof the issue asks for: after the minimal-stick apply, the served
-    # dashboard still DEMANDS a login, and the pre-apply credentials still open it. Poll until
-    # caddy answers — the pool change restarts the stack, so the front door lags the reboot.
-    # One readiness deadline covers BOTH probes: a post-apply boot re-loads every baked image
-    # before compose up, and under bench load that runs past 10 minutes with caddy up (401)
-    # while the dashboard behind it still answers 502. The bench proved every intermediate
-    # (000/000, 401/502, late-2xx) is the same slow settle — so poll each probe to its OWN
+    # The end-to-end proof the issue asks for: after the minimal-stick apply, the served dashboard still
+    # DEMANDS a login, and the pre-apply credentials still open it. Poll until caddy answers — the pool change
+    # restarts the stack, so the front door lags the reboot. One readiness deadline covers BOTH probes: a
+    # post-apply boot re-loads every baked image before compose up, and under bench load that runs past 10
+    # minutes with caddy up (401) while the dashboard behind it still answers 502. The bench proved every
+    # intermediate (000/000, 401/502, late-2xx) is the same slow settle — so poll each probe to its OWN
     # success within a shared 900 s window instead of judging a settling stack once.
     local http_deadline=$(($(date +%s) + 900)) code=000 authed=000
     while [ "$(date +%s)" -lt "$http_deadline" ]; do
@@ -2700,14 +2714,14 @@ phase_media() {
     _ssh reboot >/dev/null 2>&1 || true
     wait_serial "staged configuration differs from the running one" 180 || bad "no diff banner on the abort leg"
     # Pull the medium mid-countdown — the deliberate physical act that cancels a pending change.
-    _detach_media_stick
-    # Full expected text, matching the apply leg's own precision above (#1061): a bare
-    # "cancelled" would also match unrelated boot noise, and it is exactly the console's own
-    # wording that went missing when this issue was filed — the weak match could not have told
-    # "the right line appeared" from "some other word did".
+    _detach_media_stick || info "detach-device returned rc $? — the guest may still see the stick"
+    # Full expected text (#1061): a bare "cancelled" would also match boot noise. On a miss, keep this
+    # boot's console (no-clobber, as cleanup does) and quote the channel's last line, so the red carries it.
     wait_serial "Media configuration channel: cancelled" 90 &&
-        ok "removing the media mid-countdown cancels the change, and says so on the console" ||
-        bad "no cancellation confirmation ever appeared on the console after the media was pulled"
+        ok "removing the media mid-countdown cancels the change, and says so on the console" || {
+        [ -f "$SERIAL.failed" ] || [ ! -s "$SERIAL" ] || cp "$SERIAL" "$SERIAL.failed" 2>/dev/null
+        bad "no cancellation confirmation on the console within 90 s of the pull — the channel's last line: '$(tr -d '\r' 2>/dev/null <"$SERIAL" | grep -o 'Media configuration channel: .*' | tail -1)'; console kept at $SERIAL.failed"
+    }
     _wait_ssh 180 || {
         bad "guest never came back after the cancelled change"
         return
@@ -2718,15 +2732,23 @@ phase_media() {
     rm -f "$stick2"
 }
 
+_rig_mining_up() { # <tries>, 10 s apart — 0 once the xmrig unit is active with its process up
+    local n=0
+    while [ "$n" -lt "$1" ]; do
+        _ssh "systemctl is-active --quiet xmrig && pgrep -x xmrig >/dev/null" && return 0
+        sleep 10
+        n=$((n + 1))
+    done
+    return 1
+}
+
 phase_rig() {
     info "phase: rig (the OTHER machine this image installs — mines instead of coordinating)"
     # One image, two machines. Every other phase proves the coordinator; this one proves that
-    # answering "RigForge" on the same page produces a box with no stack at all, that it mines
-    # from the baked binary without compiling or reaching the network, and — the part that makes
-    # it a fleet member rather than a toy — that it takes an A/B update exactly like a
-    # coordinator does. A rig has no dashboard to complain through, so a rig that silently never
-    # starts is invisible to everything except an assertion like this one.
-    local img token jar body scode marker
+    # answering "RigForge" produces a box with no stack at all, mining the baked binary without
+    # compiling or reaching the network, that takes an A/B update exactly like a coordinator. A
+    # rig has no dashboard to complain through, so one that never starts is invisible otherwise.
+    local img token jar body scode marker card card_tok rtok pcode ptries=0
 
     img=$(_build_image v1) || {
         bad "image build failed (/tmp/os-fault-build.log)"
@@ -2765,13 +2787,10 @@ phase_rig() {
         return
     }
 
-    # The pool: the guest's OWN sshd. The host-side gate dials the address before it commits
-    # anything, and a KVM guest has no Pithead on its LAN to dial — so this stands in for one.
-    # It is a real TCP listener and nothing more, which is exactly what the gate checks; what it
-    # deliberately does NOT prove is an accepted share, the same limit the coordinator's
-    # local-miner leg documents. XMRig will dial it, get no stratum and retry forever, and that
-    # is the point: the miner must come up and STAY up on a pool that does not answer, or a rig
-    # whose coordinator is late would fail its own boot and roll its slot back.
+    # The pool: the guest's OWN sshd — a KVM guest has no Pithead on its LAN, and the host-side gate only
+    # dials a TCP listener before committing. It deliberately does NOT prove an accepted share (the same
+    # limit the coordinator's local-miner leg documents). XMRig dials it, gets no stratum and retries
+    # forever, which is the point: the miner must come up and STAY up on a pool that does not answer.
     body="role=rig&rig_pool=127.0.0.1:22&rig_worker=kvm-rig"
     scode=$(curl -sSk -b "$jar" --data "$body" "https://$ip/submit" -o /dev/null -w '%{http_code}' 2>/dev/null)
     [ "$scode" = "200" ] || {
@@ -2782,9 +2801,8 @@ phase_rig() {
     ok "rig role submitted through the wizard"
     tries=0
     while [ "$tries" -lt 24 ]; do
-        if curl -sSk -b "$jar" -m 5 "https://$ip/api/handoff" 2>/dev/null | grep -q '"worker"'; then
-            break
-        fi
+        card=$(curl -sSk -b "$jar" -m 5 "https://$ip/api/handoff" 2>/dev/null)
+        case "$card" in *'"worker"'*) break ;; esac
         sleep 5
         tries=$((tries + 1))
     done
@@ -2793,26 +2811,16 @@ phase_rig() {
         rm -f "$jar"
         return
     }
-    # A rig's card carries the worker and where it points — and NO login, because a rig has none.
-    if curl -sSk -b "$jar" -m 5 "https://$ip/api/handoff" 2>/dev/null | grep -q '"password"'; then
-        bad "the rig card published a dashboard password — a rig serves no dashboard"
-    else
-        ok "the rig card is worker + pool, with no login (a rig has none)"
-    fi
+    case "$card" in
+    *'"password"'*) bad "the rig card published a dashboard password — a rig serves no dashboard" ;;
+    *) ok "the rig card is worker + pool, with no login (a rig has none)" ;;
+    esac
+    card_tok=$(printf '%s' "$card" | jq -r '.token // ""' 2>/dev/null)
     curl -sSk -b "$jar" -X POST "https://$ip/handoff-ack" -o /dev/null 2>/dev/null || true
     rm -f "$jar"
 
     # ---- the machine that came out: a rig, not a small coordinator ------------------------
-    local mtries=0 miner_up=0
-    while [ "$mtries" -lt 36 ]; do
-        if _ssh "systemctl is-active --quiet xmrig && pgrep -x xmrig >/dev/null"; then
-            miner_up=1
-            break
-        fi
-        sleep 10
-        mtries=$((mtries + 1))
-    done
-    if [ "$miner_up" -eq 1 ]; then
+    if _rig_mining_up 36; then
         ok "the rig mines (xmrig unit active, process running) with no reboot in between"
     else
         bad "the rig never started mining (unit: $(_ssh 'systemctl is-active xmrig' 2>/dev/null || echo unknown))"
@@ -2828,6 +2836,29 @@ phase_rig() {
     else
         bad "the rig's miner config does not match its answers ($(_ssh "jq -c '.pools' /data/rigforge/config.json 2>/dev/null" | cut -c1-100))"
     fi
+    # #1836: the rig's token guards every API, the sister feed the coordinator probes exists, and the
+    # writable control path is pinned to the pool host — 127.0.0.1 here, so the guest probes itself over
+    # loopback and this host, an unpinned source, is dropped (loopback answering proves the port is alive).
+    rtok=$(_ssh "jq -r '.ACCESS_TOKEN // \"\"' /data/rigforge/config.json" | tr -d '\r')
+    [[ "$rtok" =~ ^[0-9a-f]{32}$ ]] && ok "the miner's config carries a minted 32-hex control token" || bad "no control token in the rig's config (got '${rtok:0:8}')"
+    [ -n "$card_tok" ] && [ "$card_tok" = "$rtok" ] && ok "the rig card showed the SAME token the miner enforces" || bad "the card's token ('${card_tok:0:8}') is not the miner's ('${rtok:0:8}')"
+    _ssh "jq -e '.api == \"enabled\" and .control == \"enabled\" and .api_allow_from == \"127.0.0.1\" and (has(\"control_upgrade\") | not)' /data/rigforge/config.json >/dev/null" &&
+        ok "sister API + control enabled, pinned to the pool host; control_upgrade untouched" ||
+        bad "the rig's API keys are not what #1836 renders: $(_ssh "jq -c 'del(.pools, .ACCESS_TOKEN)' /data/rigforge/config.json" | cut -c1-120)"
+    _rig_http() { _ssh "curl -s -m 5 -o /dev/null -w '%{http_code}' $*" 2>/dev/null | tr -d '\r'; }
+    while [ "$ptries" -lt 12 ] && [ "$(_rig_http -H "'Authorization: Bearer $rtok'" http://127.0.0.1:8081/1/summary)" != "200" ]; do
+        sleep 5
+        ptries=$((ptries + 1))
+    done
+    [ "$ptries" -lt 12 ] && ok "the sister feed answers 200 with the token" || bad "the sister feed never answered 200 with the token"
+    pcode=$(_rig_http http://127.0.0.1:8081/1/summary)
+    [ "$pcode" = "401" ] && ok "the sister feed refuses without the token (401)" || bad "the sister feed answered '${pcode}' without a token"
+    pcode=$(_rig_http http://127.0.0.1:8080/1/summary)
+    case "$pcode" in 401 | 403) ok "XMRig's own API is closed without the token ($pcode)" ;; *) bad "XMRig's API on 8080 answered '${pcode}' with no token — still open on the LAN" ;; esac
+    pcode=$(_rig_http http://127.0.0.1:8082/)
+    [ -n "$pcode" ] && [ "$pcode" != "000" ] && ok "the control port listens (loopback answers $pcode)" || bad "the control port does not answer even on loopback ('${pcode}')"
+    pcode=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://$ip:8082/" 2>/dev/null)
+    [ "${pcode:-000}" = "000" ] && ok "the control port is unreachable from an unpinned source (this host)" || bad "the control port answered '$pcode' from an unpinned source"
     # THE assertion of this phase: no stack. Not a stopped stack, not a held one — none started.
     local names
     names=$(_ssh "podman ps -a --format '{{.Names}}'" 2>/dev/null | tr -d '\r' | tr '\n' ' ')
@@ -2836,41 +2867,27 @@ phase_rig() {
     else
         bad "a rig started containers: '$names'"
     fi
-    # Prebuilt-first, proven by identity: a native recompile produces a DIFFERENT binary, and a
-    # clone could not have happened at all (this guest has no path to github).
+    # Prebuilt-first, proven by identity: a recompile gives a DIFFERENT binary; a clone has no path to github.
     if _ssh "cmp -s /data/rigforge/data/worker/xmrig/build/xmrig /opt/rigforge/prebuilt/xmrig/build/xmrig"; then
         ok "the rig mines the BAKED binary byte for byte — no compile, no clone, no clearnet"
     else
         bad "the running miner is not the baked prebuilt — something compiled or fetched on first boot"
     fi
-    # Removable-root tolerance: the journal is in memory, so a stick root takes no rotating
-    # writes. (This guest's root is virtual, but the setting is the role's, not the medium's.)
+    # Removable-root tolerance: an in-memory journal, so a stick root takes no rotating writes (the role's setting, not the medium's).
     [ "$(_ssh 'systemd-analyze cat-config systemd/journald.conf 2>/dev/null | grep -c "^Storage=volatile"')" != "0" ] &&
         ok "journald is volatile on a rig (a rig's root may be the stick it mines from)" ||
         bad "journald is still persistent on a rig — a USB root would take rotating writes"
 
     # ---- reboot: pithead-boot owns a rig now, and commits its slot -------------------------
     info "reboot leg — the rig must come back mining, and commit its own slot"
-    _ssh reboot 2>/dev/null || true
-    sleep 10
-    _wait_ssh 300 || {
+    _reboot_wait reboot 300 || {
         bad "the rig never returned from the reboot"
         return
     }
-    local mtries2=0 miner_back=0
-    while [ "$mtries2" -lt 24 ]; do
-        if _ssh "systemctl is-active --quiet xmrig && pgrep -x xmrig >/dev/null"; then
-            miner_back=1
-            break
-        fi
-        sleep 10
-        mtries2=$((mtries2 + 1))
-    done
-    [ "$miner_back" -eq 1 ] &&
+    _rig_mining_up 24 &&
         ok "the rig returned mining with no hands on it (its unit lives in /run and died with the reboot)" ||
         bad "the rig did not return after the reboot — its runtime unit was never re-rendered"
-    # WHICH unit owns the boot is the whole R4 fork: the wizard's window is closed by rig.json,
-    # and pithead-boot — skipped on a rig before this phase existed — is what runs.
+    # WHICH unit owns the boot is the whole R4 fork: the wizard's window is closed, pithead-boot runs.
     [ "$(_ssh 'systemctl is-active pithead-boot' | tr -d '\r\n')" = "active" ] &&
         ok "pithead-boot owns a provisioned rig's boot" ||
         bad "pithead-boot did not run on the rig (its condition still excludes a machine with no config.json)"
@@ -2882,8 +2899,7 @@ phase_rig() {
         awk '$1 !~ /^[0-9a-f]{64}-[0-9a-f]+\.service$/' | tr -s ' ' | tr '\n' ';')
     [ -z "${failed_units//[; ]/}" ] && ok "no failed systemd units on the rig after the reboot" ||
         bad "failed units on the rig after the reboot: $failed_units"
-    # The commit gate, rig-shaped: a rig that could not commit would roll back every A/B update
-    # it ever received. Note the pool here answers nothing — the commit must not depend on it.
+    # The commit gate, rig-shaped: a rig that cannot commit rolls back every update; the pool answers nothing, and must not matter.
     local genv tries3=0
     while [ "$tries3" -lt 18 ]; do
         genv=$(_ssh "grub-editenv /boot/efi/grub/grubenv list" 2>/dev/null | tr '\n' ' ')
@@ -2897,6 +2913,7 @@ phase_rig() {
         ;;
     *) bad "the rig never self-committed — grubenv: ${genv:-unreadable}" ;;
     esac
+    rig_setup_again_legs "$card_tok" "$token" # #1318: Keep it, then Set up again as the same rig (tests/os/setup-again-leg.sh)
 
     # ---- A/B update: identical pipeline, identical outcome --------------------------------
     info "update leg — a rig takes a bundle exactly like a coordinator"
@@ -2914,9 +2931,7 @@ phase_rig() {
         return
     }
     ok "v2 installed into the rig's spare slot"
-    _ssh "$(_boot_spare_cmd)" || true
-    sleep 10
-    _wait_ssh 300 || {
+    _reboot_wait "$(_boot_spare_cmd)" 300 || {
         bad "the rig never returned after booting the spare slot"
         return
     }
@@ -2930,25 +2945,15 @@ phase_rig() {
     [ "$(_ssh 'cat /data/pithead/machine-role' | tr -d '\r\n')" = "rig" ] &&
         ok "the role survived the slot swap (it lives on /data, not in the image)" ||
         bad "the updated slot lost the rig role"
-    local mtries3=0 miner_v2=0
-    while [ "$mtries3" -lt 24 ]; do
-        if _ssh "systemctl is-active --quiet xmrig && pgrep -x xmrig >/dev/null"; then
-            miner_v2=1
-            break
-        fi
-        sleep 10
-        mtries3=$((mtries3 + 1))
-    done
-    [ "$miner_v2" -eq 1 ] && ok "the rig mines again on the updated slot" ||
+    _rig_mining_up 24 && ok "the rig mines again on the updated slot" ||
         bad "the rig stopped mining after the A/B update"
-    # No harness mark-good: the boot that just brought the miner up must have COMMITTED — a rig
-    # commits on the miner running, the same event this leg just waited for. That coupling is
-    # also why an "uncommitted revert" is not observable here: on a provisioned rig the commit
-    # window closes the moment the miner is up (seconds), which is the property itself, not a
-    # gap. The generic uncommitted-fallback machinery — same grub.cfg, same RAUC — is proven by
-    # the update phase on an unprovisioned box, where no boot path self-commits. This leg's
-    # first run asserted the revert anyway and refuted ITSELF: the rig had already committed,
-    # the reboot stayed v2, and a follow-up install then targeted the wrong slot.
+    # No harness mark-good: the boot that just brought the miner up must have COMMITTED — a rig commits on the
+    # miner running, the same event this leg just waited for. That coupling is also why an "uncommitted
+    # revert" is not observable here: on a provisioned rig the commit window closes the moment the miner is up
+    # (seconds), which is the property itself, not a gap. The generic uncommitted-fallback machinery — same
+    # grub.cfg, same RAUC — is proven by the update phase on an unprovisioned box, where no boot path
+    # self-commits. This leg's first run asserted the revert anyway and refuted ITSELF: the rig had already
+    # committed, the reboot stayed v2, and a follow-up install then targeted the wrong slot.
     local genv2 tries4=0
     while [ "$tries4" -lt 24 ]; do
         genv2=$(_ssh "grub-editenv /boot/efi/grub/grubenv list" 2>/dev/null | tr '\n' ' ')
@@ -2962,15 +2967,14 @@ phase_rig() {
         ;;
     *) bad "the rig never self-committed the updated slot — grubenv: ${genv2:-unreadable}" ;;
     esac
-    _ssh reboot || true
-    sleep 10
-    _wait_ssh 300 || {
+    _reboot_wait reboot 300 || {
         bad "the rig never returned after the post-commit reboot"
         return
     }
     marker=$(_ssh cat /etc/pithead-test-marker | tr -d '\r\n')
     [ "$marker" = "v2" ] && ok "COMMIT: the update persists on the rig across reboot" ||
         bad "expected v2 on the rig after commit, got '$marker'"
+    rig_setup_again_coordinator_leg "$token" # #1318: Set up again as a coordinator, from the updated slot
 }
 
 phase_fault() {
@@ -3053,10 +3057,12 @@ phase_fault() {
         bad "re-staging the bundle before the commit test failed"
         return
     }
+    local before
+    before=$(_boot_id) || bad "could not read the boot id before the install — a reconnect and a reboot would look alike"
+    [ -n "$before" ] || return
     out=$(_ssh "$(_install_and_boot_cmd /data/update.bundle) 2>&1" || true)
     [ -n "$out" ] && info "install output: $(printf '%s' "$out" | tail -3 | tr '\n' ' ' | cut -c1-160)"
-    sleep 10
-    _wait_ssh 300 || {
+    _wait_new_boot "$before" 300 || {
         bad "guest never returned after installing v2"
         return
     }
@@ -3079,14 +3085,11 @@ phase_fault() {
         return
     fi
 
-    # Operator-initiated rollback: a release can be bad without failing its health check, so the
-    # operator must be able to put the previous version back on demand — not only wait for an
-    # automatic fallback.
+    # Operator-initiated rollback: a release can be bad without failing its health check, so the operator must
+    # be able to put the previous version back on demand — not only wait for an automatic fallback.
     info "operator-initiated rollback"
     marker=$(_marker)
-    _ssh "$(_rollback_cmd)" >/dev/null 2>&1 || true
-    sleep 10
-    if _wait_ssh 300; then
+    if _reboot_wait "$(_rollback_cmd)" 300; then
         local after
         after=$(_marker)
         if [ -n "$after" ] && [ "$after" != "$marker" ]; then
@@ -3229,9 +3232,7 @@ phase_reset() {
 
     # The real command an operator runs — not a reimplementation of it (factory_reset() in
     # `pithead`). It arms the ESP marker and reboots; the ssh connection drops with the reboot.
-    _ssh "cd /data/pithead && ./pithead factory-reset -y" >/dev/null 2>&1 || true
-    sleep 10
-    if _wait_ssh 300; then
+    if _reboot_wait "cd /data/pithead && ./pithead factory-reset -y" 300; then
         ok "guest returned after the factory-reset reboot"
     else
         bad "guest never returned after factory-reset — BRICKED"
@@ -3248,20 +3249,19 @@ phase_reset() {
     else
         ok "the provisioned config is gone"
     fi
-    # #1092: a post-boot `test -d` here is true by construction, not a check of the reseed. The
-    # overlay/var + var-work upperdirs cannot be observed missing at this point — with no `nofail`
-    # on that fstab line (os/rauc/populate-slot.sh), a missing upperdir fails local-fs.target on
-    # this read-only root and the box never answers SSH, so the leg would already have bailed
-    # above at "guest never returned after factory-reset — BRICKED". And /data/pithead is
-    # recreated by pithead-sync's own `mkdir -p` on every boot (os/overlay/pithead-sync) whether
-    # or not repart seeded it, so its presence here proves the sync script ran, not that the seed
-    # worked. The seeding mechanism itself — systemd-repart's MakeDirectories= for all three dirs
-    # — is asserted statically against the built image in tests/os/verify-image.sh, the one place
-    # that can actually observe a dropped entry. What THIS leg proves is the pair above: the
-    # reformat+reboot cycle didn't brick, and it landed back at an unprovisioned wizard.
-    # The dashboard image is BAKED into the OS image (the wizard archive) and legitimately
-    # reloaded onto the fresh store by the post-reset wizard boot — its presence proves nothing.
-    # The wipe probe is an image that only ever arrives by PULL at provision time: monerod.
+    # #1092: a post-boot `test -d` here is true by construction, not a check of the reseed. The overlay/var +
+    # var-work upperdirs cannot be observed missing at this point — with no `nofail` on that fstab line
+    # (os/rauc/populate-slot.sh), a missing upperdir fails local-fs.target on this read-only root and the box
+    # never answers SSH, so the leg would already have bailed above at "guest never returned after
+    # factory-reset — BRICKED". And /data/pithead is recreated by pithead-sync's own `mkdir -p` on every boot
+    # (os/overlay/pithead-sync) whether or not repart seeded it, so its presence here proves the sync script
+    # ran, not that the seed worked. The seeding mechanism itself — systemd-repart's MakeDirectories= for all
+    # three dirs — is asserted statically against the built image in tests/os/verify-image.sh, the one place
+    # that can actually observe a dropped entry. What THIS leg proves is the pair above: the reformat+reboot
+    # cycle didn't brick, and it landed back at an unprovisioned wizard. The dashboard image is BAKED into the
+    # OS image (the wizard archive) and legitimately reloaded onto the fresh store by the post-reset wizard
+    # boot — its presence proves nothing. The wipe probe is an image that only ever arrives by PULL at
+    # provision time: monerod.
     local images_after
     images_after=$(_ssh "podman images --format '{{.Repository}}'" 2>/dev/null | tr '\n' ' ')
     if printf '%s' "$images_after" | grep -q monero; then

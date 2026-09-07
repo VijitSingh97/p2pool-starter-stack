@@ -186,7 +186,7 @@ RUN chmod +x /usr/local/bin/docker-compose /usr/local/bin/cosign \
 # The built-in miner (#796): a pinned RigForge tree plus everything it needs, baked at image
 # build because nothing can be installed later — apt cannot run on the read-only root, and even
 # a rw-remount install leaves its /etc state (alternatives, ld.so.cache) on the volatile overlay
-# where the first reboot breaks the compiler. RIGFORGE_REF pins rigforge's v1.16.0 release
+# where the first reboot breaks the compiler. RIGFORGE_REF pins rigforge's v1.17.2 release
 # (by commit, not tag name, so a moved tag cannot change the bake); bump it release by release.
 # v1.16.0 is the floor for the HugePages pool ceiling: hugepages_pool_ceiling_mb (rigforge#398,
 # filed from #1103) is absent from v1.15.1's tree entirely, and declaring it into one fails OPEN —
@@ -204,7 +204,7 @@ RUN chmod +x /usr/local/bin/docker-compose /usr/local/bin/cosign \
 RUN apt-get install -y --no-install-recommends \
         git build-essential cmake libuv1-dev libssl-dev libhwloc-dev gettext-base python3 \
         linux-cpupower msr-tools
-ARG RIGFORGE_REF=4ce29b3daf063fd1b45e050649e93aa9592618e1
+ARG RIGFORGE_REF=1ec5292c07d163b553427b0f679e183bcf938293
 RUN curl -fsSL -o /tmp/rigforge.tar.gz \
         "https://github.com/p2pool-starter-stack/rigforge/archive/${RIGFORGE_REF}.tar.gz" \
     && mkdir -p /opt/rigforge \
@@ -289,20 +289,20 @@ RUN printf '[Match]\nName=en*\nName=eth*\n\n[Network]\nDHCP=yes\nMulticastDNS=ye
 COPY os/overlay/pithead-firstboot.service /etc/systemd/system/pithead-firstboot.service
 COPY os/overlay/pithead-sync.service /etc/systemd/system/pithead-sync.service
 COPY os/overlay/pithead-sync /usr/local/sbin/pithead-sync
-# State mounts are derived from the boot disk at every boot, never from labels — every pithead
-# disk carries the same labels, and two present at once made LABEL= mount the wrong /data.
+# State mounts derive from the boot disk every boot, never labels: every pithead disk carries the same labels, and two at once made LABEL= mount the wrong /data.
 COPY os/overlay/pithead-mount-generator /usr/lib/systemd/system-generators/pithead-mount-generator
 COPY os/overlay/pithead-boot.service /etc/systemd/system/pithead-boot.service
-COPY os/overlay/pithead-boot /usr/local/sbin/pithead-boot
-# Physical-presence configuration channel (#786 sub-issue D): pithead-boot's one stage before
-# render. No unit of its own — it runs inline, inside the boot unit above.
+COPY os/overlay/pithead-setup-again.service /etc/systemd/system/pithead-setup-again.service
+COPY os/overlay/pithead-boot os/overlay/pithead-boot-version /usr/local/sbin/
+# Physical-presence configuration channel (#786 sub-issue D): pithead-boot's one stage before render; no unit of its own.
 COPY os/overlay/pithead-media-config /usr/local/sbin/pithead-media-config
-# Hugepages sizing (#977): the sysctl.d reservation above is sized for the supported 16 GB
-# machine; this unit corrects it every boot on smaller RAM — loudly — before either boot owner
-# starts a container. Its own unit, not a pithead-boot stage, because the reservation lands on
-# EVERY boot including the unprovisioned first one, where pithead-boot never runs.
+# Hugepages sizing (#977): the sysctl.d reservation above is sized for the supported 16 GB machine;
+# this unit corrects it every boot on smaller RAM — loudly — before either boot owner starts a
+# container. Its own unit, not a pithead-boot stage: the reservation lands on EVERY boot, the unprovisioned first one included.
 COPY os/overlay/pithead-hugepages.service /etc/systemd/system/pithead-hugepages.service
 COPY os/overlay/pithead-hugepages /usr/local/sbin/pithead-hugepages
+# The pool's SECOND writer (#1724): xmrig runs as root and grows nr_hugepages through sysfs; this drop-in fences the miner unit off both subtrees.
+COPY os/overlay/pithead-xmrig-hugepages.conf /etc/systemd/system/xmrig.service.d/pithead-hugepages.conf
 # The two-tier reset's deep tier and the wedged-/data recovery path: reformats /data before it
 # mounts, on a `pithead factory-reset` request (ESP marker) or a genuinely unmountable partition.
 # Ordered before data.mount by its unit; fail-safe — a healthy, unmarked partition is never touched.
@@ -339,7 +339,7 @@ RUN mkdir -p /etc/ssh/sshd_config.d \
 RUN mkdir -p /etc/systemd/system-preset \
     && printf 'disable *\n' > /etc/systemd/system-preset/00-pithead.preset \
     && systemctl mask systemd-firstboot.service
-RUN chmod +x /usr/local/sbin/pithead-sync /usr/local/sbin/pithead-boot /usr/local/sbin/pithead-media-config /usr/local/sbin/pithead-hugepages /usr/local/sbin/pithead-data-reset /usr/local/sbin/pithead-ssh-host-keys /usr/local/sbin/pithead-machine-id /usr/local/sbin/pithead-journal-persist /usr/lib/systemd/system-generators/pithead-mount-generator
+RUN chmod +x /usr/local/sbin/pithead-sync /usr/local/sbin/pithead-boot /usr/local/sbin/pithead-boot-version /usr/local/sbin/pithead-media-config /usr/local/sbin/pithead-hugepages /usr/local/sbin/pithead-data-reset /usr/local/sbin/pithead-ssh-host-keys /usr/local/sbin/pithead-machine-id /usr/local/sbin/pithead-journal-persist /usr/lib/systemd/system-generators/pithead-mount-generator
 # The updater is chosen per image. RAUC is a Debian package, so it is installed here when
 # selected; leaving PITHEAD_UPDATER empty builds the same rootfs with no updater at all.
 ARG PITHEAD_UPDATER=""
@@ -375,7 +375,7 @@ RUN systemctl enable podman.socket pithead-boot.service pithead-cpu-governor.ser
         systemd-timesyncd systemd-resolved \
         systemd-networkd systemd-networkd-wait-online pithead-sync.service pithead-firstboot.service \
         pithead-data-reset.service pithead-machine-id.service pithead-hugepages.service \
-        pithead-journal-persist.service \
+        pithead-journal-persist.service pithead-setup-again.service \
     && systemctl disable ssh
 # systemd-repart.service is static — it is pulled in by sysinit.target, and `systemctl enable` on a
 # static unit is an error that would fail the build. Assert it is present instead.

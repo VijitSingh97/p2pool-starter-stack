@@ -106,19 +106,30 @@ owner-only, the dashboard is bound to localhost, and the backup/rollback net is 
 missing tool rather than dying mid-gate. Restore them with the same pinned versions CI uses
 ([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)) — apt's `shellcheck`/`shfmt` are older
 and reformat differently, so a version skew would fail `make lint` on the box for diffs the merge
-gate never saw. `shellcheck`'s pin lives in the `Makefile` as `SHELLCHECK_VERSION`, which is what
-`ci.yml` installs and what `make lint-sh` refuses to run without; `make -s print-shellcheck-version`
-prints it, so the version below is a copy and that command is the source:
+gate never saw. Both pins live in the `Makefile` — `SHELLCHECK_VERSION` and `SHFMT_VERSION` — and
+each is what `ci.yml` installs and what `make lint-sh` refuses to run without;
+`make -s print-shellcheck-version` and `make -s print-shfmt-version` print them, and the block below
+calls those commands rather than copying what they print, so it cannot go stale against the pins.
+One wrinkle worth knowing when you check by hand: `shfmt --version` prints a leading `v` on the
+upstream release builds while some distro builds print a bare number, so the gate strips it before
+comparing.
 
 ```bash
 # node 20 (brings npx) + the basics the harness also needs
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs jq curl git tar
+sudo apt-get install -y nodejs jq curl git tar make
 
-# shellcheck 0.11.0 (= make -s print-shellcheck-version) + shfmt 3.13.1 (pinned, not apt's)
-curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz | tar -xJ -C /tmp
-sudo install -m 0755 /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
-sudo curl -fsSL -o /usr/local/bin/shfmt https://github.com/mvdan/sh/releases/download/v3.13.1/shfmt_v3.13.1_linux_amd64
+# shellcheck + shfmt, read from the Makefile pins instead of copied. This block reads the repo, so
+# it needs a checkout and runs from its root. If it does not, the two guards name that as the cause.
+# Run as a script they also stop it; pasted into an interactive shell they do not, so what follows
+# is a 404 you can interpret rather than one you cannot.
+SC=$(make -s print-shellcheck-version)
+SF=$(make -s print-shfmt-version)
+: "${SC:?not in a checkout - run this block from the repo root}"
+: "${SF:?not in a checkout - run this block from the repo root}"
+curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v$SC/shellcheck-v$SC.linux.x86_64.tar.xz" | tar -xJ -C /tmp
+sudo install -m 0755 "/tmp/shellcheck-v$SC/shellcheck" /usr/local/bin/shellcheck
+sudo curl -fsSL -o /usr/local/bin/shfmt "https://github.com/mvdan/sh/releases/download/v$SF/shfmt_v${SF}_linux_amd64"
 sudo chmod 0755 /usr/local/bin/shfmt
 
 # uv 0.10.10 (pinned installer; brings uvx, and adds ~/.local/bin to PATH)
@@ -375,20 +386,26 @@ Static allocation — each box states its owner in `/etc/bench-role`, and each b
 | Test bench | Pithead | Test bench + release box (the tier-4 target). |
 | Production host | Production | Production stack; deploys only. |
 
-The run lock. Both harnesses take a `flock` on `/var/lock/rig-e2e.lock` before the first
-service-touching action and hold it on an inherited FD for the whole run, so the kernel releases
-it the moment the run dies — `kill -9` included, no stale-lock cleanup. rigforge#183 defines the
-mechanism; [#430](https://github.com/p2pool-starter-stack/pithead/issues/430) is this repo's
-mirror; the shared path on every box is the protocol. Mutating runs hold it exclusive; read-only
-runs (`run.sh --check` / `--readiness`) hold it shared, so concurrent readers coexist but still
+The run lock — **RESERVE**. Both harnesses take a `flock` on `/var/lock/rig-e2e.lock` before
+the first service-touching action and hold it on an inherited FD for the whole run, so the
+kernel releases it the moment the run dies — `kill -9` included, no stale-lock cleanup.
+rigforge#183 defines the mechanism;
+[#430](https://github.com/p2pool-starter-stack/pithead/issues/430) is this repo's mirror; the
+shared path on every box is the protocol. Mutating runs hold it exclusive; read-only runs
+(`run.sh --check` / `--readiness`) hold it shared, so concurrent readers coexist but still
 exclude mutators. `tests/integration/run.sh` takes it on the target box (over SSH for `--host`);
 `e2e.sh` also takes it on the loaner rig it borrows. A busy box makes the run exit 75
-(`EX_TEMPFAIL`) naming the holder; set `RIG_LOCK_WAIT=1` to queue instead.
-`/run/rig-e2e.holder` is a display-only sidecar naming the holder — the flock is authoritative,
-and a stale sidecar is harmless.
+(`EX_TEMPFAIL`) naming the holder; set `RIG_LOCK_WAIT=1` to queue instead. `/run/rig-e2e.holder`
+is a display-only sidecar naming the holder — the flock is authoritative, and a stale sidecar
+is harmless.
 
-Off-box actors (a human or an agent over SSH) touch services on a shared box only after the same
-check:
+**CHECK** — and **FREE**, which is not a step for anyone. A harness frees the lock by dying:
+it holds it on an inherited descriptor, so the kernel drops it when the run ends, however it
+ends, and a holder that has to remember to free is a holder that eventually does not. An off-box
+actor (a human or an agent over SSH) never holds it at all — the command below is a probe.
+`true` returns at once and the lock goes with the ssh session, so it reports that the box was
+free at that instant and nothing more. For however long the work then takes, the actor is
+unprotected and a harness run can take the lock underneath it:
 
 ```bash
 ssh <box> 'flock -n -x /var/lock/rig-e2e.lock true' || ssh <box> 'cat /run/rig-e2e.holder'
