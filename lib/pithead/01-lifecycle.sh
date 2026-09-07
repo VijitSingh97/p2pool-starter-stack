@@ -73,6 +73,15 @@ resolve_pull_policy() {
     else printf 'missing'; fi
 }
 
+# Release bundles and installed appliances deliberately omit the first-party image build contexts.
+# Keep every `compose up` on one policy seam: source checkouts may build as before, while installed
+# runtimes must preserve the pull/start failure instead of falling through to an absent build path.
+compose_up() {
+    local build_args=()
+    is_source_checkout || build_args+=(--no-build)
+    docker compose up "${build_args[@]}" "$@"
+}
+
 # #795: `compose up --remove-orphans` never removes the container of a service whose profile just
 # went inactive — the service is still in the compose file, so compose does not count it as an
 # orphan and leaves it running (a tari local→remote switch left the old minotari_node up, offline
@@ -101,7 +110,7 @@ compose_up_checked() {
     # p2pool (re)starts against the remote one, not linger beside it.
     remove_deactivated_profile_containers
     tmp="$(mktemp)"
-    docker compose up --pull "$(resolve_pull_policy)" "$@" 2>&1 | tee "$tmp"
+    compose_up --pull "$(resolve_pull_policy)" "$@" 2>&1 | tee "$tmp"
     rc=${PIPESTATUS[0]}
     out="$(<"$tmp")"
     rm -f "$tmp"
@@ -173,7 +182,9 @@ stack_down() {
     mutation_lock_acquire down
     log "Stopping stack..."
     remove_tor_egress_firewall
-    docker compose down
+    if ! docker compose down; then
+        error "Stack failed to stop — see the error above."
+    fi
     log "Stack stopped."
     mutation_lock_release
 }

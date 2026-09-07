@@ -1,30 +1,9 @@
 # shellcheck shell=bash
 : "${STACK_SUITE:?is unset: this file is a tests/stack/run.sh fragment, not a script — run tests/stack/run.sh}"
-# Tor-network domain (#1105 Phase 1, appliance lane): the Tor-only egress boundary and the
-# Tor<->clearnet transport switch — tor_egress_rules + render_tor_egress_nft (both the legacy
-# iptables/DOCKER-USER path and the v2 nftables/podman path, including the IPv6 backstop and its
-# refusal when the bridge can't be resolved, #855/#858), apply/remove_tor_egress_firewall end to
-# end (#270), the regression that every command installs the firewall BEFORE compose so no
-# clearnet-capable container ever starts unguarded (#276/#291), the clearnet-initial-sync helpers
-# and render on both chains including the contradiction warning against a firewall that would just
-# drop the clearnet dials anyway (#183 — the map's code-read: this is the Tor<->clearnet transport
-# switch, kept together with the egress rules rather than split to the monero/tari file), the node
-# configs' clearnet-DNS-egress guarantees (#161 monerod, #162 tari), tor.auto_heal (#424), the tor
-# container's own entrypoint rendering both the dashboard's opt-in onion vhost and the per-node
-# inbound onions (#343/#103), and pithead's onion-provisioning gate that never blocks on a remote
-# node's unpublished onion (#103).
-# Sourced by tests/stack/run.sh.
+# Tor-network domain (#1105 Phase 1): Tor-only egress, clearnet transport, onion rendering and
+# provisioning, including installed-runtime no-build policy (#1967).
 #
-# Re-derivations (the sandbox-builder WALLET/$V trap — see #1305, still open on this lane):
-# - $V / $WALLET: lib.sh's build_val_sandbox() sets both; the "config validation" black-box calls
-#   it once, ahead of the two sections below that read them — that section lives in test-config.sh,
-#   sourced ahead of this file (a generic multi-field validator, not tor-specific).
-#   build_val_sandbox() is idempotent (a fixed $SANDBOX/val path, mkdir -p, template copies), so
-#   calling it again here is a safe no-op re-affirm as currently sourced, and correct on its own if
-#   a future reorder ever moves this file's source line earlier than that section.
-# - $DOCKER_LOG: the "apply preserves secrets + propagates" black-box sets it ($V/docker.log); it lives
-#   in test-secrets.sh, sourced ahead of this file (a generic multi-key regression, not tor-specific).
-# No section here reads $C — the control-channel sandbox is untouched by this cut.
+# Re-derive the idempotent validation sandbox so this domain does not depend on source order (#1305).
 build_val_sandbox
 DOCKER_LOG="$V/docker.log"
 
@@ -774,7 +753,28 @@ assert_eq "provision_node_onions is a free no-op once every local node has its o
 assert_eq "provision_node_onions ignores a remote node with no onion (#103)" \
     "$(node_onion_probe remote placeholder remote placeholder)" "||placeholder|placeholder|"
 assert_eq "provision_node_onions mints + captures the onion of a node that just went local (#103)" \
-    "$(node_onion_probe local placeholder remote placeholder)" "compose up -d tor |monero,|monero.onion|placeholder|x"
+    "$(node_onion_probe local placeholder remote placeholder)" "compose up --no-build -d tor |monero,|monero.onion|placeholder|x"
 assert_eq "provision_node_onions treats an empty address as missing, and re-renders once (#103)" \
-    "$(node_onion_probe local '' local '')" "compose up -d tor |monero,tari,|monero.onion|tari.onion|x"
+    "$(node_onion_probe local '' local '')" "compose up --no-build -d tor |monero,tari,|monero.onion|tari.onion|x"
+
+compose_layout_probe() { # <installed|source> <checked|tor>
+    local layout="$1" call="$2" dir="$ONP/$1-$2"
+    rm -rf "$dir" && mkdir -p "$dir"
+    [ "$layout" != source ] || { mkdir -p "$dir/dashboard" && : >"$dir/dashboard/Dockerfile"; }
+    (
+        cd "$dir" || exit
+        # shellcheck disable=SC1090 # the selected built CLI is the subject under test
+        source "$STACK"
+        remove_deactivated_profile_containers() { :; }
+        docker() { printf '%s' "$*"; }
+        if [ "$call" = checked ]; then compose_up_checked -d; else compose_up -d tor; fi
+    )
+}
+assert_eq "installed compose_up_checked disables absent source builds (#1967)" \
+    "$(compose_layout_probe installed checked)" "compose up --no-build --pull missing -d"
+assert_eq "source compose_up_checked preserves local build fallback (#1967)" \
+    "$(compose_layout_probe source checked)" "compose up --pull never -d"
+assert_eq "installed Tor provisioning uses the same no-build policy (#1967)" \
+    "$(compose_layout_probe installed tor)" "compose up --no-build -d tor"
 unset ONP prov_probe node_onion_probe
+unset -f compose_layout_probe

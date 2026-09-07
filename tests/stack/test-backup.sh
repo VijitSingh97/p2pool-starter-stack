@@ -1,45 +1,8 @@
 # shellcheck shell=bash
 : "${STACK_SUITE:?is unset: this file is a tests/stack/run.sh fragment, not a script — run tests/stack/run.sh}"
-# Backup domain (#1105 Phase 1, appliance lane): the archive/restore round-trip and the
-# reset-dashboard verb — stack_backup's bounded retry on a tar race (#970), the
-# backup_require_items/backup_diagnose_items preflight that names a missing or dangling item
-# before anything is touched and diagnoses a tar failure by its real cwd/item state (#1244), an
-# absolute PITHEAD_CONFIG_FILE override archived at its real path rather than a doubled
-# $PWD-prefixed one (#1244), the plaintext backup/restore round-trip including the archive-layout
-# and stay-inside-the-sandbox checks (#140), the encrypted round-trip end to end — unattended
-# refusal without a passphrase, --no-encrypt opt-out, env-var/prompt passphrases, wrong-passphrase
-# and tamper/truncation refusals before extraction, and a failed encrypted backup leaving nothing
-# behind (#374/#549), a failed plaintext backup restarting a stack that was running and removing
-# the partial archive (#551), and reset-dashboard targeting the LIVE .env data dirs rather than a
-# possibly-unapplied config.json, refusing to guess without them, and its final compose_up_checked
-# call being if!-guarded like every other call site so a real compose failure surfaces the #180
-# subnet-collision explanation instead of tripping the raw ERR trap (#139/#557/#180).
-# Sourced by tests/stack/run.sh.
-#
-# This file merges TWO clusters that sat apart in run.sh, on either side of the installer tests and
-# the secrets domain (both stay in run.sh / move to test-secrets.sh respectively): the stack_backup
-# unit tests used to run first, and the backup/restore + reset-dashboard black-box tests used to run
-# roughly 500 lines later, after test-rig-worker.sh's and test-monero-tari.sh's source lines. Sourcing
-# this file in one place moves the second cluster earlier in execution order. Confirmed safe: every
-# fixture below builds its own throwaway dir under $SANDBOX ($RB/$CJ/$BK/$FB/$R/$RD557) — nothing
-# here reads or writes $V, $C, or any state a section between the two original positions left behind,
-# and nothing between those two original positions reads anything this file's fixtures produce.
-#
-# Re-derivations (the sandbox-builder WALLET trap — see #1305, still open on this lane):
-# - $WALLET: set by lib.sh's build_val_sandbox() (as the checksum-valid $VALID_PRIMARY constant), which
-#   the "config validation" black-box calls once, ahead of every section below that reads it as a
-#   config.json field value. That section lives in test-config.sh, sourced ahead of this file (a
-#   generic multi-field validator, not a backup concern), and this file never needs $V itself (each
-#   fixture above builds its own sandbox instead of reusing the shared one) — so re-deriving the bare
-#   string is enough; calling the heavier build_val_sandbox() would build a $V this file never touches.
-# - $VALID_TARI is a plain lib.sh top-level constant (not
-#   build_val_sandbox()-scoped), so it needs no re-derivation here or anywhere else.
 WALLET="$VALID_PRIMARY" # checksum-valid mainnet primary (the XMRig donation address) — see #1305
 
 echo "== unit: stack_backup — one bounded retry on a tar race (#970) =="
-# Even with the stack stopped, tar can lose a race against a teardown's last flush — exit 1
-# under pipefail failed the whole backup once on the KVM bench. The fixture sudo fails the
-# FIRST tar with tar's real race error, then passes through: one retry must land the archive.
 RB="$(cd "$SANDBOX" && pwd -P)/backup-retry"
 mkdir -p "$RB/build/tari" "$RB/data/tor" "$RB/data/dashboard" "$RB/bin"
 cp "$STACK" "$RB/pithead"
@@ -78,11 +41,6 @@ rbarchive="$(ls "$RB"/backups/pithead-backup-*.tar.gz.enc 2>/dev/null | head -1)
 { [ -n "$rbarchive" ] && [ -s "$rbarchive" ]; } && ok "retry produced a real archive" || bad "retry produced a real archive" "no .enc archive"
 
 echo "== unit: backup_require_items — refuses a missing/dangling required item before anything is touched (#1244) =="
-# The KVM battery caught tar failing to stat config.json AFTER the stack had already been
-# stopped for the backup (#1059) — a real archive attempt was thrown away and the box paid for
-# a stop/start cycle it didn't need. These two functions are pulled out of stack_backup and
-# sourced directly (the same pattern gate_ready/os_update_rollback_verdict use) so the refusal
-# and the diagnostic dump are provable without driving tar, sudo, or the whole backup flow.
 BRI="$SANDBOX/backup-require-items"
 mkdir -p "$BRI"
 : >"$BRI/present.txt"
@@ -102,10 +60,6 @@ assert_rc "every item present passes silently" "$rc" "0"
 assert_eq "nothing is printed when every required item is present" "$out" ""
 
 echo "== unit: backup_diagnose_items — a tar failure names its cwd and each item's real state (#1244) =="
-# The diagnostic half of the same fix: when tar fails anyway (both #970 retry attempts spent),
-# the failure names the -C directory it ran against and what each resolved item actually was —
-# so the NEXT occurrence of #1059's run-conditional vanish doesn't need another bench boot
-# before anyone can look.
 out=$(run_sourced "$BRI" backup_diagnose_items "/" "$BRI/present.txt" "$BRI/missing.txt" "$BRI/dangling.txt" 2>&1)
 assert_contains "names the -C directory tar ran against" "$out" 'tar ran with -C "/"'
 assert_contains "a present item is reported present with its own listing" "$out" "present: "
@@ -115,11 +69,6 @@ assert_contains "a dangling symlink is distinguished from a plain miss" "$out" "
 unset BRI out rc
 
 echo "== unit: stack_backup — an absolute CONFIG_FILE override is archived at its real path, not a doubled one (#1244) =="
-# PITHEAD_CONFIG_FILE (the control gate's staged-config preview seam) can be an ABSOLUTE path.
-# Before this fix, stack_backup unconditionally prefixed $PWD onto it ("$PWD/$CONFIG_FILE"),
-# which for an absolute override built a doubled, nonexistent path like
-# "$PWD//tmp/staged.json" — tar would fail to stat THAT, the same shape #1059 hunted, just from
-# a cause the live capture ruled out rather than the one that actually happened.
 CJ="$SANDBOX/backup-cfg-override"
 mkdir -p "$CJ/build/tari" "$CJ/data/tor" "$CJ/data/dashboard" "$CJ/bin"
 cp "$STACK" "$CJ/pithead"
@@ -143,9 +92,6 @@ HOST_IP=box.lan
 DEPLOYMENT_COMPLETED=true
 COMPOSE_PROFILES=local_node
 EOF
-# The override candidate lives OUTSIDE $CJ entirely — a doubled "$CJ/<absolute candidate>" path
-# could never coincidentally resolve to something real, so a pass here can only mean the join
-# is absolute-safe, not a lucky path collision.
 CJALT="$SANDBOX/backup-cfg-override-elsewhere"
 mkdir -p "$CJALT"
 printf '{ "monero": {"mode":"local","wallet_address":"%s","node_username":"u","node_password":"p"}, "tari":{"wallet_address":"'"$VALID_TARI"'"}, "p2pool":{"pool":"main"}, "dashboard":{"secure":true,"host":"box.lan"} }\n' "$WALLET" >"$CJALT/candidate.json"
@@ -154,39 +100,26 @@ rc=$?
 assert_rc "backup succeeds against an absolute CONFIG_FILE override" "$rc" "0"
 cjarchive="$(ls "$CJ"/backups/pithead-backup-*.tar.gz.enc 2>/dev/null | head -1)"
 { [ -n "$cjarchive" ] && [ -s "$cjarchive" ]; } && ok "override archive was written" || bad "override archive was written" "no .enc archive"
-# The archive's member list is the ground truth for what tar was actually told to stat: the
-# override's OWN absolute path (leading / stripped, same as every other item), never a doubled
-# artifact of the old $PWD-prefix bug.
 cjlist=$(openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass pass:hunter2 -in "$cjarchive" 2>/dev/null | tar -tzf - 2>/dev/null)
 assert_contains "the archive carries the override's real, un-doubled path" "$cjlist" "${CJALT#/}/candidate.json"
 assert_not_contains "the archive never carries a \$PWD-doubled override path" "$cjlist" "${CJ#/}${CJALT}"
 unset CJ CJALT out rc cjarchive cjlist
 
 echo "== black-box: backup -> restore round-trip (#140) =="
-# backup/restore touch irreplaceable state (onion keys, the dashboard DB) and have fiddly logic
-# (leading-'/' strip, the disk pre-check, stop->backup->start). They shell out only to tar/du/df/
-# docker/sudo, so a full round-trip is stubbable: the docker stub reports the stack NOT running, and
-# a smart sudo runs tar/du/df for real (so the archive is genuinely created/extracted) but no-ops
-# chown (we can't chown to 100:101 unprivileged). The archive stores paths relative to '/', and every
-# path is under the sandbox, so `restore`'s `tar -C /` can only write back inside it (asserted below).
-# Use the sandbox's PHYSICAL path (pwd -P): `restore` extracts at '/', and on macOS the /var ->
-# /private/var symlink would otherwise make BSD tar refuse to "extract through symlink" (Linux /tmp
-# isn't symlinked, so this is a no-op there).
 BK="$(cd "$SANDBOX" && pwd -P)/backup"
 mkdir -p "$BK/build/tari" "$BK/data/tor" "$BK/data/dashboard" "$BK/bin"
 cp "$STACK" "$BK/pithead"
 cp "$ROOT/build/tari/config.toml.template" "$BK/build/tari/"
 cat >"$BK/bin/docker" <<'EOF'
 #!/usr/bin/env bash
-case "$*" in
-  "compose ps --status running -q") exit 0 ;;   # empty output -> stack treated as not running
-esac
+if [ "$1 $2 $3" = "compose ps --status" ] && [ "$5" = -q ]; then
+    n=0; [ -z "${PS_COUNT:-}" ] || { [ ! -f "$PS_COUNT" ] || n=$(cat "$PS_COUNT"); n=$((n + 1)); printf '%s' "$n" >"$PS_COUNT"; }
+    { [ "${STACK_STATUS:-}" = "$4" ] || { [ "${ACTIVE_AFTER_PS_COUNT:-999}" -lt "$n" ] && [ "$4" = running ]; }; } && echo cid123
+fi
 exit 0
 EOF
 cat >"$BK/bin/sudo" <<'EOF'
 #!/usr/bin/env bash
-# Run backup/restore's privileged commands as the test user, except chown (can't set 100:101
-# unprivileged) which is accepted as a no-op so restore doesn't abort.
 [ "$1" = "chown" ] && exit 0
 exec "$@"
 EOF
@@ -205,16 +138,12 @@ printf 'CADDY-ORIG\n' >"$BK/Caddyfile"
 printf 'ONIONKEY-ORIG\n' >"$BK/data/tor/hs_ed25519_secret_key"
 printf 'DBDATA-ORIG\n' >"$BK/data/dashboard/dashboard.db"
 
-# 1) Backup creates a timestamped archive. --no-encrypt keeps this #140 round-trip on the plaintext
-# path (encryption is exercised in the #374 block below); an unattended run without a passphrase
-# now refuses rather than downgrading, so the flag is required here.
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
 rc=$?
 assert_rc "backup exits 0" "$rc" "0"
 archive="$(ls "$BK"/backups/pithead-backup-*.tar.gz 2>/dev/null | head -1)"
 { [ -n "$archive" ] && [ -f "$archive" ]; } && ok "backup archive created" || bad "backup archive created" "no archive under backups/"
 
-# 2) Archive layout: the irreplaceable bits are in it; blockchains are NOT (no --with-chains).
 listing="$(tar -tzf "$archive" 2>/dev/null)"
 assert_contains "archive has config.json" "$listing" "config.json"
 assert_contains "archive has .env" "$listing" ".env"
@@ -225,12 +154,66 @@ case "$listing" in
 *data/monero* | *data/p2pool/* | *data/tari*) bad "archive excludes blockchains by default" "chain data present without --with-chains" ;;
 *) ok "archive excludes blockchains by default" ;;
 esac
-# Safety tripwire: every archived path is under the sandbox, so restore's `tar -C /` can't escape it.
 sandbox_rel="${BK#/}"
 escaped="$(printf '%s\n' "$listing" | grep -v '^$' | grep -v "^$sandbox_rel" || true)"
 assert_eq "archive paths stay inside the sandbox" "$escaped" ""
 
-# 3) Round-trip: corrupt/delete the live files, restore, assert the originals come back in place.
+victim="$SANDBOX/restore-victim"
+malroot="$SANDBOX/malicious-restore"
+malarchive="$BK/backups/malicious.tar.gz"
+mkdir -p "$malroot/${BK#/}" "$(dirname "$malroot/${victim#/}")" "$malroot/${BK#/}/data/tor"
+cp "$BK/config.json" "$BK/.env" "$malroot/${BK#/}/"
+printf 'SAFE\n' >"$victim"
+printf 'ATTACK\n' >"$malroot/${victim#/}"
+tar -czf "$malarchive" -C "$malroot" "${BK#/}/config.json" "${BK#/}/.env" "${victim#/}"
+out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead restore -y "$malarchive" 2>&1)"
+assert_rc "restore rejects a valid archive member outside its destination set" "$?" "1"
+assert_eq "rejected outside member cannot overwrite a host file" "$(cat "$victim")" "SAFE"
+ln -s "$victim" "$malroot/${BK#/}/data/tor/escape-link"
+tar -czf "$malarchive" -C "$malroot" "${BK#/}/config.json" "${BK#/}/.env" "${BK#/}/data/tor/escape-link"
+out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead restore -y "$malarchive" 2>&1)"
+assert_rc "restore rejects links even under an allowed data directory" "$?" "1"
+assert_contains "unsafe archive refusal explains the boundary" "$out" "unsafe paths, links, or special files"
+mkdir -p "$malroot/${BK#/}/Caddyfile"
+tar -czf "$malarchive" -C "$malroot" "${BK#/}/config.json" "${BK#/}/.env" "${BK#/}/Caddyfile"
+out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead restore -y "$malarchive" 2>&1)"
+assert_rc "restore rejects a directory in place of Caddyfile" "$?" "1"
+assert_eq "wrong-type Caddyfile cannot replace the live file" "$(cat "$BK/Caddyfile")" "CADDY-ORIG"
+rm -f "$malarchive"
+
+printf 'FIXED-SAFE\n' >"$SANDBOX/fixed-destination-victim"
+rm -f "$BK/Caddyfile" && ln -s "$SANDBOX/fixed-destination-victim" "$BK/Caddyfile"
+out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead restore -y "$archive" 2>&1)"
+assert_rc "restore rejects an existing fixed-file destination symlink" "$?" "1"
+assert_eq "fixed-file symlink victim stays untouched" "$(cat "$SANDBOX/fixed-destination-victim")" "FIXED-SAFE"
+rm -f "$BK/Caddyfile" && printf 'CADDY-ORIG\n' >"$BK/Caddyfile"
+mv "$BK/data/tor" "$BK/data/tor-real" && mkdir -p "$SANDBOX/data-destination-victim"
+ln -s "$SANDBOX/data-destination-victim" "$BK/data/tor"
+out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead restore -y "$archive" 2>&1)"
+assert_rc "restore rejects an existing data-directory destination symlink" "$?" "1"
+assert_eq "data-directory symlink victim stays untouched" "$(find "$SANDBOX/data-destination-victim" -mindepth 1 -print -quit)" ""
+rm -f "$BK/data/tor" && mv "$BK/data/tor-real" "$BK/data/tor"
+printf 'NESTED-SAFE\n' >"$SANDBOX/nested-destination-victim"
+rm -f "$BK/data/tor/hs_ed25519_secret_key"
+ln -s "$SANDBOX/nested-destination-victim" "$BK/data/tor/hs_ed25519_secret_key"
+out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead restore -y "$archive" 2>&1)"
+assert_rc "restore rejects a nested destination symlink" "$?" "1"
+assert_eq "nested destination symlink victim stays untouched" "$(cat "$SANDBOX/nested-destination-victim")" "NESTED-SAFE"
+rm -f "$BK/data/tor/hs_ed25519_secret_key" && printf 'ONIONKEY-ORIG\n' >"$BK/data/tor/hs_ed25519_secret_key"
+
+printf 'CADDY-LIVE\n' >"$BK/Caddyfile"
+out="$(cd "$BK" && STACK_STATUS=running PATH="$BK/bin:$PATH" ./pithead restore -y "$archive" 2>&1)"
+rc=$?
+assert_rc "restore refuses while any stack service is running (#1965)" "$rc" "1"
+assert_contains "live-restore refusal names the required recovery" "$out" "pithead down"
+assert_eq "live-restore refusal preserves the current files" "$(cat "$BK/Caddyfile")" "CADDY-LIVE"
+out="$(cd "$BK" && STACK_STATUS=paused PATH="$BK/bin:$PATH" ./pithead restore -y "$archive" 2>&1)"
+assert_rc "restore also refuses a paused service" "$?" "1"
+rm -f "$BK/ps.count"
+out="$(cd "$BK" && PS_COUNT="$BK/ps.count" ACTIVE_AFTER_PS_COUNT=3 PATH="$BK/bin:$PATH" ./pithead restore -y "$archive" 2>&1)"
+assert_rc "restore rechecks service state under its mutation lock" "$?" "1"
+assert_eq "a service starting after the early check prevents extraction" "$(cat "$BK/Caddyfile")" "CADDY-LIVE"
+
 printf 'CORRUPTED\n' >"$BK/Caddyfile"
 printf 'CORRUPTED\n' >"$BK/data/dashboard/dashboard.db"
 rm -f "$BK/data/tor/hs_ed25519_secret_key"
@@ -241,16 +224,12 @@ assert_eq "restore brings back the Caddyfile" "$(cat "$BK/Caddyfile")" "CADDY-OR
 assert_eq "restore brings back the dashboard db" "$(cat "$BK/data/dashboard/dashboard.db")" "DBDATA-ORIG"
 assert_eq "restore brings back the onion key" "$(cat "$BK/data/tor/hs_ed25519_secret_key" 2>/dev/null)" "ONIONKEY-ORIG"
 
-# 4) Low-space pre-check (#127): a df reporting almost no free space makes backup prompt; answering
-# "no" cancels and writes nothing, while --yes proceeds with a warning. The check runs BEFORE the
-# stack is touched, so a cancel leaves everything as it was.
 cat >"$BK/bin/df" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on' '/dev/fake 100 99 1 99% /'
 EOF
 chmod +x "$BK/bin/df"
 rm -f "$BK"/backups/pithead-backup-*.tar.gz
-# stdin answers two prompts since #374: empty passphrase (-> plaintext fallback), then 'n'.
 out="$(cd "$BK" && printf '\nn\n' | PATH="$BK/bin:$PATH" ./pithead backup 2>&1)"
 assert_contains "low-space prompt, then cancel" "$out" "ancelled"
 leftover="$(ls "$BK"/backups/pithead-backup-*.tar.gz 2>/dev/null | head -1)"
@@ -261,22 +240,13 @@ assert_rc "low-space backup proceeds with --yes" "$rc" "0"
 assert_contains "low-space backup warns first" "$out" "Low free space"
 
 echo "== black-box: encrypted backup -> restore (#374) =="
-# The archive holds the stack's full secret material (onion keys, .env, dashboard DB), so backup
-# encrypts by default (openssl aes-256-cbc + pbkdf2). Covered here: the unattended-without-
-# passphrase REFUSAL (an automated run must never silently downgrade to plaintext), the explicit
-# --no-encrypt opt-out, env-var and prompt encrypt round-trips, wrong-passphrase rejection BEFORE
-# anything is touched, a tamper/truncation refusal before extraction, legacy/garbage archives, and
-# that a failed encrypted backup leaves no file behind (the tar|openssl stream means no plaintext
-# temp ever).
 rm -f "$BK/bin/df" "$BK"/backups/pithead-backup-*
 
-# 1a) --yes with no passphrase REFUSES (no silent plaintext downgrade for cron); writes nothing.
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead backup -y 2>&1)"
 rc=$?
 [ "$rc" -ne 0 ] && ok "unattended backup without passphrase exits non-zero" || bad "unattended backup without passphrase exits non-zero" "rc=0"
 assert_contains "refusal names the missing passphrase" "$out" "PITHEAD_BACKUP_PASSPHRASE"
 assert_eq "refused unattended backup writes no archive" "$(ls "$BK"/backups/pithead-backup-* 2>/dev/null | head -1)" ""
-# 1b) --no-encrypt is the explicit plaintext opt-out (loud warning, exits 0, writes a plain archive).
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
 rc=$?
 assert_rc "explicit --no-encrypt backup exits 0" "$rc" "0"
@@ -284,7 +254,6 @@ plain_optout="$(ls "$BK"/backups/pithead-backup-*.tar.gz 2>/dev/null | head -1)"
 { [ -n "$plain_optout" ] && [ -f "$plain_optout" ]; } && ok "--no-encrypt writes a plaintext archive" || bad "--no-encrypt writes a plaintext archive" "no plain archive"
 rm -f "$BK"/backups/pithead-backup-*
 
-# 2) Env-var passphrase: a .enc archive with the openssl Salted__ header, no plaintext twin.
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" PITHEAD_BACKUP_PASSPHRASE=hunter2 ./pithead backup -y 2>&1)"
 rc=$?
 assert_rc "encrypted backup exits 0" "$rc" "0"
@@ -295,7 +264,6 @@ plain_left="$(ls "$BK"/backups/*.tar.gz 2>/dev/null | head -1)"
 assert_eq "no plaintext archive alongside the .enc" "$plain_left" ""
 assert_contains "backup says to store the passphrase elsewhere" "$out" "passphrase"
 
-# 3) Wrong passphrase: restore fails loudly before tar runs — live files untouched.
 printf 'CADDY-LIVE\n' >"$BK/Caddyfile"
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" PITHEAD_BACKUP_PASSPHRASE=wrong ./pithead restore -y "$enc_archive" 2>&1)"
 rc=$?
@@ -303,8 +271,6 @@ rc=$?
 assert_contains "wrong passphrase names the cause" "$out" "rong passphrase"
 assert_eq "wrong passphrase leaves live files untouched" "$(cat "$BK/Caddyfile")" "CADDY-LIVE"
 
-# 4) Right passphrase, via the prompt this time: full round-trip (archive was taken while the
-# files held their -ORIG values, so restore must bring those back over the corrupted ones).
 printf 'CORRUPTED\n' >"$BK/data/dashboard/dashboard.db"
 rm -f "$BK/data/tor/hs_ed25519_secret_key"
 out="$(cd "$BK" && printf 'hunter2\n' | PATH="$BK/bin:$PATH" ./pithead restore -y "$enc_archive" 2>&1)"
@@ -314,9 +280,6 @@ assert_eq "encrypted restore brings back the Caddyfile" "$(cat "$BK/Caddyfile")"
 assert_eq "encrypted restore brings back the dashboard db" "$(cat "$BK/data/dashboard/dashboard.db")" "DBDATA-ORIG"
 assert_eq "encrypted restore brings back the onion key" "$(cat "$BK/data/tor/hs_ed25519_secret_key" 2>/dev/null)" "ONIONKEY-ORIG"
 
-# 4b) Tampered/truncated ciphertext (CBC has no MAC): a flip past the first block passes the
-# cheap magic pre-flight but must be caught by the full-stream verify BEFORE tar writes anything,
-# so the live files survive. Truncating the archive tail simulates corruption/tampering.
 printf 'CADDY-LIVE\n' >"$BK/Caddyfile"
 head -c $(($(wc -c <"$enc_archive") - 32)) "$enc_archive" >"$BK/backups/truncated.tar.gz.enc"
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" PITHEAD_BACKUP_PASSPHRASE=hunter2 ./pithead restore -y "$BK/backups/truncated.tar.gz.enc" 2>&1)"
@@ -325,11 +288,8 @@ rc=$?
 assert_contains "tampered archive names integrity failure" "$out" "integrity"
 assert_eq "tampered archive leaves live files untouched" "$(cat "$BK/Caddyfile")" "CADDY-LIVE"
 rm -f "$BK"/backups/pithead-backup-* "$BK/backups/truncated.tar.gz.enc"
-# Leave the fixtures as this block found them (the round-trip above restored -ORIG) so the
-# later plaintext-backup test captures -ORIG, not this test's probe value.
 printf 'CADDY-ORIG\n' >"$BK/Caddyfile"
 
-# 5) Interactive prompt path: passphrase typed twice encrypts; a mismatch aborts with no archive.
 out="$(cd "$BK" && printf 'pw\npw\n' | PATH="$BK/bin:$PATH" ./pithead backup 2>&1)"
 rc=$?
 assert_rc "prompted encrypted backup exits 0" "$rc" "0"
@@ -342,8 +302,6 @@ rc=$?
 assert_contains "passphrase mismatch says so" "$out" "do not match"
 assert_eq "passphrase mismatch writes no archive" "$(ls "$BK"/backups/pithead-backup-* 2>/dev/null | head -1)" ""
 
-# 6) --no-encrypt forces plaintext even with the env var set, and that legacy-format archive
-# still restores through the gzip path (magic-byte detection, no flag).
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" PITHEAD_BACKUP_PASSPHRASE=hunter2 ./pithead backup -y --no-encrypt 2>&1)"
 rc=$?
 assert_rc "--no-encrypt backup exits 0" "$rc" "0"
@@ -356,9 +314,6 @@ assert_rc "plaintext archive still restores" "$rc" "0"
 assert_eq "plaintext restore brings back the Caddyfile" "$(cat "$BK/Caddyfile")" "CADDY-ORIG"
 rm -f "$BK"/backups/pithead-backup-*
 
-# 6b) Truncated plaintext archive (#549): mirrors the encrypted-branch tamper/truncation check
-# (4b above) on the gzip path — a truncated archive must be rejected by a full-stream `tar -tzf`
-# verify BEFORE extraction, with nothing written, instead of half-overwriting config.json/.env.
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
 plain_trunc_src="$(ls "$BK"/backups/pithead-backup-*.tar.gz 2>/dev/null | head -1)"
 config_before="$(cat "$BK/config.json")"
@@ -372,7 +327,6 @@ assert_eq "truncated plaintext archive leaves config.json untouched" "$(cat "$BK
 assert_eq "truncated plaintext archive leaves .env untouched" "$(cat "$BK/.env")" "$env_before"
 rm -f "$BK"/backups/pithead-backup-* "$BK/backups/truncated-plain.tar.gz"
 
-# 7) A failed encrypted backup (openssl dies mid-stream) removes the partial archive.
 cat >"$BK/bin/openssl" <<'EOF'
 #!/usr/bin/env bash
 exit 1
@@ -384,7 +338,6 @@ rc=$?
 assert_eq "failed encrypted backup leaves nothing behind" "$(ls "$BK"/backups/pithead-backup-* 2>/dev/null | head -1)" ""
 rm -f "$BK/bin/openssl"
 
-# 8) An archive that is neither encrypted nor gzip is refused before the overwrite prompt.
 printf 'garbage-not-an-archive' >"$BK/backups/bogus.tar.gz"
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead restore -y "$BK/backups/bogus.tar.gz" 2>&1)"
 rc=$?
@@ -402,10 +355,7 @@ assert_contains "encrypted restore w/o passphrase explains" "$out" "PITHEAD_BACK
 rm -f "$BK"/backups/pithead-backup-*
 
 echo "== black-box: failed plaintext backup restarts a running stack, removes the partial archive (#551) =="
-# Companion to the #549 test above: a failed tar must not strand the stack stopped, nor leave a
-# partial (root-owned) archive that looks like a valid backup. Shadow tar to fail unconditionally
-# and simulate a RUNNING stack (was_running=1), so the failure path must call stack_up for real —
-# proven here by "compose up" showing up in the docker log, not by stubbing stack_up away.
+# A failed tar must remove its partial archive and recover the previously running stack.
 FB="$SANDBOX/failbackup"
 mkdir -p "$FB/build/tari" "$FB/data/tor" "$FB/data/dashboard" "$FB/bin"
 cp "$STACK" "$FB/pithead"
@@ -413,19 +363,33 @@ cp "$ROOT/build/tari/config.toml.template" "$FB/build/tari/"
 cat >"$FB/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 echo "[docker] $*" >>"${DOCKER_LOG:-/dev/null}"
+[ "${PS_FAIL:-0}" != 1 ] || { [ "$1 $2 $3 $5" != "compose ps --status -q" ] || exit 1; }
 case "$*" in
-  "compose ps --status running -q") echo cid123 ;; # non-empty -> stack treated as RUNNING
+  "compose ps --status running -q")
+    n=0; [ -z "${PS_COUNT:-}" ] || { [ ! -f "$PS_COUNT" ] || n=$(cat "$PS_COUNT"); n=$((n + 1)); printf '%s' "$n" >"$PS_COUNT"; }
+    { [ -z "${ACTIVE_AFTER_PS_COUNT:-}" ] || [ "$n" -gt "$ACTIVE_AFTER_PS_COUNT" ]; } && echo cid123
+    ;;
+  "compose down"*) [ "${DOWN_FAIL:-0}" != 1 ] || exit 1; [ -z "${STATE_FILE:-}" ] || printf stopped >"$STATE_FILE" ;;
+  "compose up"*)
+    n=0; [ ! -f "${UP_COUNT:?}" ] || n=$(cat "$UP_COUNT")
+    n=$((n + 1)); printf '%s' "$n" >"$UP_COUNT"
+    [ "$n" -gt "${UP_FAILS:-0}" ] || exit 1
+    [ -z "${STATE_FILE:-}" ] || printf running >"$STATE_FILE"
+    ;;
 esac
 exit 0
 EOF
 cat >"$FB/bin/sudo" <<'EOF'
 #!/usr/bin/env bash
-[ "$1" = "chown" ] && exit 0
+if [ "$1" = "chown" ]; then [ "${CHOWN_FAIL:-0}" != 1 ]; exit; fi
 exec "$@"
 EOF
 cat >"$FB/bin/tar" <<'EOF'
 #!/usr/bin/env bash
-exit 1
+[ -z "${TAR_CALLED:-}" ] || : >"$TAR_CALLED"
+[ -z "${STATE_FILE:-}" ] || cat "$STATE_FILE" >"${TAR_STATE:?}"
+[ "${TAR_FAIL:-1}" = 1 ] && exit 1
+exec /usr/bin/tar "$@"
 EOF
 chmod +x "$FB/bin/docker" "$FB/bin/sudo" "$FB/bin/tar"
 cat >"$FB/.env" <<EOF
@@ -439,17 +403,57 @@ COMPOSE_PROFILES=local_node
 EOF
 printf '{ "monero": {"mode":"local","wallet_address":"%s","node_username":"u","node_password":"p"}, "tari":{"wallet_address":"'"$VALID_TARI"'"}, "p2pool":{"pool":"main"}, "dashboard":{"secure":true,"host":"box.lan"} }\n' "$WALLET" >"$FB/config.json"
 
-out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
+out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" UP_COUNT="$FB/up.count" TAR_FAIL=1 PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
 rc=$?
 [ "$rc" -ne 0 ] && ok "failed plaintext backup (running stack) exits non-zero" || bad "failed plaintext backup (running stack) exits non-zero" "rc=0"
 assert_contains "failed plaintext backup names the cause" "$out" "partial archive was removed"
 assert_eq "failed plaintext backup leaves no archive behind" "$(ls "$FB"/backups/pithead-backup-* 2>/dev/null | head -1)" ""
 assert_contains "failed plaintext backup restarts the stack" "$(cat "$FB/docker.log" 2>/dev/null)" "compose up"
 
+rm -f "$FB/tar.called" "$FB"/backups/pithead-backup-*
+out="$(cd "$FB" && PS_FAIL=1 TAR_CALLED="$FB/tar.called" PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
+assert_rc "backup refuses an unknown service state" "$?" "1"
+assert_contains "unknown state reports the verification failure" "$out" "could not verify whether stack services are active"
+assert_eq "unknown state attempts no archive" "$([ -e "$FB/tar.called" ] && echo yes || echo no)" "no"
+
+rm -f "$FB/docker.log" "$FB/up.count" "$FB/ps.count" "$FB/tar.state"
+printf running >"$FB/state"
+out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" UP_COUNT="$FB/up.count" PS_COUNT="$FB/ps.count" ACTIVE_AFTER_PS_COUNT=1 STATE_FILE="$FB/state" TAR_STATE="$FB/tar.state" TAR_FAIL=0 PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
+assert_rc "backup handles a stack that starts before its locked recheck" "$?" "0"
+assert_eq "the locked recheck stops services before archiving" "$(cat "$FB/tar.state")" "stopped"
+assert_eq "the race path restores the active stack" "$(cat "$FB/state")" "running"
+
+rm -f "$FB/docker.log" "$FB/up.count" "$FB/tar.called" "$FB"/backups/pithead-backup-*
+out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" UP_COUNT="$FB/up.count" DOWN_FAIL=1 TAR_CALLED="$FB/tar.called" PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
+assert_rc "a failed stop aborts backup and reports recovery" "$?" "1"
+assert_contains "failed stop keeps the original error context" "$out" "failed to stop"
+assert_eq "failed stop attempts no archive" "$([ -e "$FB/tar.called" ] && echo yes || echo no)" "no"
+assert_eq "failed stop recovers through one normal startup" "$(cat "$FB/up.count")" "1"
+
+rm -f "$FB/docker.log" "$FB/up.count"
+out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" UP_COUNT="$FB/up.count" CHOWN_FAIL=1 TAR_FAIL=0 PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
+rc=$?
+assert_rc "archive finalization failure is not reported as success (#1965)" "$rc" "1"
+assert_contains "archive finalization failure keeps its specific cause" "$out" "could not assign the archive"
+assert_eq "finalization failure still recovers the running stack" "$(cat "$FB/up.count")" "1"
+assert_eq "finalization failure retains the completed archive" "$(ls "$FB"/backups/pithead-backup-* 2>/dev/null | wc -l | tr -d ' ')" "1"
+
+rm -f "$FB/docker.log" "$FB/up.count" "$FB"/backups/pithead-backup-*
+out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" UP_COUNT="$FB/up.count" UP_FAILS=1 TAR_FAIL=0 PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
+rc=$?
+assert_rc "backup retries one failed post-archive restart (#1965)" "$rc" "0"
+assert_contains "restart retry is reported" "$out" "retrying the normal startup path once"
+assert_eq "restart retry makes exactly two up attempts" "$(cat "$FB/up.count")" "2"
+
+rm -f "$FB/docker.log" "$FB/up.count" "$FB"/backups/pithead-backup-*
+out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" UP_COUNT="$FB/up.count" UP_FAILS=2 TAR_FAIL=0 PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
+rc=$?
+assert_rc "backup reports failure when both restart attempts fail (#1965)" "$rc" "1"
+assert_contains "failed restart says the completed archive remains valid" "$out" "archive is valid"
+assert_eq "valid archive survives a restart failure" "$(ls "$FB"/backups/pithead-backup-* 2>/dev/null | wc -l | tr -d ' ')" "1"
+
 echo "== black-box: reset-dashboard targets .env dirs, not config.json (#139) =="
-# reset-dashboard must wipe the LIVE deployment's data dirs (from .env), not a path the user may
-# have edited into config.json without applying. docker = noop; sudo only LOGS (never executes the
-# rm), so we can assert what it would have targeted without deleting anything.
+# Reset uses live .env dirs; stub sudo records without deleting.
 R="$SANDBOX/reset"
 mkdir -p "$R/bin" "$R/envdir/dashboard" "$R/envdir/p2pool"
 cp "$STACK" "$R/pithead"
@@ -486,11 +490,7 @@ assert_rc "reset refuses with no data dirs in .env" "$rc" "1"
 assert_contains "reset refuse message" "$out" "refusing to guess"
 
 echo "== black-box: reset-dashboard's final compose_up_checked is if!-guarded, not bare (#557/#180) =="
-# Before #557: the last compose_up_checked call in reset_dashboard was bare (every OTHER call site
-# wraps it in `if !`, per the contract at compose_up_checked's own definition). A bare call let a real
-# compose failure trip errexit INSIDE compose_up_checked's own `docker compose up | tee` pipeline,
-# before the #180 subnet-collision explanation printed. Real `./pithead` (not sourced) arms
-# `trap on_err ERR` exactly like production, so this reproduces the actual operator experience.
+# Real pithead must preserve the #180 explanation when reset's guarded Compose pipeline fails (#557).
 RD557="$SANDBOX/reset557"
 mkdir -p "$RD557/bin" "$RD557/envdir/dashboard" "$RD557/envdir/p2pool"
 cp "$STACK" "$RD557/pithead"
