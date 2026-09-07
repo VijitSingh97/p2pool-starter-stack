@@ -7495,8 +7495,9 @@ render_worker_read_tokens() { # <masked-dir>; dashboard-only RigForge credential
     jq -s . "$rows" >"$tmp" && chmod 600 "$tmp" && mv "$tmp" "$final"
     local rc=$?
     rm -f "$rows" "$tmp"
-    if [ "$rc" -eq 0 ] && [ "$(id -u)" -eq 0 ]; then
-        chown "${APP_UID:-1000}:${APP_GID:-1000}" "$final" || rc=1
+    if [ "$rc" -eq 0 ]; then
+        chown "${APP_UID:-1000}:${APP_GID:-1000}" "$final" 2>/dev/null ||
+            sudo chown "${APP_UID:-1000}:${APP_GID:-1000}" "$final" || rc=1
     fi
     [ "$rc" -eq 0 ] || rm -f "$final"
     return "$rc"
