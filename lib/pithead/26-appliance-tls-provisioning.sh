@@ -67,9 +67,9 @@ appliance_base_name() {
     fi
 }
 
-# "auto" (dashboard.host unset) expands to every address the appliance actually answers on — a
+# "auto" or a machine-name label expands to the appliance's local addresses — a
 # headless box reached by mDNS name, by IP, or from the console must have all three certified. An
-# explicit pin stays a single name on purpose: the site list collapsing was never the #1132 bug,
+# explicit DNS/IP pin stays a single name on purpose: the site list collapsing was never the #1132 bug,
 # only the certificate not following suit was.
 #
 # Deliberately engine-free: this runs from BOTH generate_caddyfile (render, always BEFORE `up`
@@ -87,7 +87,7 @@ appliance_site_names() {
     local base
     base=$(appliance_base_name)
     local names="$base"
-    if is_appliance && [ -z "${DASHBOARD_HOST:-}" ]; then
+    if is_appliance && { [ -z "${DASHBOARD_HOST:-}" ] || [ -n "$(appliance_hostname_label)" ]; }; then
         local extra
         for extra in $(hostname -I 2>/dev/null) localhost; do
             case " $names " in *" $extra "*) continue ;; esac

@@ -21,6 +21,7 @@ import { Component, html, render } from "./preact.mjs";
 import { rigCardFields, rigCardNote } from "./rigcardlogic.mjs";
 import { restoreBackLabel, savedRoleOrSetup } from "./savedrole.mjs";
 import * as failure from "./wizardfailure.mjs";
+import { MachineName } from "./wizardhostname.mjs";
 import { TariSection, tariAnswer, XvbField } from "./wizardmining.mjs";
 import { Err, Field, Note } from "./wizardparts.mjs";
 
@@ -678,6 +679,7 @@ export class WizardApp extends Component {
                 onWipe=${(e) => this.setState({ wipe: e.target.value })} />`
             }
             ${diskPicked && !keepEverything && rig && this.renderRigFields()}
+            ${diskPicked && !keepEverything && !rig && html`<${MachineName} cfg=${cfg} edit=${this.edit} />`}
             ${
               diskPicked &&
               !keepEverything &&

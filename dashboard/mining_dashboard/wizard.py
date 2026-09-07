@@ -32,7 +32,11 @@ import tempfile
 
 from aiohttp import web
 
-from mining_dashboard.wizard_config import NEW_MACHINE_ANSWERS, prepare_config
+from mining_dashboard.wizard_config import (
+    NEW_MACHINE_ANSWERS,
+    prepare_config,
+    validate_machine_name,
+)
 from mining_dashboard.wizard_form import build_config
 from mining_dashboard.wizard_install import validate_install_request
 from mining_dashboard.wizard_node_probe import first_failure, probe_remote_nodes, saved_probe
@@ -401,6 +405,7 @@ async def submit(request: web.Request) -> web.Response:
         return web.json_response({"error": f"Not valid JSON: {exc}"}, status=400)
     try:
         cfg, changes = prepare_config(cfg, ref, reject_legacy_conflicts=True)
+        validate_machine_name(cfg)
     except ValueError as exc:
         return web.json_response({"error": f"Invalid configuration: {exc}"}, status=400)
     # The dashboard-login choice travels BESIDE the config: "no login" is an empty password,

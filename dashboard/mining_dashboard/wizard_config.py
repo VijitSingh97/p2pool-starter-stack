@@ -1,12 +1,36 @@
 """Prepare wizard-owned config copies for the current schema."""
 
+import re
 from copy import deepcopy
 
 _XVB_ALIASES = ("enabled", "url", "donor_id")
 _WORKER_FIELDS = {"name", "host", "port", "control_port", "token", "watts"}
 # A missing config means a genuinely new machine. Tari is opt-in there, while the reference
 # remains ``local`` so an older config that never carried the switch keeps merge-mining.
-NEW_MACHINE_ANSWERS = {"local_miner": {"enabled": True}, "tari": {"mode": "off"}}
+NEW_MACHINE_ANSWERS = {
+    "local_miner": {"enabled": True},
+    "tari": {"mode": "off"},
+    "dashboard": {"host": "pithead"},
+}
+
+
+def validate_machine_name(cfg: dict) -> None:
+    """Reject malformed explicit coordinator names before publishing a setup request.
+
+    Missing/auto names retain the host's existing identity, as in older configurations.
+    """
+    dashboard = cfg.get("dashboard", {})
+    if not isinstance(dashboard, dict):
+        raise ValueError("dashboard must be an object")
+    host = dashboard.get("host", "auto")
+    if host == "auto":
+        return
+    if not isinstance(host, str) or not re.fullmatch(
+        r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", host
+    ):
+        raise ValueError(
+            "Name this machine must be 1–63 letters, digits or hyphens, starting and ending with a letter or digit"
+        )
 
 
 def _change(changes: list[str], path: str, replacement: str | None = None) -> None:

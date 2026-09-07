@@ -25,6 +25,7 @@ def build_config(form: dict) -> dict:
         return int(raw) if raw.isdigit() else fallback
 
     cfg: dict = {
+        "dashboard": {"host": s_("machine_name") or "pithead"},
         "monero": {"wallet_address": s_("monero_wallet")},
         "p2pool": {"pool": s_("pool") or "mini", "stratum_password": "auto"},
     }

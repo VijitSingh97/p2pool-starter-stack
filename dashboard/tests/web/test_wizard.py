@@ -353,7 +353,7 @@ def test_alerts_are_omitted_unless_filled_in():
 
 def test_timezone_auto_is_the_default_and_never_pinned():
     base = {"monero_wallet": "4" + "A" * 94, "tari_wallet": "t"}
-    assert "dashboard" not in wizard.build_config({**base, "timezone": "auto"})
+    assert "timezone" not in wizard.build_config({**base, "timezone": "auto"})["dashboard"]
     berlin = wizard.build_config({**base, "timezone": "Europe/Berlin"})
     assert berlin["dashboard"]["timezone"] == "Europe/Berlin"
 
