@@ -49,20 +49,6 @@ backup_restart_stack() {
     done
     return 1
 }
-restore_require_stack_stopped() {
-    command -v docker >/dev/null 2>&1 ||
-        error "Restore could not verify that the stack is stopped because docker is unavailable — nothing was restored."
-    local status active="" ids
-    for status in running restarting paused; do
-        if ! ids=$(docker compose ps --status "$status" -q 2>/dev/null); then
-            error "Restore could not verify that the stack is stopped — nothing was restored. Fix Docker access, run '$0 down', and retry."
-        fi
-        active+="$ids"
-    done
-    [ -z "$active" ] ||
-        error "Restore refused because stack services are still active — nothing was restored. Run '$0 down', then retry the restore."
-}
-
 stack_backup() {
     local with_chains=0 assume_yes=0 was_running=0 no_encrypt=0
     for arg in "$@"; do
@@ -170,16 +156,12 @@ stack_backup() {
         warn "Could not determine free disk space for the backup — proceeding without a space check."
     fi
 
-    # A consistent backup needs the services stopped — otherwise files (especially the blockchain
-    # DBs under --with-chains) can be archived mid-write. Detect a running stack and offer to stop
-    # it for the duration of the backup, restarting afterwards. The docker check is best-effort:
-    # if docker (or its daemon) is unavailable we treat the stack as not running and continue.
-    # This runs AFTER the disk check so an aborted backup never leaves the stack stopped.
-    local running=""
+    # Ask before stopping a stack, but decide its actual state only under the mutation lock.
+    local running="" initial_running=""
     if command -v docker >/dev/null 2>&1; then
-        running=$(docker compose ps --status running -q 2>/dev/null)
+        initial_running=$(compose_active_ids 2>/dev/null || true)
     fi
-    if [ -n "$running" ]; then
+    if [ -n "$initial_running" ]; then
         log "A consistent backup needs the services stopped, so the archive isn't captured mid-write."
         log "The stack will be stopped during the backup and started again afterwards."
         if [ "$assume_yes" -eq 1 ]; then
@@ -191,15 +173,16 @@ stack_backup() {
                 return
             fi
         fi
-        # AFTER both prompts (passphrase, and permission to stop the stack): the hold must not
-        # span an unbounded human wait. It runs from here across stack_down -> tar -> stack_up,
-        # so nothing can mutate config.json inside that span. Nested acquisition is a no-op, so
-        # the stack_down/stack_up below take no second lock.
-        mutation_lock_acquire backup
-        # Re-checked under the lock and BEFORE anything is stopped, so a file that vanished while
-        # the operator was at a prompt refuses here rather than failing tar with the stack already
-        # down — the same blast-radius rule as #1244/#1248.
-        backup_require_items "${required[@]}"
+    fi
+    # Acquire after every human prompt, then recheck both files and service state under the lock.
+    mutation_lock_acquire backup
+    backup_require_items "${required[@]}"
+    if command -v docker >/dev/null 2>&1; then
+        running=$(compose_active_ids) || error "Backup could not verify whether stack services are active; no archive was attempted."
+    fi
+    if [ -n "$running" ]; then
+        [ -n "$initial_running" ] || [ "$assume_yes" -eq 1 ] ||
+            error "Stack services started while backup was preparing. No archive was attempted; retry so the stop prompt can be shown."
         was_running=1
         if ! (
             trap - ERR
@@ -211,10 +194,6 @@ stack_backup() {
             fi
             error "Backup aborted because the stack could not be stopped cleanly. The normal startup path recovered it; no archive was written."
         fi
-    else
-        # Stack already stopped: the same hold and the same re-check, still before tar.
-        mutation_lock_acquire backup
-        backup_require_items "${required[@]}"
     fi
 
     log "Creating backup archive..."
@@ -369,18 +348,13 @@ stack_restore() {
             error "Archive fails integrity verification (tampered or truncated) — nothing was restored."
     fi
 
-    # The extraction below is the mutating window; recheck after prompts and verification.
+    # Stage and validate all destinations before the mutating window.
+    restore_stage_archive "$archive" "$encrypted" "$pass"
     mutation_lock_acquire restore
     restore_require_stack_stopped
+    restore_recheck_destinations
     log "Restoring from $archive ..."
-    # Extract relative paths at /; stream encrypted input so plaintext never lands on disk.
-    if [ "$encrypted" -eq 1 ]; then
-        openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
-            -pass fd:3 -in "$archive" 3< <(printf '%s' "$pass") |
-            sudo tar -xzf - -C "/"
-    else
-        sudo tar -xzf "$archive" -C "/"
-    fi
+    restore_commit_stage
 
     # Now that config.json is back, resolve the Tor data dir from it and fix ownership so the
     # onion keys load (matching prepare_directories).

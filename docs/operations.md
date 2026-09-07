@@ -578,7 +578,10 @@ To recover (on a new machine, or after a wipe) copy the archive back and run:
 (or read `PITHEAD_BACKUP_PASSPHRASE`), and plaintext archives from earlier releases restore
 unchanged, no flag needed. A wrong passphrase, or a corrupt or truncated archive of either format,
 fails before anything on disk is touched. `restore` also refuses unless Compose confirms that every
-stack service is stopped; `--yes` skips the overwrite prompt, not this safety check. It puts the files back, fixes
+stack service is stopped; `--yes` skips the overwrite prompt, not this safety check. The archive is
+staged and its configuration, member types, and destinations are validated before root-owned files
+are changed. A backup that used custom data directories can restore only after those same directories
+are configured on the destination appliance. It puts the files back, fixes
 Tor key ownership so the onion address returns unchanged, and restores hashrate history and
 dashboard settings.
 
