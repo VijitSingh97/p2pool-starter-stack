@@ -174,6 +174,11 @@ tar -czf "$malarchive" -C "$malroot" "${BK#/}/config.json" "${BK#/}/.env" "${BK#
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead restore -y "$malarchive" 2>&1)"
 assert_rc "restore rejects links even under an allowed data directory" "$?" "1"
 assert_contains "unsafe archive refusal explains the boundary" "$out" "unsafe paths, links, or special files"
+mkdir -p "$malroot/${BK#/}/Caddyfile"
+tar -czf "$malarchive" -C "$malroot" "${BK#/}/config.json" "${BK#/}/.env" "${BK#/}/Caddyfile"
+out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead restore -y "$malarchive" 2>&1)"
+assert_rc "restore rejects a directory in place of Caddyfile" "$?" "1"
+assert_eq "wrong-type Caddyfile cannot replace the live file" "$(cat "$BK/Caddyfile")" "CADDY-ORIG"
 rm -f "$malarchive"
 
 printf 'FIXED-SAFE\n' >"$SANDBOX/fixed-destination-victim"
@@ -188,6 +193,13 @@ out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead restore -y "$archive" 2>&1)"
 assert_rc "restore rejects an existing data-directory destination symlink" "$?" "1"
 assert_eq "data-directory symlink victim stays untouched" "$(find "$SANDBOX/data-destination-victim" -mindepth 1 -print -quit)" ""
 rm -f "$BK/data/tor" && mv "$BK/data/tor-real" "$BK/data/tor"
+printf 'NESTED-SAFE\n' >"$SANDBOX/nested-destination-victim"
+rm -f "$BK/data/tor/hs_ed25519_secret_key"
+ln -s "$SANDBOX/nested-destination-victim" "$BK/data/tor/hs_ed25519_secret_key"
+out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead restore -y "$archive" 2>&1)"
+assert_rc "restore rejects a nested destination symlink" "$?" "1"
+assert_eq "nested destination symlink victim stays untouched" "$(cat "$SANDBOX/nested-destination-victim")" "NESTED-SAFE"
+rm -f "$BK/data/tor/hs_ed25519_secret_key" && printf 'ONIONKEY-ORIG\n' >"$BK/data/tor/hs_ed25519_secret_key"
 
 printf 'CADDY-LIVE\n' >"$BK/Caddyfile"
 out="$(cd "$BK" && STACK_STATUS=running PATH="$BK/bin:$PATH" ./pithead restore -y "$archive" 2>&1)"
@@ -230,13 +242,11 @@ assert_contains "low-space backup warns first" "$out" "Low free space"
 echo "== black-box: encrypted backup -> restore (#374) =="
 rm -f "$BK/bin/df" "$BK"/backups/pithead-backup-*
 
-# 1a) --yes with no passphrase REFUSES (no silent plaintext downgrade for cron); writes nothing.
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead backup -y 2>&1)"
 rc=$?
 [ "$rc" -ne 0 ] && ok "unattended backup without passphrase exits non-zero" || bad "unattended backup without passphrase exits non-zero" "rc=0"
 assert_contains "refusal names the missing passphrase" "$out" "PITHEAD_BACKUP_PASSPHRASE"
 assert_eq "refused unattended backup writes no archive" "$(ls "$BK"/backups/pithead-backup-* 2>/dev/null | head -1)" ""
-# 1b) --no-encrypt is the explicit plaintext opt-out (loud warning, exits 0, writes a plain archive).
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
 rc=$?
 assert_rc "explicit --no-encrypt backup exits 0" "$rc" "0"
@@ -244,7 +254,6 @@ plain_optout="$(ls "$BK"/backups/pithead-backup-*.tar.gz 2>/dev/null | head -1)"
 { [ -n "$plain_optout" ] && [ -f "$plain_optout" ]; } && ok "--no-encrypt writes a plaintext archive" || bad "--no-encrypt writes a plaintext archive" "no plain archive"
 rm -f "$BK"/backups/pithead-backup-*
 
-# 2) Env-var passphrase: a .enc archive with the openssl Salted__ header, no plaintext twin.
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" PITHEAD_BACKUP_PASSPHRASE=hunter2 ./pithead backup -y 2>&1)"
 rc=$?
 assert_rc "encrypted backup exits 0" "$rc" "0"
@@ -255,7 +264,6 @@ plain_left="$(ls "$BK"/backups/*.tar.gz 2>/dev/null | head -1)"
 assert_eq "no plaintext archive alongside the .enc" "$plain_left" ""
 assert_contains "backup says to store the passphrase elsewhere" "$out" "passphrase"
 
-# 3) Wrong passphrase: restore fails loudly before tar runs — live files untouched.
 printf 'CADDY-LIVE\n' >"$BK/Caddyfile"
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" PITHEAD_BACKUP_PASSPHRASE=wrong ./pithead restore -y "$enc_archive" 2>&1)"
 rc=$?
@@ -263,7 +271,6 @@ rc=$?
 assert_contains "wrong passphrase names the cause" "$out" "rong passphrase"
 assert_eq "wrong passphrase leaves live files untouched" "$(cat "$BK/Caddyfile")" "CADDY-LIVE"
 
-# A prompted right passphrase restores the archived -ORIG values.
 printf 'CORRUPTED\n' >"$BK/data/dashboard/dashboard.db"
 rm -f "$BK/data/tor/hs_ed25519_secret_key"
 out="$(cd "$BK" && printf 'hunter2\n' | PATH="$BK/bin:$PATH" ./pithead restore -y "$enc_archive" 2>&1)"
@@ -273,7 +280,6 @@ assert_eq "encrypted restore brings back the Caddyfile" "$(cat "$BK/Caddyfile")"
 assert_eq "encrypted restore brings back the dashboard db" "$(cat "$BK/data/dashboard/dashboard.db")" "DBDATA-ORIG"
 assert_eq "encrypted restore brings back the onion key" "$(cat "$BK/data/tor/hs_ed25519_secret_key" 2>/dev/null)" "ONIONKEY-ORIG"
 
-# A truncated ciphertext passes magic but must fail full-stream verification before writes.
 printf 'CADDY-LIVE\n' >"$BK/Caddyfile"
 head -c $(($(wc -c <"$enc_archive") - 32)) "$enc_archive" >"$BK/backups/truncated.tar.gz.enc"
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" PITHEAD_BACKUP_PASSPHRASE=hunter2 ./pithead restore -y "$BK/backups/truncated.tar.gz.enc" 2>&1)"
@@ -282,10 +288,8 @@ rc=$?
 assert_contains "tampered archive names integrity failure" "$out" "integrity"
 assert_eq "tampered archive leaves live files untouched" "$(cat "$BK/Caddyfile")" "CADDY-LIVE"
 rm -f "$BK"/backups/pithead-backup-* "$BK/backups/truncated.tar.gz.enc"
-# Keep -ORIG in place for the later plaintext backup.
 printf 'CADDY-ORIG\n' >"$BK/Caddyfile"
 
-# 5) Interactive prompt path: passphrase typed twice encrypts; a mismatch aborts with no archive.
 out="$(cd "$BK" && printf 'pw\npw\n' | PATH="$BK/bin:$PATH" ./pithead backup 2>&1)"
 rc=$?
 assert_rc "prompted encrypted backup exits 0" "$rc" "0"
@@ -298,7 +302,6 @@ rc=$?
 assert_contains "passphrase mismatch says so" "$out" "do not match"
 assert_eq "passphrase mismatch writes no archive" "$(ls "$BK"/backups/pithead-backup-* 2>/dev/null | head -1)" ""
 
-# --no-encrypt overrides the env passphrase; the gzip archive still restores.
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" PITHEAD_BACKUP_PASSPHRASE=hunter2 ./pithead backup -y --no-encrypt 2>&1)"
 rc=$?
 assert_rc "--no-encrypt backup exits 0" "$rc" "0"
@@ -311,7 +314,6 @@ assert_rc "plaintext archive still restores" "$rc" "0"
 assert_eq "plaintext restore brings back the Caddyfile" "$(cat "$BK/Caddyfile")" "CADDY-ORIG"
 rm -f "$BK"/backups/pithead-backup-*
 
-# A truncated plaintext archive must fail full-stream verification before extraction (#549).
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
 plain_trunc_src="$(ls "$BK"/backups/pithead-backup-*.tar.gz 2>/dev/null | head -1)"
 config_before="$(cat "$BK/config.json")"
@@ -325,7 +327,6 @@ assert_eq "truncated plaintext archive leaves config.json untouched" "$(cat "$BK
 assert_eq "truncated plaintext archive leaves .env untouched" "$(cat "$BK/.env")" "$env_before"
 rm -f "$BK"/backups/pithead-backup-* "$BK/backups/truncated-plain.tar.gz"
 
-# 7) A failed encrypted backup (openssl dies mid-stream) removes the partial archive.
 cat >"$BK/bin/openssl" <<'EOF'
 #!/usr/bin/env bash
 exit 1
@@ -337,7 +338,6 @@ rc=$?
 assert_eq "failed encrypted backup leaves nothing behind" "$(ls "$BK"/backups/pithead-backup-* 2>/dev/null | head -1)" ""
 rm -f "$BK/bin/openssl"
 
-# 8) An archive that is neither encrypted nor gzip is refused before the overwrite prompt.
 printf 'garbage-not-an-archive' >"$BK/backups/bogus.tar.gz"
 out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead restore -y "$BK/backups/bogus.tar.gz" 2>&1)"
 rc=$?

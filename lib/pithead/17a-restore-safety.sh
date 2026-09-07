@@ -70,9 +70,22 @@ restore_destination_safe() { # <path> <file|dir>
     done
 }
 
+restore_staged_members_safe() {
+    local root staged_root source rel destination kind
+    for root in "${RESTORE_ALLOWED_DIRS[@]}"; do
+        staged_root="$RESTORE_STAGE_DIR/${root#/}"
+        [ ! -d "$staged_root" ] || while IFS= read -r -d '' source; do
+            rel="${source#"$staged_root"/}"
+            destination="$root/$rel"
+            if [ -d "$source" ]; then kind="dir"; else kind="file"; fi
+            restore_destination_safe "$destination" "$kind" || return 1
+        done < <(find "$staged_root" -mindepth 1 -print0)
+    done
+}
+
 restore_stage_archive() { # <archive> <encrypted:0|1> <passphrase>
     local archive="$1" encrypted="$2" pass="$3" names details name unsafe=0
-    local staged_cfg staged_env paths_file err="" path trusted match env_path i=0
+    local staged_cfg staged_env staged_caddy paths_file err="" path trusted match env_path i=0
     local keys=(MONERO_DATA_DIR TARI_DATA_DIR P2POOL_DATA_DIR TOR_DATA_DIR DASHBOARD_DATA_DIR)
     restore_collect_destinations
     names=$(restore_archive_stream "$archive" "$encrypted" "$pass" | tar -tzf -) ||
@@ -91,8 +104,9 @@ restore_stage_archive() { # <archive> <encrypted:0|1> <passphrase>
     fi
     staged_cfg="$RESTORE_STAGE_DIR/${RESTORE_FIXED_PATHS[0]#/}"
     staged_env="$RESTORE_STAGE_DIR/${RESTORE_FIXED_PATHS[1]#/}"
+    staged_caddy="$RESTORE_STAGE_DIR/${RESTORE_FIXED_PATHS[2]#/}"
     paths_file="$RESTORE_STAGE_DIR/.validated-data-paths"
-    if [ ! -f "$staged_cfg" ] || [ ! -f "$staged_env" ] ||
+    if [ ! -f "$staged_cfg" ] || [ ! -f "$staged_env" ] || { [ -e "$staged_caddy" ] && [ ! -f "$staged_caddy" ]; } ||
         ! err=$(PITHEAD_CONFIG_FILE="$staged_cfg" RESTORE_PATH_FILE="$paths_file" bash -c \
             "source '${BASH_SOURCE[0]}' && parse_and_validate_config >/dev/null && printf '%s\\0' \"\$MONERO_DIR\" \"\$TARI_DIR\" \"\$P2POOL_DIR\" \"\$TOR_DATA_DIR\" \"\$DASHBOARD_DIR\" >\"\$RESTORE_PATH_FILE\"" 2>&1); then
         restore_discard_stage
@@ -145,20 +159,24 @@ restore_recheck_destinations() {
             error "Restore refused an unsafe data-directory destination — nothing was restored. Replace destination symlinks or non-directory parents, then retry."
         }
     done
+    restore_staged_members_safe || {
+        restore_discard_stage
+        error "Restore refused a redirected path inside a data directory — nothing was restored. Remove destination symlinks, then retry."
+    }
 }
 
 restore_commit_stage() {
     local path rel
     for path in "${RESTORE_FIXED_PATHS[@]}"; do
         rel="${path#/}"
-        [ ! -e "$RESTORE_STAGE_DIR/$rel" ] || sudo cp -a "$RESTORE_STAGE_DIR/$rel" "$path" || {
+        [ ! -e "$RESTORE_STAGE_DIR/$rel" ] || sudo cp -a --remove-destination "$RESTORE_STAGE_DIR/$rel" "$path" || {
             restore_discard_stage
             error "Restore failed while committing $path; inspect the destination before retrying."
         }
     done
     for path in "${RESTORE_ALLOWED_DIRS[@]}"; do
         rel="${path#/}"
-        [ ! -d "$RESTORE_STAGE_DIR/$rel" ] || { sudo mkdir -p "$path" && sudo cp -a "$RESTORE_STAGE_DIR/$rel"/. "$path"/; } || {
+        [ ! -d "$RESTORE_STAGE_DIR/$rel" ] || { sudo mkdir -p "$path" && sudo cp -a --remove-destination "$RESTORE_STAGE_DIR/$rel"/. "$path"/; } || {
             restore_discard_stage
             error "Restore failed while committing $path; inspect the destination before retrying."
         }
