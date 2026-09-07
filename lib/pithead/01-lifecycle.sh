@@ -180,7 +180,9 @@ stack_down() {
     mutation_lock_acquire down
     log "Stopping stack..."
     remove_tor_egress_firewall
-    docker compose down
+    if ! docker compose down; then
+        error "Stack failed to stop — see the error above."
+    fi
     log "Stack stopped."
     mutation_lock_release
 }
