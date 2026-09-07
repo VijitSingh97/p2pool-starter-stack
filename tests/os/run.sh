@@ -39,7 +39,6 @@
 # battery rather than stopping at the first fault; the run exits non-zero if any assertion failed.
 # --keep leaves the VM + disks for inspection.
 set -uo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=tests/os/hugepages-boot-verdict.sh
 . "$SCRIPT_DIR/hugepages-boot-verdict.sh"
@@ -61,6 +60,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 . "$SCRIPT_DIR/aged-version.sh"
 # shellcheck source=tests/os/provision-browser-submit.sh
 . "$SCRIPT_DIR/provision-browser-submit.sh"
+# shellcheck source=tests/os/appliance-hostname-leg.sh
+. "$SCRIPT_DIR/appliance-hostname-leg.sh"
+# shellcheck source=tests/os/appliance-diagnostics-leg.sh
+. "$SCRIPT_DIR/appliance-diagnostics-leg.sh"
+# shellcheck source=tests/os/appliance-config-approval-leg.sh
+. "$SCRIPT_DIR/appliance-config-approval-leg.sh"
+# shellcheck source=tests/integration/mergemine-probe.sh
+. "$SCRIPT_DIR/../integration/mergemine-probe.sh"
 # shellcheck source=tests/os/reinstall-prefill-submit-leg.sh
 . "$SCRIPT_DIR/reinstall-prefill-submit-leg.sh"
 # shellcheck source=tests/os/setup-again-leg.sh
@@ -72,7 +79,6 @@ PHASE="all"
 VM="pithead-os-test"
 DISK="/srv/code/bench-vm/pithead-os-test.img"
 SERIAL="/tmp/pithead-os-serial.log"
-
 while [ $# -gt 0 ]; do
     case "$1" in
     --image)
@@ -97,7 +103,6 @@ while [ $# -gt 0 ]; do
         ;;
     esac
 done
-
 PASS=0
 FAIL=0
 ok() {
@@ -110,7 +115,6 @@ bad() {
 }
 info() { printf '\033[1;34m==>\033[0m %s\n' "$1"; }
 have() { command -v "$1" >/dev/null 2>&1; }
-
 KEY="$HOME/.ssh/pithead-os-test"
 ip=""
 # Overwritten by every _ssh call with that call's stderr (empty on success). Not a log — just the
@@ -120,7 +124,6 @@ SSH_ERR="/tmp/pithead-os-ssh.err"
 # A fresh run must not inherit the last run's preserved console: the cleanup copy below is
 # no-clobber (the at-assertion copy is the authoritative one), so clear the slate here.
 rm -f "$SERIAL.failed"
-
 # The wallet every phase submits. It must be checksum-VALID: p2pool refuses a well-formed but
 # checksum-invalid address at startup with a SIGABRT and crash-loops (#829), which killed the
 # provision phase's whole miner chain when the harness used `4` + 94×`A`. Host-side validation
@@ -131,7 +134,6 @@ HARNESS_WALLET="44MnN1f3Eto8DZYUWuE5XZNUtE3vcRzt2j6PzqWpPau34e6Cf4fAxt6X2MBmrm6F
 # made-up placeholder is (correctly) rejected before the flow ever reaches the credentials
 # handoff. Same throwaway address the stack suite uses.
 HARNESS_TARI="126J92Yow5y9UoRFd1DNujPmVFq9C1ZeiYWT95UKxz5Y1rzbfjtHg4SCZS1dk83ivzt3m2XRQHTaYUk9SwmyeCvy5BJ"
-
 # Every remote call is bounded. CORRECTION (this comment used to claim Debian socket-activates sshd —
 # disproven): os/rootfs/Dockerfile only ever `systemctl enable`/`disable`s the plain ssh.service; no
 # ssh.socket unit is ever enabled. What actually gates it is os/overlay/pithead-ssh-host-keys.conf, a drop-in
@@ -398,30 +400,28 @@ require_clean_bench() {
         exit 2
     }
 }
-
 vm_destroy() {
     virsh destroy "$VM" >/dev/null 2>&1 || true
     virsh undefine "$VM" --nvram >/dev/null 2>&1 || true
 }
-
 cleanup() {
-    # Preserve the console on failure. It is deleted with everything else on a green run, which
-    # meant the one artefact that explains a boot failure was destroyed by the failure itself.
+    local approval_cleanup_rc=0
+    declare -F approval_fixture_cleanup >/dev/null && approval_fixture_cleanup || approval_cleanup_rc=$?
+    # Preserve the console on failure; an at-assertion no-clobber copy remains authoritative.
     if [ "$FAIL" -gt 0 ] && [ -s "$SERIAL" ] && [ ! -f "$SERIAL.failed" ]; then
-        # No-clobber: an assertion that copied the console AT the failure got it before later
-        # boots truncated $SERIAL — this end-of-phase copy would replace it with the wrong boot.
         cp "$SERIAL" "$SERIAL.failed" 2>/dev/null &&
             info "console from the failed run kept at $SERIAL.failed"
     fi
     if [ "$KEEP" -eq 1 ]; then
         info "left VM '$VM' and $DISK in place (--keep)"
+        [ "$approval_cleanup_rc" -eq 0 ] || exit "$approval_cleanup_rc"
         return
     fi
     vm_destroy
     rm -f "$DISK" "$SERIAL" "$SSH_ERR"
+    [ "$approval_cleanup_rc" -eq 0 ] || exit "$approval_cleanup_rc"
 }
 trap cleanup EXIT
-
 # Wait until the serial log matches a pattern, or time out. $1 pattern, $2 seconds.
 wait_serial() {
     local pat="$1" deadline=$(($(date +%s) + ${2:-180}))
@@ -1955,11 +1955,10 @@ phase_install() {
     phase_install_prefill_submit_leg "$target_disk" # #1846, last: nothing after it needs the disk
     rm -f "$target_disk" "$restore_archive" "$restore_target"
 }
-
 phase_provision() {
     info "phase: provision (wizard HTTP submit -> setup -> stack containers up)"
-    local img token jar scode
-
+    # shellcheck disable=SC2034 # provision_browser_config reads both through Bash's dynamic scope.
+    local img token jar scode PROVISION_DASHBOARD_HOST=fixture-box PROVISION_FAKE_APPROVAL=1
     img=$(_build_image v1) || {
         bad "image build failed (/tmp/os-fault-build.log)"
         return
@@ -1969,7 +1968,6 @@ phase_provision() {
         return
     }
     ok "image boots ($ip)"
-
     # The wizard's one-time token, exactly where a human gets it: the console.
     local tries=0
     token=""
@@ -2120,7 +2118,8 @@ phase_provision() {
         bad "no os_update in /api/state — the appliance has no reachable OS-update control"
     fi
     phase_provision_control_regressions "$pv_user" "$pv_pass"
-
+    phase_provision_hostname_regressions "$pv_user" "$pv_pass"
+    phase_provision_sensitive_regressions "$pv_user" "$pv_pass"
     # ---- Tor-only egress backstop (#855): the fail-closed firewall must actually DROP -------
     # The whole product is Tor-first; the guarantee is that nothing CAN bypass Tor even if an app is
     # misconfigured, compromised, or dials a raw public IP. On the appliance the engine is podman+netavark,
@@ -2307,6 +2306,7 @@ phase_provision() {
         bad "dashboard never answered after the reboot (last: $code)"
         return
     }
+    assert_appliance_hostname_identity fixture-next "unaided reboot" "$pv_user" "$pv_pass"
     # No unit may be quietly broken (#792 sat visible in --failed for two RCs, unasserted).
     local failed_units
     # Transient healthcheck ephemera excluded: podman drives container healthchecks through
@@ -2413,6 +2413,7 @@ phase_provision() {
     else
         ok "commit gate REFUSES a slot whose monerod is down — left uncommitted, A/B fallback stays armed"
     fi
+    phase_provision_failed_doctor_regression "$pv_user" "$pv_pass"
     _ssh "podman start monerod >/dev/null 2>&1" || true
     unset -f _gate
 
@@ -2470,6 +2471,7 @@ phase_provision() {
     done
     if [ "$released" = 1 ]; then
         ok "the migrating slot committed and released the chain services"
+        assert_appliance_hostname_identity fixture-next "A/B update" "$pv_user" "$pv_pass"
     else
         bad "the migrating slot never reached the post-commit release — the hold deadlocked the gate it was built not to"
         return
