@@ -384,7 +384,8 @@ whole sequence from the browser — see
 below are what that button performs, and the only path for source checkouts.
 
 **Release bundle (the default):** from the install directory, re-download the latest bundle over it,
-then upgrade. `upgrade` **pulls** the new published images:
+then upgrade. `upgrade` **pulls** the new published images and never falls back to building from the
+source contexts that a release bundle does not carry:
 
 ```bash
 curl -fsSL https://github.com/p2pool-starter-stack/pithead/releases/latest/download/pithead.tar.gz | tar xz --strip-components=1
@@ -551,9 +552,12 @@ is typo'd away must fail loudly, not archive your onion keys in plaintext while 
 To write a plaintext archive on purpose, pass `--no-encrypt` (an empty passphrase at the interactive
 prompt does the same, with a warning).
 
-If the stack is running, `backup` stops it for a consistent copy and restarts it when done. A
-failed backup (disk full mid-archive, for example) removes the partial archive and still restarts
-the stack before reporting the error. Pass `-y` / `--yes` to skip both prompts (low-space warning,
+If the stack is running, `backup` stops it for a consistent copy and restarts it when done. The
+dashboard and mining services are unavailable during that interval. A failed backup (disk full
+mid-archive, for example) removes the partial archive and still restarts the stack before reporting
+the error. A failed restart is tried once more through the normal startup path. If both attempts
+fail, `backup` reports failure and keeps a completed archive, if one was written, while naming its
+path and the startup recovery command. Pass `-y` / `--yes` to skip both prompts (low-space warning,
 stop-the-stack question).
 
 Include the blockchains (larger, slower) with:
@@ -573,8 +577,8 @@ To recover (on a new machine, or after a wipe) copy the archive back and run:
 `restore` detects the format from the archive itself — encrypted backups ask for the passphrase
 (or read `PITHEAD_BACKUP_PASSPHRASE`), and plaintext archives from earlier releases restore
 unchanged, no flag needed. A wrong passphrase, or a corrupt or truncated archive of either format,
-fails before anything on disk is touched. `restore`
-prompts before overwriting anything (pass `-y` / `--yes` to skip). It puts the files back, fixes
+fails before anything on disk is touched. `restore` also refuses unless Compose confirms that every
+stack service is stopped; `--yes` skips the overwrite prompt, not this safety check. It puts the files back, fixes
 Tor key ownership so the onion address returns unchanged, and restores hashrate history and
 dashboard settings.
 

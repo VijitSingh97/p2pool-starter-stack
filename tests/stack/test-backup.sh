@@ -1,39 +1,10 @@
 # shellcheck shell=bash
 : "${STACK_SUITE:?is unset: this file is a tests/stack/run.sh fragment, not a script — run tests/stack/run.sh}"
-# Backup domain (#1105 Phase 1, appliance lane): the archive/restore round-trip and the
-# reset-dashboard verb — stack_backup's bounded retry on a tar race (#970), the
-# backup_require_items/backup_diagnose_items preflight that names a missing or dangling item
-# before anything is touched and diagnoses a tar failure by its real cwd/item state (#1244), an
-# absolute PITHEAD_CONFIG_FILE override archived at its real path rather than a doubled
-# $PWD-prefixed one (#1244), the plaintext backup/restore round-trip including the archive-layout
-# and stay-inside-the-sandbox checks (#140), the encrypted round-trip end to end — unattended
-# refusal without a passphrase, --no-encrypt opt-out, env-var/prompt passphrases, wrong-passphrase
-# and tamper/truncation refusals before extraction, and a failed encrypted backup leaving nothing
-# behind (#374/#549), a failed plaintext backup restarting a stack that was running and removing
-# the partial archive (#551), and reset-dashboard targeting the LIVE .env data dirs rather than a
-# possibly-unapplied config.json, refusing to guess without them, and its final compose_up_checked
-# call being if!-guarded like every other call site so a real compose failure surfaces the #180
-# subnet-collision explanation instead of tripping the raw ERR trap (#139/#557/#180).
+# Backup domain (#1105 Phase 1): encrypted/plain round trips, integrity and required-item gates,
+# stop/archive/restart recovery (#1965), live-restore refusal, and reset-dashboard safety.
 # Sourced by tests/stack/run.sh.
 #
-# This file merges TWO clusters that sat apart in run.sh, on either side of the installer tests and
-# the secrets domain (both stay in run.sh / move to test-secrets.sh respectively): the stack_backup
-# unit tests used to run first, and the backup/restore + reset-dashboard black-box tests used to run
-# roughly 500 lines later, after test-rig-worker.sh's and test-monero-tari.sh's source lines. Sourcing
-# this file in one place moves the second cluster earlier in execution order. Confirmed safe: every
-# fixture below builds its own throwaway dir under $SANDBOX ($RB/$CJ/$BK/$FB/$R/$RD557) — nothing
-# here reads or writes $V, $C, or any state a section between the two original positions left behind,
-# and nothing between those two original positions reads anything this file's fixtures produce.
-#
-# Re-derivations (the sandbox-builder WALLET trap — see #1305, still open on this lane):
-# - $WALLET: set by lib.sh's build_val_sandbox() (as the checksum-valid $VALID_PRIMARY constant), which
-#   the "config validation" black-box calls once, ahead of every section below that reads it as a
-#   config.json field value. That section lives in test-config.sh, sourced ahead of this file (a
-#   generic multi-field validator, not a backup concern), and this file never needs $V itself (each
-#   fixture above builds its own sandbox instead of reusing the shared one) — so re-deriving the bare
-#   string is enough; calling the heavier build_val_sandbox() would build a $V this file never touches.
-# - $VALID_TARI is a plain lib.sh top-level constant (not
-#   build_val_sandbox()-scoped), so it needs no re-derivation here or anywhere else.
+# Each section owns a throwaway fixture. Re-derive only the wallet constant needed in config inputs.
 WALLET="$VALID_PRIMARY" # checksum-valid mainnet primary (the XMRig donation address) — see #1305
 
 echo "== unit: stack_backup — one bounded retry on a tar race (#970) =="
@@ -179,7 +150,7 @@ cp "$ROOT/build/tari/config.toml.template" "$BK/build/tari/"
 cat >"$BK/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-  "compose ps --status running -q") exit 0 ;;   # empty output -> stack treated as not running
+  "compose ps --status running -q") [ "${STACK_RUNNING:-0}" = 1 ] && echo cid123; exit 0 ;;
 esac
 exit 0
 EOF
@@ -229,6 +200,14 @@ esac
 sandbox_rel="${BK#/}"
 escaped="$(printf '%s\n' "$listing" | grep -v '^$' | grep -v "^$sandbox_rel" || true)"
 assert_eq "archive paths stay inside the sandbox" "$escaped" ""
+
+# A verified archive still must not overwrite a database or onion key held open by a live service.
+printf 'CADDY-LIVE\n' >"$BK/Caddyfile"
+out="$(cd "$BK" && STACK_RUNNING=1 PATH="$BK/bin:$PATH" ./pithead restore -y "$archive" 2>&1)"
+rc=$?
+assert_rc "restore refuses while any stack service is running (#1965)" "$rc" "1"
+assert_contains "live-restore refusal names the required recovery" "$out" "pithead down"
+assert_eq "live-restore refusal preserves the current files" "$(cat "$BK/Caddyfile")" "CADDY-LIVE"
 
 # 3) Round-trip: corrupt/delete the live files, restore, assert the originals come back in place.
 printf 'CORRUPTED\n' >"$BK/Caddyfile"
@@ -415,6 +394,11 @@ cat >"$FB/bin/docker" <<'EOF'
 echo "[docker] $*" >>"${DOCKER_LOG:-/dev/null}"
 case "$*" in
   "compose ps --status running -q") echo cid123 ;; # non-empty -> stack treated as RUNNING
+  "compose up"*)
+    n=0; [ ! -f "${UP_COUNT:?}" ] || n=$(cat "$UP_COUNT")
+    n=$((n + 1)); printf '%s' "$n" >"$UP_COUNT"
+    [ "$n" -gt "${UP_FAILS:-0}" ] || exit 1
+    ;;
 esac
 exit 0
 EOF
@@ -425,7 +409,8 @@ exec "$@"
 EOF
 cat >"$FB/bin/tar" <<'EOF'
 #!/usr/bin/env bash
-exit 1
+[ "${TAR_FAIL:-1}" = 1 ] && exit 1
+exec /usr/bin/tar "$@"
 EOF
 chmod +x "$FB/bin/docker" "$FB/bin/sudo" "$FB/bin/tar"
 cat >"$FB/.env" <<EOF
@@ -439,12 +424,26 @@ COMPOSE_PROFILES=local_node
 EOF
 printf '{ "monero": {"mode":"local","wallet_address":"%s","node_username":"u","node_password":"p"}, "tari":{"wallet_address":"'"$VALID_TARI"'"}, "p2pool":{"pool":"main"}, "dashboard":{"secure":true,"host":"box.lan"} }\n' "$WALLET" >"$FB/config.json"
 
-out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
+out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" UP_COUNT="$FB/up.count" TAR_FAIL=1 PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
 rc=$?
 [ "$rc" -ne 0 ] && ok "failed plaintext backup (running stack) exits non-zero" || bad "failed plaintext backup (running stack) exits non-zero" "rc=0"
 assert_contains "failed plaintext backup names the cause" "$out" "partial archive was removed"
 assert_eq "failed plaintext backup leaves no archive behind" "$(ls "$FB"/backups/pithead-backup-* 2>/dev/null | head -1)" ""
 assert_contains "failed plaintext backup restarts the stack" "$(cat "$FB/docker.log" 2>/dev/null)" "compose up"
+
+rm -f "$FB/docker.log" "$FB/up.count"
+out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" UP_COUNT="$FB/up.count" UP_FAILS=1 TAR_FAIL=0 PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
+rc=$?
+assert_rc "backup retries one failed post-archive restart (#1965)" "$rc" "0"
+assert_contains "restart retry is reported" "$out" "retrying the normal startup path once"
+assert_eq "restart retry makes exactly two up attempts" "$(cat "$FB/up.count")" "2"
+
+rm -f "$FB/docker.log" "$FB/up.count" "$FB"/backups/pithead-backup-*
+out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" UP_COUNT="$FB/up.count" UP_FAILS=2 TAR_FAIL=0 PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
+rc=$?
+assert_rc "backup reports failure when both restart attempts fail (#1965)" "$rc" "1"
+assert_contains "failed restart says the completed archive remains valid" "$out" "archive is valid"
+assert_eq "valid archive survives a restart failure" "$(ls "$FB"/backups/pithead-backup-* 2>/dev/null | wc -l | tr -d ' ')" "1"
 
 echo "== black-box: reset-dashboard targets .env dirs, not config.json (#139) =="
 # reset-dashboard must wipe the LIVE deployment's data dirs (from .env), not a path the user may
