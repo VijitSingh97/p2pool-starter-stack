@@ -112,6 +112,50 @@ gh_release_fetch() { # <owner/repo>; sets GH_RELEASE_JSON on success, GH_RELEASE
     return 1
 }
 
+render_worker_read_tokens() { # <masked-dir>; dashboard-only RigForge credentials, never browser config
+    local LC_ALL=C mdir="$1" final rows tmp
+    final="$mdir/worker-read-tokens.json"
+    rows=$(mktemp "$mdir/.worker-read-rows.XXXXXX") || {
+        rm -f "$final"
+        return 1
+    }
+    tmp=$(mktemp "$mdir/.worker-read-tokens.XXXXXX") || {
+        rm -f "$rows" "$final"
+        return 1
+    }
+    chmod 600 "$rows" "$tmp" || {
+        rm -f "$rows" "$tmp" "$final"
+        return 1
+    }
+    if ! jq -c '(.workers.api_port // 8080) as $default
+        | (.workers.list // [])[]
+        | {name: (.name // ""), host: (.host // ""), token: (.token | strings),
+           port: (.port // $default)}' "$CONFIG_FILE" |
+        while IFS= read -r row; do
+            name=$(printf '%s' "$row" | jq -r '.name')
+            host=$(printf '%s' "$row" | jq -r '.host')
+            token=$(printf '%s' "$row" | jq -r '.token')
+            port=$(printf '%s' "$row" | jq -r '.port')
+            [ -n "$name" ] && [ -n "$host" ] && [ -n "$token" ] || continue
+            [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || continue
+            [ "${#token}" -ge 32 ] && [[ "$token" != *[![:graph:]]* ]] || continue
+            read=$(hmac_sha256_hex "$token" 'rigforge:api-read:v1') || exit 1
+            printf '%s\n%s\n%s\n%s\n' "$name" "$host" "$port" "$read" |
+                jq -Rn '{name: input, host: input, port: (input | tonumber), read_token: input}' >>"$rows" || exit 1
+        done; then
+        rm -f "$rows" "$tmp" "$final"
+        return 1
+    fi
+    jq -s . "$rows" >"$tmp" && chmod 600 "$tmp" && mv "$tmp" "$final"
+    local rc=$?
+    rm -f "$rows" "$tmp"
+    if [ "$rc" -eq 0 ] && [ "$(id -u)" -eq 0 ]; then
+        chown "${APP_UID:-1000}:${APP_GID:-1000}" "$final" || rc=1
+    fi
+    [ "$rc" -eq 0 ] || rm -f "$final"
+    return "$rc"
+}
+
 # Render the pre-masked prefill copy (#440): the live config with every SET secret leaf replaced
 # by the {"__secret__":true} sentinel, written atomically to <control-dir>/masked/config.json.
 # The dashboard serves the Configuration form from THIS file (mounted read-only) — the raw
@@ -156,10 +200,15 @@ render_masked_config() { # <control-dir>
               if (. // "") == "" then . else {"__secret__": true} end)
           else . end' "$CONFIG_FILE" >"$tmp" 2>/dev/null; then
         chmod 644 "$tmp" 2>/dev/null || true
-        mv "$tmp" "$mdir/config.json" 2>/dev/null ||
+        if mv "$tmp" "$mdir/config.json" 2>/dev/null; then
+            render_worker_read_tokens "$mdir" ||
+                warn "Could not render the per-rig read credentials — protected RigForge feeds will stay unavailable."
+        else
+            rm -f "$tmp" "$mdir/worker-read-tokens.json"
             warn "Could not write $mdir/config.json — the dashboard editor prefill may be stale."
+        fi
     else
-        rm -f "$tmp"
+        rm -f "$tmp" "$mdir/worker-read-tokens.json"
         warn "Could not render the masked config copy — the dashboard editor prefill may be stale."
     fi
 }

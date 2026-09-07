@@ -202,6 +202,8 @@ EOF
 # mirroring what a real RigForge rig's control API returns (rigforge#236's status shape).
 cat >"$WA3/bin/curl" <<'EOF'
 #!/usr/bin/env bash
+stdin=$(cat)
+printf 'ARGS=%s\nCONFIG=%s\n' "$*" "$stdin" >>"${CURL_LOG:?}"
 out="" url=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -223,7 +225,7 @@ EOF
 chmod +x "$WA3/bin/curl"
 u9="12121212-1212-4212-8212-121212121212"
 printf '{"id":"%s","action":"worker-apply","actor":"admin","worker":"rig1","changes":{"pools":["pool.example:3333"]}}\n' "$u9" >"$WA3/req.json"
-PATH="$WA3/bin:$PATH" CONTROL_WA_BUDGET=1 PITHEAD_CONFIG_FILE="$WA3/config.json" \
+PATH="$WA3/bin:$PATH" CURL_LOG="$WA3/curl.log" CONTROL_WA_BUDGET=1 PITHEAD_CONFIG_FILE="$WA3/config.json" \
     run_sourced "$SANDBOX" control_process_request "$WA3/req.json" "$WA3" >/dev/null 2>&1
 assert_eq "worker-apply accept path reaches a terminal 'applied' status" \
     "$(jq -r '.status' "$WA3/results/$u9.json" 2>/dev/null)" "applied"
@@ -233,6 +235,10 @@ assert_eq "worker-apply accept path records the rig's changed_keys" \
     "$(jq -rc '.changed_keys' "$WA3/results/$u9.json" 2>/dev/null)" '["pools"]'
 assert_contains "worker-apply accept is audited as applied" \
     "$(cat "$WA3/audit/control.log")" '"action":"worker-apply","status":"applied"'
+assert_not_contains "worker-apply keeps the control token out of curl argv" \
+    "$(grep '^ARGS=' "$WA3/curl.log")" "tok-rig1"
+assert_contains "worker-apply gives curl its bearer through stdin config" \
+    "$(grep '^CONFIG=' "$WA3/curl.log")" "Authorization: Bearer tok-rig1"
 # The rig can also end an apply terminal "failed" — it could not restore its own rollback backup
 # (present since the v1.11.2 fleet floor). The poll must land it as failed-with-reason, never burn
 # the 20s deadline into a vague "accepted".
@@ -347,7 +353,8 @@ wu_accept_case() { # <uuid> <status-body-json> <label> <expected-status>
     printf '%s' "v9.9.9" >"$dir/staged/.rigforge-latest-tag"
     cat >"$dir/bin/curl" <<EOF
 #!/usr/bin/env bash
-echo "\$*" >>"$dir/dials.log"
+stdin=\$(cat)
+printf 'ARGS=%s\\nCONFIG=%s\\n' "\$*" "\$stdin" >>"$dir/dials.log"
 out="" url=""
 while [ \$# -gt 0 ]; do
     case "\$1" in
@@ -381,6 +388,10 @@ assert_eq "applied result records the host-derived version" \
 # own enforcement (that needs a real curl against an oversized server — an e2e concern).
 assert_contains "worker-upgrade rig dials carry a --max-filesize cap (#690)" \
     "$(cat "$WU_LAST_DIR/dials.log" 2>/dev/null)" "--max-filesize"
+assert_not_contains "worker-upgrade keeps the control token out of curl argv" \
+    "$(grep '^ARGS=' "$WU_LAST_DIR/dials.log")" "tok-rig1"
+assert_contains "worker-upgrade gives curl its bearer through stdin config" \
+    "$(grep '^CONFIG=' "$WU_LAST_DIR/dials.log")" "Authorization: Bearer tok-rig1"
 assert_contains "upgrade applied is audited" \
     "$(cat "$WU_LAST_DIR/audit/control.log")" '"action":"worker-upgrade","status":"applied"'
 w8="23232323-2323-4232-9232-232323232323"

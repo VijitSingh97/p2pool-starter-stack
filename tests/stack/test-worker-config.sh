@@ -133,3 +133,34 @@ run_pending >/dev/null
 assert_eq "workers.list-sentinel commit applies" "$(jq -r '.status' "$RESULTS/$UUID8.json" 2>/dev/null)" "applied"
 assert_eq "committed config keeps the live workers.list token" "$(jq -r '.workers.list[0].token' "$C/config.json")" "tok_rig1secret"
 assert_eq "committed config carries no sentinel dict" "$(jq -r '[.. | objects | select(.__secret__?)] | length' "$C/config.json")" "0"
+
+echo "== black-box: per-rig derived read credentials (#1983) =="
+WREAD="$C/data/control/masked/worker-read-tokens.json"
+cp "$C/config.json" "$C/config.before-read-map.json"
+jq '.workers.list[0].port=18081 | .workers.list[0].token="0123456789abcdef0123456789abcdef"' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
+run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+assert_eq "read map uses the fixed HMAC derivation" "$(jq -r '.[] | select(.name=="rig1") | .read_token' "$WREAD")" "79432528d7ae32abcc791e8c3f86e100f01d7d535956b58b876da3c7660749b8"
+assert_eq "read map binds the descriptor's RigForge API port" "$(jq -r '.[] | select(.name=="rig1") | .port' "$WREAD")" "18081"
+assert_eq "read map is owner-only" "$(stat -c '%a' "$WREAD" 2>/dev/null || stat -f '%Lp' "$WREAD")" "600"
+case "$(cat "$MASKED" "$WREAD")" in
+*0123456789abcdef0123456789abcdef* | *tok_rig3secret*) bad "dashboard runtime holds no control token" "a control token leaked" ;;
+*) ok "dashboard runtime holds no control token" ;;
+esac
+jq --arg token '0123456789abcdef\0123456789abcdef' '.workers.list[0].token=$token' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
+run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+assert_eq "JSON row transport preserves a literal backslash in the HMAC key" "$(jq -r '.[0].read_token' "$WREAD")" "cce295e5a24453987365f2392bea539dd26e25d404c8742569b4f7b7a015c00e"
+jq --arg token "$(printf 'é%.0s' {1..32})" '.workers.list[0].token=$token' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
+run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+assert_eq "non-ASCII text gets no derived read capability" "$(jq -r 'length' "$WREAD")" "0"
+jq '.workers.list[0].token="short-token"' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
+run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+assert_eq "weak control tokens get no derived read capability" "$(jq -r 'length' "$WREAD")" "0"
+mv "$C/config.before-read-map.json" "$C/config.json"
+run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+assert_eq "switching away from 8081 removes stale read credentials" "$(jq -r 'length' "$WREAD")" "0"
+cp "$C/config.json" "$C/config.before-invalid-render.json"
+printf '{invalid\n' >"$C/config.json"
+run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+assert_eq "an invalid masked-config render removes the credential map" "$([ ! -e "$WREAD" ] && echo yes)" "yes"
+mv "$C/config.before-invalid-render.json" "$C/config.json"
+run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
