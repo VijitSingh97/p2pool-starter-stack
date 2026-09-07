@@ -7,7 +7,10 @@
 APPROVAL_FIXTURE_ARMED=0
 APPROVAL_RESTORE_SNAPSHOT=""
 approval_fixture_arm() {
+    local id="$1"
+    [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || return 1
     APPROVAL_FIXTURE_ARMED=1
+    _ssh "set -eu; test ! -e /data/pithead/data/control/.os1966-active-id; umask 077; printf '%s' '$id' > /data/pithead/data/control/.os1966-active-id" || return
     _ssh 'set -eu
 rm -rf /data/pithead/.os-approval-fixture
 mkdir -p /data/pithead/.os-approval-fixture/bin /etc/systemd/system/pithead-control.service.d
@@ -61,19 +64,24 @@ systemctl stop pithead-control.path
 systemctl stop pithead-control.service
 ! systemctl is-active --quiet pithead-control.service
 mkdir -p /data/pithead/.os-approval-fixture/cancelled
+id=$(cat /data/pithead/data/control/.os1966-active-id)
+printf "%s" "$id" | grep -qE '"'"'^[0-9a-f-]{36}$'"'"'
 find /data/pithead/data/control/requests -maxdepth 1 -type f -name '"'"'*.json'"'"' -exec mv -t /data/pithead/.os-approval-fixture/cancelled -- {} +
 find /data/pithead/data/control -maxdepth 1 -type f -name '"'"'.claim.*'"'"' -exec mv -t /data/pithead/.os-approval-fixture/cancelled -- {} +
 find /data/pithead/data/control/staged -maxdepth 1 -type f \( -name '"'"'.*.approval-*'"'"' -o -name '"'"'.*.telegram-*'"'"' -o -name '"'"'*.json.approved'"'"' \) -exec mv -t /data/pithead/.os-approval-fixture/cancelled -- {} +
+find /data/pithead/data/control/staged -maxdepth 1 -type f \( -name "$id.json" -o -name "$id.json.*" -o -name ".$id.*" \) -exec mv -t /data/pithead/.os-approval-fixture/cancelled -- {} +
 test -z "$(find /data/pithead/data/control/requests -maxdepth 1 -type f -name '"'"'*.json'"'"' -print -quit)"
 test -z "$(find /data/pithead/data/control -maxdepth 1 -type f -name '"'"'.claim.*'"'"' -print -quit)"
-test -z "$(find /data/pithead/data/control/staged -maxdepth 1 -type f \( -name '"'"'.*.approval-*'"'"' -o -name '"'"'.*.telegram-*'"'"' -o -name '"'"'*.json.approved'"'"' \) -print -quit)"'
+test -z "$(find /data/pithead/data/control/staged -maxdepth 1 -type f \( -name '"'"'.*.approval-*'"'"' -o -name '"'"'.*.telegram-*'"'"' -o -name '"'"'*.json.approved'"'"' \) -print -quit)"
+test -z "$(find /data/pithead/data/control/staged -maxdepth 1 -type f \( -name "$id.json" -o -name "$id.json.*" -o -name ".$id.*" \) -print -quit)"'
 }
 
 approval_fixture_disarm() {
     approval_fixture_quiesce || return 1
     [ "${APPROVAL_FIXTURE_ARMED:-0}" -eq 1 ] || return 0
     _ssh 'set -eu
-    rm -rf /data/pithead/.os-approval-fixture /etc/systemd/system/pithead-control.service.d/90-os-approval-fixture.conf
+rm -rf /data/pithead/.os-approval-fixture /etc/systemd/system/pithead-control.service.d/90-os-approval-fixture.conf
+rm -f /data/pithead/data/control/.os1966-active-id
     systemctl daemon-reload
     systemctl start pithead-control.path
     systemctl is-active --quiet pithead-control.path
@@ -123,11 +131,7 @@ approval_restore_pending() {
 install -m 600 /data/pithead/data/control/.os1966-original-config.json /data/pithead/config.json
 cd /data/pithead
 ./pithead apply -y >/dev/null
-a=$(jq -Sc . /data/pithead/config.json | sha256sum | cut -d" " -f1)
-b=$(jq -Sc . /data/pithead/data/control/.os1966-original-config.json | sha256sum | cut -d" " -f1)
-test -n "$a"
-test -n "$b"
-[ "$a" = "$b" ]
+cmp -s /data/pithead/config.json /data/pithead/data/control/.os1966-original-config.json
 rm -f /data/pithead/data/control/.os1966-original-config.json' || return 1
     APPROVAL_RESTORE_SNAPSHOT=""
 }
@@ -147,7 +151,12 @@ approval_fixture_cleanup() {
 }
 
 remote_node_runtime_verdict() { # <monero-host> <rpc> <zmq> <tari-host> <grpc> <p2pool-startup-log>
-    local mh="$1" rpc="$2" zmq="$3" th="$4" grpc="$5" logs="$6" env cmd flags tari_endpoint
+    local mh="$1" rpc="$2" zmq="$3" th="$4" grpc="$5" snapshot="$6" env cmd flags tari_endpoint started now
+    started=$(printf '%s\n' "$snapshot" | sed -n '1s/^PITHEAD_P2POOL_STARTED=//p')
+    logs=$(printf '%s\n' "$snapshot" | sed '1d')
+    [ -n "$started" ] || return 1
+    now=$(_ssh "podman inspect p2pool --format '{{.State.StartedAt}}'" 2>/dev/null | tr -d '\r') || return 1
+    [ "$now" = "$started" ] || return 1
     env=$(_ssh "sed -n '/^MONERO_NODE_HOST=/p; /^MONERO_RPC_PORT=/p; /^MONERO_ZMQ_PORT=/p; /^TARI_GRPC_ADDRESS=/p' /data/pithead/.env" 2>/dev/null | tr -d '\r') || return 1
     printf '%s\n' "$env" | grep -qxF "MONERO_NODE_HOST=$mh" || return 1
     printf '%s\n' "$env" | grep -qxF "MONERO_RPC_PORT=$rpc" || return 1
@@ -158,13 +167,16 @@ remote_node_runtime_verdict() { # <monero-host> <rpc> <zmq> <tari-host> <grpc> <
     flags=$(_ssh "podman inspect p2pool --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^P2POOL_FLAGS=//p'" 2>/dev/null | tr -d '\r') || return 1
     tari_endpoint="$th:$grpc"
     case " $flags " in *" --socks5 "* | *" --socks5="*) tari_endpoint="127.0.0.1:$grpc" ;; esac
-    tari_endpoint_roundtrip_verdict "$logs" "$tari_endpoint"
+    tari_endpoint_roundtrip_verdict "$logs" "$tari_endpoint" || return 1
+    now=$(_ssh "podman inspect p2pool --format '{{.State.StartedAt}}'" 2>/dev/null | tr -d '\r') || return 1
+    [ "$now" = "$started" ]
 }
 
 p2pool_current_startup_merge_lines() {
     local started
     started=$(_ssh "podman inspect p2pool --format '{{.State.StartedAt}}'" 2>/dev/null | tr -d '\r')
     [ -n "$started" ] || return 1
+    printf 'PITHEAD_P2POOL_STARTED=%s\n' "$started"
     _ssh "podman logs --since '$started' p2pool 2>&1 | head -n $MM_WINDOW_LINES | grep -a MergeMiningClientTari || true" 2>/dev/null
 }
 
@@ -193,7 +205,7 @@ phase_provision_sensitive_regressions() { # <dashboard-user> <dashboard-password
 
     preview=$(dashboard_control_request preview "$(dashboard_config_body "$proposed")")
     rid=$(printf '%s' "$preview" | jq -r '.id // ""')
-    approval_fixture_arm || return
+    approval_fixture_arm "$rid" || return
     _ssh 'printf 999 > /data/pithead/.os-approval-fixture/uid' || {
         bad "could not set the wrong-identity approval control"
         approval_fixture_require_disarm
@@ -211,7 +223,7 @@ phase_provision_sensitive_regressions() { # <dashboard-user> <dashboard-password
 
     preview=$(dashboard_control_request preview "$(dashboard_config_body "$proposed")")
     rid=$(printf '%s' "$preview" | jq -r '.id // ""')
-    approval_fixture_arm || {
+    approval_fixture_arm "$rid" || {
         bad "could not arm the isolated Telegram approval fixture"
         return
     }
@@ -233,7 +245,7 @@ phase_provision_sensitive_regressions() { # <dashboard-user> <dashboard-password
     proposed=$(printf '%s' "$live" | jq -c '.dashboard.auth.password = "os1966-physical-only"')
     preview=$(dashboard_control_request preview "$(dashboard_config_body "$proposed")")
     rid=$(printf '%s' "$preview" | jq -r '.id // ""')
-    approval_fixture_arm || return
+    approval_fixture_arm "$rid" || return
     result=$(approval_commit "$rid")
     approval_fixture_require_disarm || return
     if printf '%s' "$result" | jq -e '.status == "rejected" and (.error | contains("configuration stick"))' >/dev/null &&
@@ -282,7 +294,7 @@ phase_provision_sensitive_regressions() { # <dashboard-user> <dashboard-password
         bad "could not preserve the original raw configuration for guaranteed restore"
         return
     }
-    approval_fixture_arm || return
+    approval_fixture_arm "$rid" || return
     result=$(approval_commit "$rid")
     prompt=$(_ssh 'cat /data/pithead/.os-approval-fixture/prompt.json 2>/dev/null' | jq -r '.text // ""' 2>/dev/null)
     approval_fixture_require_disarm || return
@@ -341,6 +353,7 @@ _approval_self_test() {
     tari_endpoint_roundtrip_verdict 'MergeMiningClientTari tari://old.fixture:18142 uses chain_id 0123456789abcdef' 'node.fixture:18142' && f=$((f + 1))
     _control_request_transport_self_test || f=$((f + 1))
     _approval_fixture_failure_self_test || f=$((f + 1))
+    _runtime_epoch_self_test || f=$((f + 1))
     [ "$f" -eq 0 ] || {
         printf 'appliance-config-approval-leg self-test FAILED: %s checks\n' "$f"
         return 1
