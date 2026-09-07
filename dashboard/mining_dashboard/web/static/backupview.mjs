@@ -13,7 +13,9 @@ import { Component, html } from "./preact.mjs";
 import { fmtEpoch } from "./securityview.mjs";
 
 const CONTROL_HEADERS = { "Content-Type": "application/json", "X-Pithead-Control": "1" };
-const BACKUP_POLL_MAX = 90; // 3 minutes — backup stops and restarts the whole stack, dashboard included
+const BACKUP_POLL_MAX = 450; // 15 minutes — appliance testing exceeded the old 3-minute wait
+const BACKUP_TIMEOUT =
+  "Stopped waiting for the backup. The host keeps trying, but this dashboard did not return; restart the appliance to recover the normal startup path, then check Backup again.";
 
 // POST the backup intent, then poll past the runner's interim "running" to a terminal result.
 // Exported for node --test — this network flow is the logic; BackupPanel only maps its outcome
@@ -22,7 +24,7 @@ export async function runBackup() {
   const res = await fetch("/api/control/backup", { method: "POST", headers: CONTROL_HEADERS });
   if (!res.ok && res.status !== 202) throw new Error(`HTTP ${res.status}`);
   const { id } = await res.json();
-  const result = await pollResult(id, "running", BACKUP_POLL_MAX);
+  const result = await pollResult(id, "running", BACKUP_POLL_MAX, BACKUP_TIMEOUT);
   return { id, ...result };
 }
 
@@ -76,8 +78,8 @@ export class BackupPanel extends Component {
             <h3>Create a backup</h3>
             <p>The host stops the stack, archives config.json, .env, the Tor onion-service keys
             and the dashboard database into an encrypted file, then starts the stack again.
-            Mining pauses for the duration — usually under a minute. Blockchains are excluded;
-            they re-sync.</p>
+            Mining and this dashboard pause while the stack restarts. Appliance testing took more
+            than three minutes; leave this page open. Blockchains are excluded; they re-sync.</p>
             <p>The passphrase is generated on the host and shown once, right after this. There is
             no way to see it again — download the kit or write it down when it appears.</p>
             <div class="config-modal-actions">

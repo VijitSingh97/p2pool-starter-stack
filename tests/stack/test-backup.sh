@@ -401,87 +401,8 @@ rc=$?
 assert_contains "encrypted restore w/o passphrase explains" "$out" "PITHEAD_BACKUP_PASSPHRASE"
 rm -f "$BK"/backups/pithead-backup-*
 
-echo "== black-box: failed plaintext backup restarts a running stack, removes the partial archive (#551) =="
-# Companion to the #549 test above: a failed tar must not strand the stack stopped, nor leave a
-# partial (root-owned) archive that looks like a valid backup. Shadow tar to fail unconditionally
-# and simulate a RUNNING stack (was_running=1), so the failure path must call stack_up for real —
-# proven here by "compose up" showing up in the docker log, not by stubbing stack_up away.
-FB="$SANDBOX/failbackup"
-mkdir -p "$FB/build/tari" "$FB/data/tor" "$FB/data/dashboard" "$FB/bin"
-cp "$STACK" "$FB/pithead"
-cp "$ROOT/build/tari/config.toml.template" "$FB/build/tari/"
-cat >"$FB/bin/docker" <<'EOF'
-#!/usr/bin/env bash
-echo "[docker] $*" >>"${DOCKER_LOG:-/dev/null}"
-case "$*" in
-  "compose ps --status running -q") echo cid123 ;; # non-empty -> stack treated as RUNNING
-  "compose down"*) [ "${DOWN_FAIL:-0}" != 1 ] || exit 1 ;;
-  "compose up"*)
-    n=0; [ ! -f "${UP_COUNT:?}" ] || n=$(cat "$UP_COUNT")
-    n=$((n + 1)); printf '%s' "$n" >"$UP_COUNT"
-    [ "$n" -gt "${UP_FAILS:-0}" ] || exit 1
-    ;;
-esac
-exit 0
-EOF
-cat >"$FB/bin/sudo" <<'EOF'
-#!/usr/bin/env bash
-if [ "$1" = "chown" ]; then [ "${CHOWN_FAIL:-0}" != 1 ]; exit; fi
-exec "$@"
-EOF
-cat >"$FB/bin/tar" <<'EOF'
-#!/usr/bin/env bash
-[ -z "${TAR_CALLED:-}" ] || : >"$TAR_CALLED"
-[ "${TAR_FAIL:-1}" = 1 ] && exit 1
-exec /usr/bin/tar "$@"
-EOF
-chmod +x "$FB/bin/docker" "$FB/bin/sudo" "$FB/bin/tar"
-cat >"$FB/.env" <<EOF
-MONERO_ONION_ADDRESS=mona.onion
-TARI_ONION_ADDRESS=taria.onion
-P2POOL_ONION_ADDRESS=p2pa.onion
-PROXY_AUTH_TOKEN=FBTOKEN
-HOST_IP=box.lan
-DEPLOYMENT_COMPLETED=true
-COMPOSE_PROFILES=local_node
-EOF
-printf '{ "monero": {"mode":"local","wallet_address":"%s","node_username":"u","node_password":"p"}, "tari":{"wallet_address":"'"$VALID_TARI"'"}, "p2pool":{"pool":"main"}, "dashboard":{"secure":true,"host":"box.lan"} }\n' "$WALLET" >"$FB/config.json"
-
-out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" UP_COUNT="$FB/up.count" TAR_FAIL=1 PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
-rc=$?
-[ "$rc" -ne 0 ] && ok "failed plaintext backup (running stack) exits non-zero" || bad "failed plaintext backup (running stack) exits non-zero" "rc=0"
-assert_contains "failed plaintext backup names the cause" "$out" "partial archive was removed"
-assert_eq "failed plaintext backup leaves no archive behind" "$(ls "$FB"/backups/pithead-backup-* 2>/dev/null | head -1)" ""
-assert_contains "failed plaintext backup restarts the stack" "$(cat "$FB/docker.log" 2>/dev/null)" "compose up"
-
-rm -f "$FB/docker.log" "$FB/up.count" "$FB/tar.called"
-out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" UP_COUNT="$FB/up.count" DOWN_FAIL=1 TAR_CALLED="$FB/tar.called" PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
-assert_rc "a failed stop aborts backup and reports recovery" "$?" "1"
-assert_contains "failed stop keeps the original error context" "$out" "failed to stop"
-assert_eq "failed stop attempts no archive" "$([ -e "$FB/tar.called" ] && echo yes || echo no)" "no"
-assert_eq "failed stop recovers through one normal startup" "$(cat "$FB/up.count")" "1"
-
-rm -f "$FB/docker.log" "$FB/up.count"
-out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" UP_COUNT="$FB/up.count" CHOWN_FAIL=1 TAR_FAIL=0 PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
-rc=$?
-assert_rc "archive finalization failure is not reported as success (#1965)" "$rc" "1"
-assert_contains "archive finalization failure keeps its specific cause" "$out" "could not assign the archive"
-assert_eq "finalization failure still recovers the running stack" "$(cat "$FB/up.count")" "1"
-assert_eq "finalization failure retains the completed archive" "$(ls "$FB"/backups/pithead-backup-* 2>/dev/null | wc -l | tr -d ' ')" "1"
-
-rm -f "$FB/docker.log" "$FB/up.count" "$FB"/backups/pithead-backup-*
-out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" UP_COUNT="$FB/up.count" UP_FAILS=1 TAR_FAIL=0 PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
-rc=$?
-assert_rc "backup retries one failed post-archive restart (#1965)" "$rc" "0"
-assert_contains "restart retry is reported" "$out" "retrying the normal startup path once"
-assert_eq "restart retry makes exactly two up attempts" "$(cat "$FB/up.count")" "2"
-
-rm -f "$FB/docker.log" "$FB/up.count" "$FB"/backups/pithead-backup-*
-out="$(cd "$FB" && DOCKER_LOG="$FB/docker.log" UP_COUNT="$FB/up.count" UP_FAILS=2 TAR_FAIL=0 PATH="$FB/bin:$PATH" ./pithead backup -y --no-encrypt 2>&1)"
-rc=$?
-assert_rc "backup reports failure when both restart attempts fail (#1965)" "$rc" "1"
-assert_contains "failed restart says the completed archive remains valid" "$out" "archive is valid"
-assert_eq "valid archive survives a restart failure" "$(ls "$FB"/backups/pithead-backup-* 2>/dev/null | wc -l | tr -d ' ')" "1"
+# shellcheck source=tests/stack/test-backup-recovery.sh
+source "$HERE/test-backup-recovery.sh"
 
 echo "== black-box: reset-dashboard targets .env dirs, not config.json (#139) =="
 # reset-dashboard must wipe the LIVE deployment's data dirs (from .env), not a path the user may

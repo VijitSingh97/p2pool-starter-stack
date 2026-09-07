@@ -4410,14 +4410,10 @@ factory_reset() {
 # (onion service keys), and the dashboard data dir (its DB never re-syncs). The blockchains do
 # re-sync, so they're excluded by default; pass --with-chains to fold in Monero/Tari/P2Pool data.
 #
-# The two files a backup archive cannot be worth taking without (#1059/#1244): config.json and
-# .env carry the node credentials and secrets, unlike every optional item stack_backup adds
-# below them (Caddyfile, the Tor data dir, the dashboard dir all get a plain `[ -f ]`/`[ -d ]`
-# guard already — these two didn't). Called BEFORE the disk-space check and before anything
-# touches the running stack, so a refusal here leaves the box exactly as it was, the same
-# promise the space check already makes. `-f` (not `-e`) so a symlink dangling at this instant
-# refuses too, the same as one dangling at tar time would. A function, not inline, so it is
-# testable at tier 1 without driving the whole backup flow.
+# Config and .env carry credentials, unlike optional backup items (#1059/#1244). Called before
+# the disk-space check and stack stop, so refusal leaves the box exactly as it was, the same
+# promise the space check makes. `-f` also refuses a dangling symlink; the function is directly
+# testable without driving the whole backup flow.
 backup_require_items() { # <item>...
     local _req
     for _req in "$@"; do
@@ -4451,18 +4447,15 @@ backup_diagnose_items() { # <tar -C dir> <item>...
 }
 
 # Isolate stack_up's exit-based failures so backup can retry and report both outcomes.
+backup_stack_up() (
+    trap - ERR
+    stack_up
+)
 backup_restart_stack() {
-    local attempt
-    for attempt in 1 2; do
-        if (
-            trap - ERR
-            stack_up
-        ); then
-            return 0
-        fi
-        [ "$attempt" -eq 1 ] &&
-            warn "The stack did not restart after the backup — retrying the normal startup path once."
-    done
+    backup_stack_up && return 0
+    warn "The stack did not restart after the backup — retrying the normal startup path once."
+    backup_stack_up && return 0
+    warn "The stack failed to restart after two attempts."
     return 1
 }
 
@@ -4629,9 +4622,8 @@ stack_backup() {
             stack_down
         ); then
             warn "The stack did not stop cleanly, so no backup archive was attempted."
-            if ! backup_restart_stack; then
-                error "Backup aborted because the stack could not be stopped cleanly, and two startup attempts also failed. The original stop and startup errors are above; run '$0 up' after correcting them."
-            fi
+            backup_restart_stack ||
+                error "Backup aborted: the stack failed to stop and failed to recover. Correct the errors above, then run '$0 up'."
             error "Backup aborted because the stack could not be stopped cleanly. The normal startup path recovered it; no archive was written."
         fi
     else
@@ -4679,24 +4671,14 @@ stack_backup() {
     done
     if [ "$_backup_ok" -ne 1 ]; then
         backup_diagnose_items "/" "${items[@]}"
-        if [ "$was_running" -eq 1 ] && ! backup_restart_stack; then
-            error "Backup failed after two archive attempts and the partial archive was removed; two attempts to restart the previously running stack also failed. The archive and startup errors are above; run '$0 up' after correcting them."
-        fi
+        [ "$was_running" -ne 1 ] || backup_restart_stack ||
+            error "Backup failed, the partial archive was removed, and the stack failed to recover. Correct the errors above, then run '$0 up'."
         error "Backup failed — the partial archive was removed."
     fi
-    local finalize_error=""
-    sudo chown "$REAL_USER":"$REAL_USER" "$archive" || finalize_error="could not assign the archive to $REAL_USER"
-    if [ -z "$finalize_error" ]; then
-        chmod 600 "$archive" || finalize_error="could not set the archive to owner-only permissions"
-    fi
-    if [ -n "$finalize_error" ]; then
-        if [ "$was_running" -eq 1 ]; then
-            if ! backup_restart_stack; then
-                error "The archive was created at $archive, but $finalize_error; two attempts to restart the previously running stack also failed. Treat the archive as sensitive and inspect its ownership before moving it."
-            fi
-            error "The archive was created at $archive, but $finalize_error. The previously running stack was recovered; treat the archive as sensitive and inspect its ownership before moving it."
-        fi
-        error "The archive was created at $archive, but $finalize_error. The stack was already stopped; treat the archive as sensitive and inspect its ownership before moving it."
+    if ! sudo chown "$REAL_USER":"$REAL_USER" "$archive" || ! chmod 600 "$archive"; then
+        [ "$was_running" -ne 1 ] || backup_restart_stack ||
+            error "The archive was created at $archive but could not be secured, and the stack failed to recover. Treat the archive as sensitive; correct the errors above, then run '$0 up'."
+        error "The archive was created at $archive but could not be secured. Treat it as sensitive and inspect its ownership and mode before moving it."
     fi
 
     log "Backup written to: $archive"
