@@ -43,6 +43,22 @@ backup_diagnose_items() { # <tar -C dir> <item>...
     done
 }
 
+# Isolate stack_up's exit-based failures so backup can retry and report both outcomes.
+backup_restart_stack() {
+    local attempt
+    for attempt in 1 2; do
+        if (
+            trap - ERR
+            stack_up
+        ); then
+            return 0
+        fi
+        [ "$attempt" -eq 1 ] &&
+            warn "The stack did not restart after the backup — retrying the normal startup path once."
+    done
+    return 1
+}
+
 stack_backup() {
     local with_chains=0 assume_yes=0 was_running=0 no_encrypt=0
     for arg in "$@"; do
@@ -201,7 +217,16 @@ stack_backup() {
         # down — the same blast-radius rule as #1244/#1248.
         backup_require_items "${required[@]}"
         was_running=1
-        stack_down
+        if ! (
+            trap - ERR
+            stack_down
+        ); then
+            warn "The stack did not stop cleanly, so no backup archive was attempted."
+            if ! backup_restart_stack; then
+                error "Backup aborted because the stack could not be stopped cleanly, and two startup attempts also failed. The original stop and startup errors are above; run '$0 up' after correcting them."
+            fi
+            error "Backup aborted because the stack could not be stopped cleanly. The normal startup path recovered it; no archive was written."
+        fi
     else
         # Stack already stopped: the same hold and the same re-check, still before tar.
         mutation_lock_acquire backup
@@ -246,12 +271,26 @@ stack_backup() {
         }
     done
     if [ "$_backup_ok" -ne 1 ]; then
-        [ "$was_running" -eq 1 ] && stack_up
         backup_diagnose_items "/" "${items[@]}"
+        if [ "$was_running" -eq 1 ] && ! backup_restart_stack; then
+            error "Backup failed after two archive attempts and the partial archive was removed; two attempts to restart the previously running stack also failed. The archive and startup errors are above; run '$0 up' after correcting them."
+        fi
         error "Backup failed — the partial archive was removed."
     fi
-    sudo chown "$REAL_USER":"$REAL_USER" "$archive"
-    chmod 600 "$archive"
+    local finalize_error=""
+    sudo chown "$REAL_USER":"$REAL_USER" "$archive" || finalize_error="could not assign the archive to $REAL_USER"
+    if [ -z "$finalize_error" ]; then
+        chmod 600 "$archive" || finalize_error="could not set the archive to owner-only permissions"
+    fi
+    if [ -n "$finalize_error" ]; then
+        if [ "$was_running" -eq 1 ]; then
+            if ! backup_restart_stack; then
+                error "The archive was created at $archive, but $finalize_error; two attempts to restart the previously running stack also failed. Treat the archive as sensitive and inspect its ownership before moving it."
+            fi
+            error "The archive was created at $archive, but $finalize_error. The previously running stack was recovered; treat the archive as sensitive and inspect its ownership before moving it."
+        fi
+        error "The archive was created at $archive, but $finalize_error. The stack was already stopped; treat the archive as sensitive and inspect its ownership before moving it."
+    fi
 
     log "Backup written to: $archive"
     if [ -n "$pass" ]; then
@@ -262,7 +301,9 @@ stack_backup() {
     fi
 
     if [ "$was_running" -eq 1 ]; then
-        stack_up
+        if ! backup_restart_stack; then
+            error "Backup archive was written to $archive, but two attempts to restart the previously running stack failed. The archive is valid; correct the startup error above and run '$0 up'."
+        fi
         log "Stack restarted after the backup."
     fi
     mutation_lock_release
