@@ -18,6 +18,7 @@ export const POS = {
   rigs: { x: 12, y: 64, w: 88, h: 32 },
   browser: { x: 12, y: 150, w: 88, h: 32 },
   "xmrig-proxy": { x: 132, y: 64, w: 104, h: 32 },
+  "local-miner": { x: 132, y: 108, w: 104, h: 32 },
   caddy: { x: 132, y: 150, w: 104, h: 32 },
   dashboard: { x: 132, y: 226, w: 104, h: 32 },
   p2pool: { x: 262, y: 64, w: 92, h: 32 },

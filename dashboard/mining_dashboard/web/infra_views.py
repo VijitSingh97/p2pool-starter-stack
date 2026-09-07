@@ -15,9 +15,12 @@ formats at the edge and emits tokens the client maps to CSS, never HTML.
 import logging
 import time
 
+from mining_dashboard.client.rigforge_freshness import feed_stale
 from mining_dashboard.config import config
 from mining_dashboard.helper.utils import format_disk_size, format_duration, format_hashrate
 from mining_dashboard.service.update_checker import compute_update
+from mining_dashboard.web.rigforge_views import _num
+from mining_dashboard.web.rigforge_views import rigforge_display as _rigforge_display
 
 # Same logger name as views.py on purpose: these sections were emitting under "WebViews" before the
 # split and a rename would silently change every operator's log output.
@@ -51,134 +54,6 @@ def _reject_flag(accepted, rejected):
     if rate < _REJECT_FLAG_RATE:
         return None
     return {"text": "⚠", "title": f"High reject rate: {rate * 100:.1f}% ({rejected} rejected)"}
-
-
-def _num(v):
-    """A number for display, or None for anything non-numeric (incl. bools, which JSON booleans
-    would otherwise pass as 0/1). Every enriched RigForge field is nullable on the wire (#235)."""
-    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
-
-
-def _fmt_num(v):
-    """Trim a display number: drop a pointless ``.0`` so ``142.0 W`` reads ``142 W``."""
-    return str(int(v)) if isinstance(v, float) and v.is_integer() else str(v)
-
-
-def _rigforge_display(rf):
-    """A ``{version, miner_down, chips, stats}`` view of a worker's parsed ``rigforge`` block, or
-    ``None`` for a plain-xmrig worker (#235). Each metric is emitted ONLY when its data is present —
-    a rig with no RAPL shows no power row, a disabled watchdog shows no watchdog row.
-
-    Both outputs come from one pass so they can't drift: ``chips`` is the merged ``{text, variant,
-    title}`` badge shape the compact Workers-Alive list renders, and ``stats`` is the same metrics
-    split into ``{label, value, variant, title}`` for the Worker Inspect detail table (#507).
-    Building the set (and its thresholds) here keeps the client a dumb renderer, matching the
-    ``_reject_flag`` precedent."""
-    if not rf:
-        return None
-    rows = []
-
-    def add(label, value, chip, variant, title):
-        rows.append(
-            {"label": label, "value": value, "chip": chip, "variant": variant, "title": title}
-        )
-
-    if rf.get("miner_down"):
-        add(
-            "Miner",
-            "down",
-            "miner down",
-            "bad",
-            "RigForge is up but its XMRig API is unreachable — the rig is present but not mining. "
-            "Live hashrate and uptime come from the proxy.",
-        )
-
-    health = rf.get("health") or {}
-    if health.get("throttling") is True:
-        add("CPU", "throttling", "throttling", "bad", "CPU is thermal/power throttling.")
-    gov = health.get("governor")
-    if gov:
-        ok = gov == "performance"
-        add(
-            "Governor",
-            gov,
-            f"gov: {gov}",
-            "ok" if ok else "warn",
-            "CPU frequency governor"
-            + ("" if ok else " — 'performance' is recommended for mining."),
-        )
-    hp = _num(health.get("hugepages_total"))
-    if hp is not None:
-        add(
-            "HugePages",
-            _fmt_num(hp),
-            f"HP {_fmt_num(hp)}",
-            "outline",
-            f"HugePages allocated: {_fmt_num(hp)}.",
-        )
-    board = health.get("board")
-    if board:
-        add("Mainboard", board, board, "outline", "Mainboard (firmware).")
-
-    power = rf.get("power") or {}
-    watts = _num(power.get("watts"))
-    hspw = _num(power.get("hs_per_watt"))
-    if watts is not None or hspw is not None:
-        parts = []
-        if watts is not None:
-            parts.append(f"{_fmt_num(round(watts, 1))} W")
-        if hspw is not None:
-            parts.append(f"{_fmt_num(round(hspw, 1))} H/s·W")
-        text = " · ".join(parts)
-        add("Power / efficiency", text, text, "outline", "Power draw / efficiency.")
-
-    tune = rf.get("tune") or {}
-    if tune.get("target"):
-        add(
-            "Tuning target",
-            tune["target"],
-            f"tune: {tune['target']}",
-            "outline",
-            "Active tuning target.",
-        )
-    if tune.get("autotune_enabled") and tune.get("autotune_next"):
-        add(
-            "Autotune",
-            tune["autotune_next"],
-            f"autotune → {tune['autotune_next']}",
-            "outline",
-            "Next scheduled autotune run.",
-        )
-
-    wd = rf.get("watchdog") or {}
-    if wd.get("enabled"):
-        temp = _num(wd.get("temp_c"))
-        maxt = _num(wd.get("max_temp_c"))
-        if wd.get("thermal_hold") is True:
-            add(
-                "Watchdog",
-                "thermal hold",
-                "thermal hold",
-                "bad",
-                "Watchdog is holding the rig back — temperature above its ceiling.",
-            )
-        elif temp is not None:
-            text = f"{_fmt_num(round(temp, 1))}°C"
-            if maxt is not None:
-                text += f" / {_fmt_num(maxt)}°C"
-            add("Temp / max", text, text, "outline", "Watchdog temperature / ceiling.")
-
-    chips = [{"text": r["chip"], "variant": r["variant"], "title": r["title"]} for r in rows]
-    stats = [
-        {"label": r["label"], "value": r["value"], "variant": r["variant"], "title": r["title"]}
-        for r in rows
-    ]
-    return {
-        "version": rf.get("version"),
-        "miner_down": bool(rf.get("miner_down")),
-        "chips": chips,
-        "stats": stats,
-    }
 
 
 def build_system(data):
@@ -247,7 +122,10 @@ def rigforge_update_for(worker, release):
     cached release → ``None``, an honest "unknown", not a false "up to date"."""
     if not worker or not release:
         return None
-    version = (worker.get("rigforge") or {}).get("version")
+    rigforge = worker.get("rigforge") or {}
+    if feed_stale(rigforge):
+        return None
+    version = rigforge.get("version")
     if not version:
         return None
     return compute_update(version, release.get("tag"), release.get("url"))
@@ -306,7 +184,9 @@ def build_workers(workers, rigforge_release=None):
                     "adopted": worker.get("adopted"),
                     # RigForge enriched feed (#235): version badge + health/power/tune/watchdog
                     # chips, or None for a plain-xmrig worker (renders nothing extra).
-                    "rigforge": _rigforge_display(worker.get("rigforge")),
+                    "rigforge": _rigforge_display(
+                        worker.get("rigforge"), worker.get("status") == "online"
+                    ),
                     # {available, latest, url} | None — this rig runs an older RigForge (#596).
                     "rigforge_update": rigforge_update_for(worker, rigforge_release),
                 }
@@ -384,6 +264,8 @@ def build_energy(workers, prices=None):
     for worker in workers:
         name = worker.get("name", "")
         rf = worker.get("rigforge") or {}
+        if feed_stale(rf):
+            rf = {}
         power = rf.get("power") or {}
         watts = _num(power.get("watts"))
         estimated = False

@@ -3986,6 +3986,9 @@ os_update() {
     rauc_log=$(mktemp)
     if rauc install "$bundle" 2>&1 | tee "$rauc_log"; then
         rm -f "$rauc_log"
+        if command -v pithead-boot-version >/dev/null 2>&1; then
+            pithead-boot-version record-installed "$bundle_version" || warn "The update installed, but its boot-menu version could not be recorded; the new slot will repair it when it boots."
+        fi
     else
         local rauc_detail
         rauc_detail=$(grep -aE '^LastError: |^\[ERROR\] |[Ff]ailed' "$rauc_log" 2>/dev/null |

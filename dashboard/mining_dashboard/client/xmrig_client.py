@@ -4,6 +4,7 @@ import logging
 import time
 
 from mining_dashboard.client.rig_config_meta import parse_config_meta
+from mining_dashboard.client.rigforge_freshness import STALE_AFTER_S, feed_age
 from mining_dashboard.config.config import (
     API_TIMEOUT,
     DASHBOARD_WORKERS,
@@ -52,29 +53,25 @@ except ValueError:
     _INTERNAL_NET = ipaddress.ip_network("172.28.0.0/16")
 
 
-def parse_rigforge(payload):
+def parse_rigforge(payload, now=None):
     """Normalize the optional ``rigforge`` block off a worker ``/1/summary`` (#235).
 
     A RigForge rig serves an ENRICHED feed on its ``api_port`` (default 8081): the whole XMRig
     ``/1/summary`` object unchanged, plus one added ``rigforge`` key (rigforge#99). Point the rig's
     descriptor ``port`` at that feed and the block rides in on the existing poll — no new read path.
-    A plain-xmrig rig has no ``rigforge`` key, so this returns ``None`` and the UI renders it exactly
-    as before (backward compatible).
+    A plain-xmrig rig has no ``rigforge`` key, so this returns ``None``. Nullable enriched fields
+    are defaulted; ``xmrig_api == "unreachable"`` becomes ``miner_down``. The top-level RigForge
+    ``generated_at`` stamp decides whether live telemetry is stale.
 
-    Every enriched field is nullable on the wire — no RAPL / non-root → ``power.watts`` null, no
-    governor read → ``governor`` null — so each access is defaulted. A present-but-miner-down rig
-    (``xmrig_api == "unreachable"``, XMRig keys absent) is flagged via ``miner_down`` so the UI can
-    show it as up-but-miner-down rather than offline. Returns a compact dict for the UI, or ``None``.
-
-    ``config`` is the rig's EFFECTIVE writable config (rigforge#253, shipped in RigForge v1.10.0),
-    riding this same poll. It is what the Worker Inspect editor prefills from (#1235): the rig's
-    own current values, rather than Pithead's record of what it last pushed — which is empty on a
-    never-edited rig and stale on one changed directly with ``rigforge.sh apply``. A rig older than
+    ``config`` is the rig's EFFECTIVE writable config (rigforge#253). Worker Inspect prefills it
+    from (#1235), rather than Pithead's last pushed record. A rig older than
     v1.10.0 sends no ``config`` and this stays ``None``, so the editor falls back to the record.
     """
     rf = payload.get("rigforge") if isinstance(payload, dict) else None
     if not isinstance(rf, dict):
         return None
+    stamp = payload.get("generated_at")
+    age = feed_age(stamp, now)
     tune = rf.get("tune") or {}
     autotune = tune.get("autotune") or {}
     power = rf.get("power") or {}
@@ -83,6 +80,9 @@ def parse_rigforge(payload):
     watchdog = rf.get("watchdog") or {}
     wd_on = watchdog.get("mode") == "enabled"
     return {
+        "generated_at": stamp if age is not None else None,
+        "age_sec": age,
+        "stale": age is None or age > STALE_AFTER_S,
         "version": rf.get("version"),
         "miner_down": rf.get("xmrig_api") == "unreachable",
         "power": {"watts": power.get("watts"), "hs_per_watt": power.get("hs_per_watt")},

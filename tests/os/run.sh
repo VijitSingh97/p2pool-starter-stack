@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Tier-4 appliance harness (#77 phase 2): boot the pithead-os image in KVM and prove the
-# properties only real firmware + a real A/B updater can show — EFI boot, the first-boot wizard
-# window, and the update/commit/rollback cycle that is the phase-2 exit criterion. This is the
-# os-image sibling of tests/integration/run.sh; it needs a Linux host with KVM + libvirt + the
-# built image, so it runs on the bench, not in CI.
+# Tier-4 appliance harness (#77 phase 2): boot the pithead-os image in KVM and prove EFI boot,
+# first-boot wizard, and A/B update properties. It is the os-image sibling of the integration
+# harness and needs a Linux host with KVM + libvirt.
 #
 #   tests/os/run.sh --image PATH [--keep] [--phase boot|update|install|provision|rig|media|fault|reset|all]
 #
@@ -70,6 +68,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 . "$SCRIPT_DIR/reinstall-prefill-submit-leg.sh"
 # shellcheck source=tests/os/setup-again-leg.sh
 . "$SCRIPT_DIR/setup-again-leg.sh"
+. "$SCRIPT_DIR/boot-label-serial-verdict.sh"
 IMAGE=""
 KEEP=0
 PHASE="all"
@@ -567,7 +566,7 @@ phase_update() {
     # not: a redefinition capturing a local outlives the phase, and the NEXT phase in an
     # --phase all run then calls it with the variable gone — an unbound-variable crash that no
     # standalone phase run can ever reproduce. The top-level helpers already do this job.
-    local ip="" marker bundle
+    local ip="" marker bundle menu_mark menu_verdict
 
     info "building v1 test image (test SSH key + marker v1)"
     local img
@@ -686,6 +685,7 @@ phase_update() {
         return
     }
     ok "committed the booted update"
+    menu_mark=$(wc -c <"$SERIAL" 2>/dev/null | tr -d ' ')
     _reboot_wait reboot 300 || {
         bad "guest never returned after the post-commit reboot"
         return
@@ -693,8 +693,8 @@ phase_update() {
     marker=$(_ssh cat /etc/pithead-test-marker)
     [ "$marker" = "v2" ] && ok "COMMIT: a committed update persists across reboot" ||
         bad "expected v2 after commit, got '$marker'"
-    # #894/#895: host identity must survive the A/B swap — it lives on /data, which an update
-    # never touches, unlike the system slot an update replaces wholesale.
+    menu_verdict=$(boot_label_serial_verdict "$SERIAL" "$menu_mark" "$(tr -d '[:space:]' <VERSION)" B A) && ok "$menu_verdict" || bad "$menu_verdict"
+    # #894/#895: host identity on /data must survive the system-slot swap.
     local id_v2 hostkey_fp_v2
     id_v2=$(_ssh cat /etc/machine-id)
     hostkey_fp_v2=$(_ssh ssh-keygen -lf /data/ssh/ssh_host_ed25519_key 2>/dev/null | awk '{print $2}')
