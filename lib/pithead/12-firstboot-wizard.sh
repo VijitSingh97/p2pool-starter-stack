@@ -18,14 +18,14 @@ stage_wizard_spool() { # <spool-dir> -> fingerprint on stdout
     wizard_spool_publish "$spool" config.reference.json cat "$ref" || return 1
     # The rig pre-fill and (#1318) the saved role ride beside the reference — derived fresh each
     # boot, like the disk inventory, so machine 2 on a fleet stick never opens on machine 1's.
-    publish_rig_defaults "$spool"
-    publish_saved_role "$spool"
+    publish_rig_defaults "$spool" || return 1
+    publish_saved_role "$spool" || return 1
     # The data-wipe note (#1121): same "derived fresh every boot" rule, for the same fleet-stick
     # reason — see publish_data_wipe_note.
-    publish_data_wipe_note "$spool"
+    publish_data_wipe_note "$spool" || return 1
     # Installer mode reads the disk list from here too; a retry with no list is the same dead end
     # in a different shape.
-    installer_mode_available && publish_disk_inventory "$spool"
+    if installer_mode_available; then publish_disk_inventory "$spool" || return 1; fi
     # Copies the canonical pair off /data — minting only happens the first time, so the
     # fingerprint the console prints stays the machine's one certificate across retries.
     wizard_mint_cert "$spool" 2>/dev/null || true

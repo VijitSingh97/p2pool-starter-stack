@@ -17,10 +17,34 @@ restore_carry_dir() { printf '%s' "${PITHEAD_RESTORE_CARRY_DIR:-/run/pithead-res
 # Setup accepts the appliance backup layout, never arbitrary host paths from an archive.
 # Trailing slashes name data trees; other entries name individual files. Keep the same list
 # for membership checks and application so a newly accepted item cannot escape the mapping.
+restore_setup_config_path() {
+    case "$CONFIG_FILE" in
+    /*) printf '%s\n' "$CONFIG_FILE" ;;
+    *) printf '%s\n' "$PWD/$CONFIG_FILE" ;;
+    esac
+}
+
 restore_setup_items() {
-    printf '%s\n' "$PWD/$CONFIG_FILE" "$PWD/$ENV_FILE" "$PWD/Caddyfile" \
+    printf '%s\n' "$(restore_setup_config_path)" "$PWD/$ENV_FILE" "$PWD/Caddyfile" \
         "$PWD/data/tor/" "$PWD/data/dashboard/" "$PWD/data/monero/" \
         "$PWD/data/tari/" "$PWD/data/p2pool/"
+}
+
+restore_setup_archive_within_limits() { # <names-file> <verbose-file> [max-members] [max-bytes]
+    local members bytes
+    members=$(wc -l <"$1")
+    [ "$members" -le "${3:-4096}" ] && [ "$(wc -c <"$1")" -le 1048576 ] || return 1
+    bytes=$(awk '$1 ~ /^-/ { total += $3 } END { printf "%.0f", total }' "$2")
+    [ "$bytes" -le "${4:-1073741824}" ]
+}
+
+restore_setup_publish_file() { # <source> <destination>
+    local publish
+    publish=$(mktemp "${2}.restore.XXXXXXXXXX") || return 1
+    if ! install -m 600 "$1" "$publish" || ! mv -fT -- "$publish" "$2"; then
+        rm -f -- "$publish"
+        return 1
+    fi
 }
 
 restore_setup_members() { # <tar name listing>
@@ -52,9 +76,9 @@ restore_setup_members() { # <tar name listing>
 # this machine — the installer flow, where the restored tree belongs to the TARGET and
 # decrypted keys must never rest on the stick. rc 0: done. rc 1: refused, one page-ready
 # line in <errfile>. Never deletes <archive> — the callers own their files.
-restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
+restore_apply() ( # <archive> <passphrase> <errfile> [<config-only-dest>]
     local archive="$1" pass="$2" errf="$3" cfg_dest="${4:-}"
-    local size magic encrypted=0 tmp staged_cfg err
+    local size magic encrypted=0 tmp plain tree staged_cfg config_path err
 
     # Server-side cap already refused an oversize upload before it reached the spool; checked
     # again here so a file dropped by any other means gets the same honest refusal.
@@ -74,28 +98,28 @@ restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
         ;;
     esac
 
+    tmp=$(mktemp -d "$PWD/.restore.XXXXXXXXXX") || {
+        printf 'could not stage the restore' >"$errf"
+        return 1
+    }
+    trap 'rm -rf -- "$tmp"' EXIT
+    plain="$archive"
     if [ "$encrypted" -eq 1 ]; then
         if [ -z "$pass" ]; then
             printf 'this archive is encrypted — enter its passphrase' >"$errf"
             return 1
         fi
-        local plain_magic
-        plain_magic=$(openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
-            -pass fd:3 -in "$archive" 2>/dev/null 3< <(printf '%s' "$pass") |
-            head -c 2 | od -An -tx1 | tr -d ' \n') || true
-        if [ "$plain_magic" != "1f8b" ]; then
+        plain="$tmp/archive.tar.gz"
+        umask 077
+        if ! openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
+            -pass fd:3 -in "$archive" -out "$plain" 2>/dev/null 3< <(printf '%s' "$pass"); then
             printf 'wrong passphrase or corrupt archive' >"$errf"
             return 1
         fi
-        if ! openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
-            -pass fd:3 -in "$archive" 2>/dev/null 3< <(printf '%s' "$pass") |
-            tar -tzf - >/dev/null 2>&1; then
-            printf 'archive fails integrity verification (tampered or truncated)' >"$errf"
-            return 1
-        fi
-    else
-        if ! tar -tzf "$archive" >/dev/null 2>&1; then
-            printf 'archive fails integrity verification (tampered or truncated)' >"$errf"
+        local plain_magic
+        plain_magic=$(head -c 2 "$plain" | od -An -tx1 | tr -d ' \n')
+        if [ "$plain_magic" != "1f8b" ]; then
+            printf 'wrong passphrase or corrupt archive' >"$errf"
             return 1
         fi
     fi
@@ -107,16 +131,19 @@ restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
     # only regular files and dirs under known prefixes, so any escaping path or link is corruption
     # or an attack: fail closed. Lists names (whole-line, absolute/".." check) and the verbose
     # form (link check) separately, because a name with spaces is unparseable from `tar -tv`.
-    local rnames rlinks
-    if [ "$encrypted" -eq 1 ]; then
-        rnames=$(openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass fd:3 -in "$archive" 2>/dev/null 3< <(printf '%s' "$pass") | tar -tz 2>/dev/null)
-        rlinks=$(openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass fd:3 -in "$archive" 2>/dev/null 3< <(printf '%s' "$pass") | tar -tvz 2>/dev/null)
-    else
-        rnames=$(tar -tzf "$archive" 2>/dev/null)
-        rlinks=$(tar -tvzf "$archive" 2>/dev/null)
+    if ! LC_ALL=C tar --quoting-style=escape -tzf "$plain" >"$tmp/names" 2>/dev/null ||
+        ! LC_ALL=C tar --quoting-style=escape -tvzf "$plain" >"$tmp/verbose" 2>/dev/null; then
+        printf 'archive fails integrity verification (tampered or truncated)' >"$errf"
+        return 1
     fi
+    if ! restore_setup_archive_within_limits "$tmp/names" "$tmp/verbose"; then
+        printf 'archive expands beyond the setup restore limit — use the administrative restore workflow' >"$errf"
+        return 1
+    fi
+    local rnames
+    rnames=$(cat "$tmp/names")
     if printf '%s\n' "$rnames" | grep -E '^/|(^|/)\.\.(/|$)' >/dev/null ||
-        printf '%s\n' "$rlinks" | grep -vE '^[-d]' >/dev/null; then
+        grep -vE '^[-d]' "$tmp/verbose" >/dev/null; then
         printf 'archive contains unsafe paths or links — refusing to restore' >"$errf"
         return 1
     fi
@@ -126,20 +153,23 @@ restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
         return 1
     fi
 
-    tmp=$(mktemp -d) || {
+    tree="$tmp/tree"
+    mkdir -m 700 "$tree"
+    (umask 077 && tar --no-same-owner --no-same-permissions -xzf "$plain" -C "$tree") || {
         printf 'could not stage the restore' >"$errf"
         return 1
     }
-    if [ "$encrypted" -eq 1 ]; then
-        openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
-            -pass fd:3 -in "$archive" 2>/dev/null 3< <(printf '%s' "$pass") | tar -xzf - -C "$tmp"
-    else
-        tar -xzf "$archive" -C "$tmp"
+    if ! find "$tree" -type d -exec chmod 700 {} + ||
+        ! find "$tree" -type f -exec chmod 600 {} + ||
+        { [ "$(id -u)" = 0 ] && ! chown -R 0:0 "$tree"; }; then
+        printf 'could not secure the staged restore' >"$errf"
+        return 1
     fi
 
     # The archive stores paths relative to "/" (same convention `stack_backup`/`stack_restore`
     # use), so the staged config lands at exactly $PWD/$CONFIG_FILE underneath $tmp.
-    staged_cfg="$tmp/${PWD#/}/$CONFIG_FILE"
+    config_path=$(restore_setup_config_path)
+    staged_cfg="$tree$config_path"
     if [ ! -f "$staged_cfg" ] || ! jq -e . "$staged_cfg" >/dev/null 2>&1; then
         rm -rf "$tmp"
         printf 'archive does not contain a usable configuration' >"$errf"
@@ -157,23 +187,28 @@ restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
     if [ -n "$cfg_dest" ]; then
         # Installer door: the card and the ESP staging need the config; the tree stays in the
         # archive for the target to restore itself.
-        install -m 600 "$staged_cfg" "$cfg_dest"
+        restore_setup_publish_file "$staged_cfg" "$cfg_dest" || {
+            printf 'could not apply the backup files' >"$errf"
+            return 1
+        }
         rm -rf "$tmp"
         return 0
     fi
     # Apply only the accepted files/data trees. Do not copy staging's ancestor directories
     # onto /: their metadata is not part of the backup contract.
-    local item source copy_failed=0
+    local item source dest copy_failed=0
     while IFS= read -r item; do
-        source="$tmp/${item#/}"
+        source="$tree$item"
         [ -e "$source" ] || continue
         if [[ "$item" = */ ]]; then
-            mkdir -p "$item" && cp -a "$source". "$item" || {
+            dest="${item%/}"
+            rm -rf -- "$dest"
+            mv -T -- "$source" "$dest" || {
                 copy_failed=1
                 break
             }
         else
-            install -m 600 "$source" "$item" || {
+            restore_setup_publish_file "$source" "$item" || {
                 copy_failed=1
                 break
             }
@@ -204,7 +239,7 @@ restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
         safe_sed 's/^DEPLOYMENT_COMPLETED=.*/DEPLOYMENT_COMPLETED=false/' "$PWD/$ENV_FILE"
     fi
     return 0
-}
+)
 
 firstboot_consume_restore() ( # <spool-dir> [<installer 0|1>]
     local spool="$1" installer="${2:-0}" archive pass_snap="" pass="" rc=0 errf

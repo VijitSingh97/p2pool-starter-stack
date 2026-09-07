@@ -104,6 +104,8 @@ assert_rc "retry re-staging succeeds" "$?" 0
 WS_LEFT=$(find "$WSS/data/firstboot" -maxdepth 1 \( -name last-attempt.json -o -name install-attempt.json -o -name auth-mode -o -name config-changes.json \) | wc -l)
 assert_eq "retry keeps all four recovery files" "$WS_LEFT" 4
 assert_eq "retry preserves this machine's auth choice" "$(cat "$WSS/data/firstboot/auth-mode")" this-machine
+run_sourced "$WSS" eval 'publish_rig_defaults() { return 1; }; stage_wizard_spool "$WSS/data/firstboot"' >/dev/null
+assert_rc "retry staging propagates a failed derived-file publication" "$?" 1
 PITHEAD_PRESEED_DIR="$WSS/preseed" run_sourced "$WSS" eval "$WS_NEW_MACHINE" >/dev/null 2>&1
 assert_rc "the next machine reaches the same loading boundary" "$?" 7
 WS_LEFT=$(find "$WSS/data/firstboot" -maxdepth 1 \( -name last-attempt.json -o -name install-attempt.json -o -name auth-mode -o -name config-changes.json \) | wc -l)

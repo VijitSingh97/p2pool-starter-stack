@@ -166,6 +166,17 @@ run_sourced "$RS" restore_setup_members "${RS#/}/config.json/"
 assert_rc "member policy refuses a directory in place of configuration" "$?" 1
 run_sourced "$RS" restore_setup_members "${RS#/}/data/tor"
 assert_rc "member policy refuses a file in place of a data directory" "$?" 1
+out=$(PITHEAD_CONFIG_FILE="$RS/config.json" run_sourced "$RS" restore_setup_config_path)
+assert_eq "absolute config override is not prefixed with the working directory" "$out" "$RS/config.json"
+printf 'one\ntwo\n' >"$RS/restore-names"
+printf '%s\n' '-rw------- root/root 4 2026-01-01 00:00 one' '-rw------- root/root 5 2026-01-01 00:00 two' >"$RS/restore-verbose"
+run_sourced "$RS" restore_setup_archive_within_limits "$RS/restore-names" "$RS/restore-verbose" 2 9
+assert_rc "restore expansion limit accepts its exact bounds" "$?" 0
+run_sourced "$RS" restore_setup_archive_within_limits "$RS/restore-names" "$RS/restore-verbose" 1 9
+assert_rc "restore expansion limit rejects excess members" "$?" 1
+run_sourced "$RS" restore_setup_archive_within_limits "$RS/restore-names" "$RS/restore-verbose" 2 8
+assert_rc "restore expansion limit rejects excess bytes" "$?" 1
+rm -f "$RS/restore-names" "$RS/restore-verbose"
 RPSEED="$RS/preseed"
 mkdir "$RPSEED"
 cp "$rarchive" "$RPSEED/pithead-restore.enc"
@@ -174,6 +185,17 @@ out=$(PITHEAD_PRESEED_DIR="$RPSEED" run_sourced "$RS" eval 'mount() { :; }; cons
 assert_contains "carried normal backup passes the shared member policy" "$out" rc0
 assert_eq "carried backup restores the original database" "$(cat "$RS/data/dashboard/dashboard.db")" DBDATA-ORIG
 assert_eq "carried backup consumes its passphrase" "$([ -e "$RPSEED/pithead-restore-pass" ] || echo gone)" gone
+# Restore publication replaces hostile live links and clamps archive-provided modes.
+chmod 644 "$RS/data/dashboard/dashboard.db"
+tar -czf "$RS/hostile-live.tar.gz" -C / "${RS#/}/config.json" "${RS#/}/data/dashboard/dashboard.db"
+printf sentinel >"$RS/outside-target"
+rm "$RS/data/dashboard/dashboard.db"
+ln -s "$RS/outside-target" "$RS/data/dashboard/dashboard.db"
+run_sourced "$RS" restore_apply "$RS/hostile-live.tar.gz" '' "$RS/restore-error"
+assert_rc "restore safely replaces a planted destination symlink" "$?" 0
+assert_eq "restore leaves the planted symlink target untouched" "$(cat "$RS/outside-target")" sentinel
+assert_eq "restored database is a regular file" "$([ -f "$RS/data/dashboard/dashboard.db" ] && [ ! -L "$RS/data/dashboard/dashboard.db" ] && echo yes)" yes
+assert_eq "restored database permissions are private" "$(stat -c '%a' "$RS/data/dashboard/dashboard.db")" 600
 printf 'ordinary note' >"$RS/unexpected.txt"
 printf 'BACKUP-CADDY' >"$RS/Caddyfile"
 tar -czf "$RS/unexpected.tar.gz" -C / "${RS#/}/config.json" "${RS#/}/.env" "${RS#/}/Caddyfile" "${RS#/}/unexpected.txt"
