@@ -379,7 +379,7 @@ fi
     bad "successful audit consumes installer provenance marker" "marker remains"
 assert_contains "installer stages explicit provenance for the target" "$(grep 'install -m 600 /dev/null /boot/efi/pithead-setup-wizard' "$ROOT/lib/pithead/12-firstboot-wizard.sh")" "pithead-setup-wizard"
 assert_contains "installer carries the explicit provenance marker onto the target ESP" \
-    "$(sed -n '250,258p' "$ROOT/os/installer/pithead-install")" "pithead-setup-wizard"
+    "$(sed -n '/for seed in pithead-config.json/,/done/p' "$ROOT/os/installer/pithead-install")" "pithead-setup-wizard"
 assert_contains "direct wizard success records provenance" "$(grep 'control_audit_provisioned.*PWD/data/control' "$ROOT/lib/pithead/12-firstboot-wizard.sh")" "control_audit_provisioned"
 mkdir -p "$PROV/bin"
 cat >"$PROV/bin/cat" <<'EOF'
