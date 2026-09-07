@@ -46,9 +46,9 @@ provision_browser_submit() { # <ip> <jar> [field=value]...
     }
     # The four answers the Both role gives on the page, on the page's own paths (wizard.mjs
     # FIELDS: monero.wallet_address, tari.wallet_address, p2pool.pool, local_miner.enabled).
-    cfg=$(printf '%s' "$WIZ_STATE" | jq -c --arg m "$HARNESS_WALLET" --arg t "$HARNESS_TARI" \
+    cfg=$(printf '%s' "$WIZ_STATE" | jq -c --arg m "$HARNESS_WALLET" --arg t "$HARNESS_TARI" --arg h "${PROVISION_DASHBOARD_HOST:-}" \
         '.monero.wallet_address = $m | .monero.mode = "local" | .tari.wallet_address = $t |
-         .tari.mode = "local" | .p2pool.pool = "mini" | .local_miner.enabled = true') || {
+         .tari.mode = "local" | .p2pool.pool = "mini" | .local_miner.enabled = true | if $h != "" then .dashboard.host = $h else . end') || {
         printf 'jq-failed'
         return 1
     }

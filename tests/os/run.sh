@@ -59,19 +59,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 . "$SCRIPT_DIR/aged-version.sh"
 # shellcheck source=tests/os/provision-browser-submit.sh
 . "$SCRIPT_DIR/provision-browser-submit.sh"
+# shellcheck source=tests/os/appliance-hostname-leg.sh
+. "$SCRIPT_DIR/appliance-hostname-leg.sh"
 # shellcheck source=tests/os/reinstall-prefill-submit-leg.sh
 . "$SCRIPT_DIR/reinstall-prefill-submit-leg.sh"
 # shellcheck source=tests/os/setup-again-leg.sh
 . "$SCRIPT_DIR/setup-again-leg.sh"
-
 IMAGE=""
 KEEP=0
 PHASE="all"
-
 VM="pithead-os-test"
 DISK="/srv/code/bench-vm/pithead-os-test.img"
 SERIAL="/tmp/pithead-os-serial.log"
-
 while [ $# -gt 0 ]; do
     case "$1" in
     --image)
@@ -1958,8 +1957,7 @@ phase_install() {
 
 phase_provision() {
     info "phase: provision (wizard HTTP submit -> setup -> stack containers up)"
-    local img token jar scode
-
+    local img token jar scode PROVISION_DASHBOARD_HOST=fixture-box
     img=$(_build_image v1) || {
         bad "image build failed (/tmp/os-fault-build.log)"
         return
@@ -2120,7 +2118,7 @@ phase_provision() {
         bad "no os_update in /api/state — the appliance has no reachable OS-update control"
     fi
     phase_provision_control_regressions "$pv_user" "$pv_pass"
-
+    phase_provision_hostname_regressions "$pv_user" "$pv_pass"
     # ---- Tor-only egress backstop (#855): the fail-closed firewall must actually DROP -------
     # The whole product is Tor-first; the guarantee is that nothing CAN bypass Tor even if an app is
     # misconfigured, compromised, or dials a raw public IP. On the appliance the engine is podman+netavark,
@@ -2307,6 +2305,7 @@ phase_provision() {
         bad "dashboard never answered after the reboot (last: $code)"
         return
     }
+    assert_appliance_hostname_identity fixture-box "unaided reboot" "$pv_user" "$pv_pass"
     # No unit may be quietly broken (#792 sat visible in --failed for two RCs, unasserted).
     local failed_units
     # Transient healthcheck ephemera excluded: podman drives container healthchecks through
@@ -2470,6 +2469,7 @@ phase_provision() {
     done
     if [ "$released" = 1 ]; then
         ok "the migrating slot committed and released the chain services"
+        assert_appliance_hostname_identity fixture-box "A/B update" "$pv_user" "$pv_pass"
     else
         bad "the migrating slot never reached the post-commit release — the hold deadlocked the gate it was built not to"
         return

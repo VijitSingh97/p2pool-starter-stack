@@ -389,15 +389,20 @@ RC1 addendum, still manual after the automated rows run:
   proves the verbs finish, not that the presentation is useful.
 - `xvb.enabled`: its three config shapes remain tier-1 coverage; manually check only the final
   opt-in wording when #1855 is integrated.
-- Boot labels (#1956): the code and specific serial-console assertion are pending. Read the real
-  firmware menu on hardware; do not record this row as automated until that dependency lands.
+- Boot labels (#1956): the specific post-commit serial-console assertion is written on its product
+  branch. Read the real firmware menu on hardware; do not record this row as PASS until that
+  dependency lands in the tested image.
 
-Four additional RC2 rows remain dependencies rather than PASS: #1959 must add an appliance
-control assertion for its payout/auth/control editing boundary; #1898/#1943/#1946 must prove a
-real node-endpoint change and consumed probe against a reserved reachable node; #1957 must add a
-custom-hostname row covering `dashboard.host`, certificate names and mDNS; and #1956 must add the
-boot-label serial assertion. The final battery runs only after those product changes and their
-rows are integrated.
+The custom-hostname row is now specific: the wizard's `fixture-box` name must agree across the
+kernel, rendered `HOST_IP`, dashboard header state, certificate DNS and LAN-IP SANs, and active
+Avahi with working mDNS resolution. The same identity must survive the unaided reboot and A/B
+update. Its day-two `fixture-next` preview must require approval and leave those readings unchanged.
+The approved commit remains part of M16 until #1959's approval interface freezes; after approval it
+must change the same readings, survive reboot and A/B update, and the preview-only control must
+show the old name throughout. #1959's payout/auth/control approval and the reserved-node
+`uses chain_id` consumer proof also remain open. #1956 has written the serial assertion for boot
+labels, but none of these tier-4 rows is PASS until the product branches are integrated into an
+image and the full battery runs.
 
 ## Cutting a release
 

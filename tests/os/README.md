@@ -56,9 +56,14 @@ runbook in [`docs/dev/release-server.md`](../../docs/dev/release-server.md).
   served, Tor-only egress actually enforced, built-in miner up. Before the successful attempt, an
   unreachable remote node must be refused by preflight with its safe form values retained; a
   separate injected post-validation setup fault must open a recoverable failed page and retry
-  with those values. After provisioning, the dashboard drives a benign apply, a typed approval and its
-  missing-token refusal, doctor, log tail, and an encrypted backup; the stack and dashboard must
-  answer again after the backup. Then the stack must return from a reboot with no
+  with those values. The successful wizard submission names the appliance `fixture-box`; the
+  running kernel, rendered dashboard address, served certificate and active mDNS service must all
+  agree on that identity. After provisioning, the dashboard drives a benign apply, a typed approval
+  and its missing-token refusal, doctor, log tail, and an encrypted backup; the stack and dashboard
+  must answer again after the backup. A day-two hostname preview must require the sensitive-change
+  approval and leave the kernel name, mDNS activation, certificate and live config byte-for-byte
+  unchanged. The initial name must remain coherent after both the unaided reboot and the closing
+  A/B migration update. Then the stack must return from a reboot with no
   hands on it, and the real commit gate — `pithead doctor --json` — must pass on that healthy
   stack yet refuse once a revenue service is down. The closing leg installs a `data_migration`
   bundle through `pithead os-update` and proves the migration hold: the chain services stay down
