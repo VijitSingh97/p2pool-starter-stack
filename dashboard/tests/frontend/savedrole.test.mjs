@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  restoreBackLabel,
   SavedRoleScreen,
   savedRoleOrSetup,
   savedRoleSummary,
@@ -14,6 +15,12 @@ import { renderToString } from "./helpers/render.mjs";
 
 // The shape wizard.py's _saved_role publishes for a rig.
 const RIG = { role: "rig", pool: "pithead.lan:3333", worker: "rig-01" };
+
+test("restore Back returns to the screen that opened it (#1928)", () => {
+  assert.equal(restoreBackLabel(RIG, false), "Back to the saved setup");
+  assert.equal(restoreBackLabel(RIG, true), "Back to the setup form");
+  assert.equal(restoreBackLabel(null, false), "Back to the setup form");
+});
 
 const labels = (s) => savedRoleSummary(s).rows.map((r) => r.label);
 

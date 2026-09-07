@@ -34,6 +34,7 @@ from aiohttp import web
 
 from mining_dashboard.wizard_config import NEW_MACHINE_ANSWERS, prepare_config
 from mining_dashboard.wizard_form import build_config
+from mining_dashboard.wizard_node_probe import first_failure, probe_remote_nodes, saved_probe
 from mining_dashboard.wizard_recovery import recovery_state, remember_changes, retry_handler
 
 MAX_FAILURES = 5
@@ -56,10 +57,15 @@ def _shell_html() -> str:
         return f.read()
 
 
-def _spool_clear_error() -> None:
-    err_file = os.path.join(spool_dir(), "error.txt")
-    if os.path.exists(err_file):
-        os.unlink(err_file)
+def _spool_remove(name: str) -> None:
+    path = os.path.join(spool_dir(), name)
+    if os.path.exists(path):
+        os.unlink(path)
+
+
+def _spool_clear_host_verdict() -> None:
+    for name in ("error.txt", "node-probe.json"):
+        _spool_remove(name)
 
 
 def _canon_token(t: str) -> str:
@@ -132,18 +138,6 @@ def _last_attempt() -> dict:
     return _spool_json("last-attempt.json")
 
 
-# What a machine that has NEVER been configured is served, for the answers where the PAGE's
-# default and the REFERENCE's differ. `local_miner.enabled` was always one. `tari.mode` joins it
-# for #1855: merge-mining is opt-in on a new machine, while config.reference.json keeps
-# `tari.mode: "local"` and must keep it — the reference is the default for a config that ALREADY
-# EXISTS, so flipping it there would stop merge-mining on every upgraded install.
-#
-# It reaches the page only through the `or` below, so it is exactly the never-configured case. A
-# pre-seed, a reinstall pre-fill or a rejected submission is a machine that HAS answers; each of
-# those wins whole and is never handed this.
-_NEW_MACHINE_ANSWERS = {"local_miner": {"enabled": True}, "tari": {"mode": "off"}}
-
-
 def _rig_defaults() -> dict:
     """The rig role's pre-fill, published by the HOST like the disk inventory: a Pithead pool
     discovered on the LAN (when one answered) and this machine's own name for the worker
@@ -168,25 +162,6 @@ def _saved_role() -> dict | None:
     never do is offer to keep a role it cannot name. None means "run the normal wizard"."""
     saved = _spool_json("saved-role.json")
     return saved if isinstance(saved.get("role"), str) and saved["role"] else None
-
-
-def _node_probe() -> dict | None:
-    """The host's remote-node probe report (#1889), published beside the config it judged:
-    ``{ok, configured, probed, probes: [{target, host, port, ok, checked, reason, detail,
-    elapsed_ms}]}``.
-
-    None means NO REPORT, which is not the same as a failed one and must render as nothing at
-    all: an all-local machine probes nothing, and a host older than the report writes no file.
-    `ok` is missing from an absent file exactly as it is from a truncated one, so PRESENCE is
-    what separates them and the check is that `ok` arrived as a real bool — reading a falsy
-    default here would block every machine that runs its own nodes.
-
-    This is the report that says WHY, never a second opinion about whether to proceed: the gate
-    is the HOST's, in 12-firstboot-wizard.sh, which calls preflight_remote_nodes before
-    provisioning commits and refuses there.
-    """
-    report = _spool_json("node-probe.json")
-    return report if isinstance(report.get("ok"), bool) else None
 
 
 def wizard_stage() -> str:
@@ -304,7 +279,7 @@ async def wizard_state(request: web.Request) -> web.Response:
             # Always present, null when this is not a set-up-again boot (#1318).
             "saved_role": _saved_role(),
             # Always present, null when no probe ran at all (#1889).
-            "node_probe": _node_probe(),
+            "node_probe": saved_probe(_spool_json),
             "config_changes": list(dict.fromkeys([*changes, *remembered])),
             "install_attempt": install_attempt,
             "auth_mode": auth_mode,
@@ -333,7 +308,6 @@ def _spool_write_bytes(name: str, data: bytes) -> None:
 
 
 def _spool_write_config(cfg: dict) -> None:
-    _spool_clear_error()
     _spool_write_text("config.json", json.dumps(cfg, indent=2))
 
 
@@ -384,7 +358,7 @@ def _submit_rig(form: dict) -> web.Response:
     password = str(form.get("rig_password", "")).strip()
     if password:
         rig["stratum_password"] = password
-    _spool_clear_error()
+    _spool_clear_host_verdict()
     # The role rides beside the request so /status can narrate honestly after it is consumed.
     _spool_write_text("role", "rig")
     _spool_write_text("rig-request.json", json.dumps(rig))
@@ -395,6 +369,7 @@ async def submit(request: web.Request) -> web.Response:
     if not _authed(request):
         raise web.HTTPFound("/")
     form = await request.post()
+    _spool_clear_host_verdict()
     # Restated per SUBMISSION (#1835): a stale stick choice must not mute the install narration.
     _spool_write_text("stick", "1" if str(form.get("disk", "")).strip() == "usb" else "0")
     raw = str(form.get("config", "")).strip()
@@ -417,7 +392,7 @@ async def submit(request: web.Request) -> web.Response:
             # password is generated, no card appears, whatever a crafted submit carried.
             if confirm != disk:
                 return web.json_response({"error": f"type {disk} exactly to confirm"}, status=400)
-            _spool_clear_error()
+            _spool_clear_host_verdict()
             _spool_write_text("install-request", f"{disk}\tkeep")
             _spool_write_text("install-attempt.json", json.dumps({"disk": disk, "wipe": "keep"}))
             return web.json_response({"status": "accepted"})
@@ -453,6 +428,14 @@ async def submit(request: web.Request) -> web.Response:
         err = _gate_install_request(dict(form))
         if err:
             return web.json_response({"error": err}, status=400)
+    report = await probe_remote_nodes(cfg)
+    if report["configured"]:
+        _spool_write_text("node-probe.json", json.dumps(report))
+    if not report["ok"]:
+        remember_changes(spool_dir(), changes, _spool_json, _spool_write_text)
+        _spool_write_text("last-attempt.json", json.dumps(cfg))
+        _spool_remove("install-request")
+        return web.json_response({"error": first_failure(report), "node_probe": report}, status=400)
     # Keep the full attempt for a retry, write only what differs from the defaults.
     remember_changes(spool_dir(), changes, _spool_json, _spool_write_text)
     _spool_write_text("last-attempt.json", json.dumps(cfg))
@@ -470,6 +453,7 @@ async def submit_restore(request: web.Request) -> web.Response:
     # aiohttp enforces client_max_size (set in make_app) itself, answering 413 before this
     # body even finishes reading — no try/except needed to turn that into a response.
     form = await request.post()
+    _spool_clear_host_verdict()
     # Restated like /submit (#1835): a restore installs to a DISK — the gate below refuses "usb".
     _spool_write_text("stick", "0")
     upload = form.get("archive")
@@ -491,7 +475,6 @@ async def submit_restore(request: web.Request) -> web.Response:
         err = _gate_install_request(dict(form))
         if err:
             return web.json_response({"error": err}, status=400)
-    _spool_clear_error()
     _spool_write_bytes("restore-archive", data)
     _spool_write_text("restore-passphrase", str(form.get("passphrase", "")))
     return web.json_response({"status": "accepted"})

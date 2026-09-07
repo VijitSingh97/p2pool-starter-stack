@@ -103,14 +103,22 @@ whatever the role says: the survivor config wins, and no role change crosses.
 
 The rig submission travels on its own spool channel (`rig-request.json`; the server never
 writes a `config.json` candidate for it), and the host dials the pool BEFORE anything
-irreversible — the same discipline `preflight_remote_nodes` gives remote nodes.
+irreversible — the same discipline the wizard server gives remote nodes.
 
 ### The remote-node probe report
 
-`preflight_remote_nodes` refuses to provision when a configured remote node does not answer, and
-it publishes what it found beside that refusal as `node-probe.json` (#1889). The wizard serves it
-as `node_probe` so the page can say WHICH endpoint failed and why, rather than showing one line of
-error text.
+Before it stages a configuration, the wizard server asks every configured remote endpoint the
+same protocol-level question its mining consumer needs (#1889). Monero RPC must answer
+`get_info`, using the configured Digest login, and its ZMQ port must complete a ZMTP handshake.
+A Tari base node must answer `GetTipInfo` over gRPC. The browser names those checks while they run.
+Failure keeps the operator's complete form in `last-attempt.json`, removes any install request,
+and returns the report as `node_probe`; nothing writes a `config.json` candidate.
+
+The server resolves a name once and dials that vetted address. Loopback, unspecified, link-local,
+multicast and reserved addresses are refused, including names that resolve to one (#1946). With
+the Tor egress firewall on, every answer must also be in the private LAN or VPN IPv4 ranges the
+mining container can dial. Credentials are used only for the RPC request and never enter the
+report.
 
 | Field | Meaning |
 |---|---|
@@ -119,16 +127,16 @@ error text.
 | `probed` | rows actually produced; a skipped endpoint emits no row, so `probed < configured` is how the page names one |
 | `probes[]` | `{target, host, port, ok, checked, reason, detail, elapsed_ms}` per endpoint |
 
-`reason` is one of `ok`, `protocol`, `timeout`, `refused`, `auth`, `missing-tool` or `unknown`.
-Two of those do not mean the node is unreachable: `auth` is a node that ANSWERED and asked for
-credentials Pithead has nowhere to store, which is a dead end rather than something to retry, and
-`missing-tool` is this machine failing to run the check at all. A reason the page does not
-recognise reads as "the check did not complete" — never as "not reached", because inventing a
-reachability claim for an unrecognised value is the defect #1913 names.
+`reason` is one of `ok`, `protocol`, `timeout`, `refused`, `auth`, `address`, `dns`, `unusable`,
+`missing-tool` or `unknown`. Two do not mean the node is unreachable: `auth` means a node answered
+but rejected the configured login, and legacy `missing-tool` reports that the machine could not
+run its old check. A reason the page does not recognise reads as "the check did not complete" —
+never as "not reached", because inventing a reachability claim for an unrecognised value is the
+defect #1913 names.
 
-`checked` says what was proved: `rpc` and `zmq` are live protocol checks, while `connect` is a
-bare TCP connect and passes on ANY socket that accepts — so a Tari row that passed is reported as
-qualified, not as a verified node.
+`checked` says what was proved: `rpc`, `zmq` and `grpc` are live protocol checks. The renderer
+still understands a legacy `connect` row, but qualifies it because any open socket can satisfy a
+bare TCP dial.
 
 An ABSENT report is not a failed one. A machine running its own nodes probes nothing and writes no
 file, so `node_probe` is `null` there and on any host older than the report; the wizard reads the

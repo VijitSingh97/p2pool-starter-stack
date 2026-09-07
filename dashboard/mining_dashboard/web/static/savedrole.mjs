@@ -43,6 +43,9 @@ export function savedRoleSummary(saved) {
   return { name, rows };
 }
 
+export const restoreBackLabel = (savedRole, setUpAgain) =>
+  savedRole && !setUpAgain ? "Back to the saved setup" : "Back to the setup form";
+
 export const SavedRoleScreen = ({
   summary,
   kept,

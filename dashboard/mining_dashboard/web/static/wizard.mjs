@@ -16,10 +16,10 @@ import {
   pathSet,
   telegramPairReady,
 } from "./configsync.mjs";
-import { NodeProbeReport } from "./nodeprobe.mjs";
+import { NodeProbeProgress, NodeProbeReport, needsNodeProbe } from "./nodeprobe.mjs";
 import { Component, html, render } from "./preact.mjs";
 import { rigCardFields, rigCardNote } from "./rigcardlogic.mjs";
-import { savedRoleOrSetup } from "./savedrole.mjs";
+import { restoreBackLabel, savedRoleOrSetup } from "./savedrole.mjs";
 import * as failure from "./wizardfailure.mjs";
 import { TariSection, tariAnswer, XvbField } from "./wizardmining.mjs";
 import { Err, Field, Note } from "./wizardparts.mjs";
@@ -255,6 +255,7 @@ export class WizardApp extends Component {
     confirm: "",
     wipe: "keep",
     submitting: false,
+    probing: false,
     jsonText: "",
     jsonError: "",
     authMode: "auto", // auto | set | none — travels beside the config (see wizard.py submit)
@@ -447,19 +448,34 @@ export class WizardApp extends Component {
         body.wipe = this.state.wipe;
       }
     }
-    const res = await fetch("/submit", { method: "POST", body: new URLSearchParams(body) });
+    const probing = !rig && !keepEverything && needsNodeProbe(this.state.cfg);
+    this.setState({ submitting: true, probing, error: "" });
+    let res;
+    try {
+      res = await fetch("/submit", { method: "POST", body: new URLSearchParams(body) });
+    } catch {
+      this.setState({
+        submitting: false,
+        probing: false,
+        error: "Could not reach this machine. Retry when it is available.",
+      });
+      return;
+    }
     if (!res.ok) {
       let msg = "Submit failed — check the configuration and retry.";
+      let nodeProbe = null;
       try {
-        msg = (await res.json()).error || msg;
+        const failure = await res.json();
+        msg = failure.error || msg;
+        nodeProbe = failure.node_probe || null;
       } catch {}
-      this.setState({ error: msg });
+      this.setState({ submitting: false, probing: false, error: msg, nodeProbe });
       return;
     }
     // No optimistic view swap: flipping the stage locally re-rendered a different page and
     // threw the scroll to the top while nothing had happened yet. The button reads
     // "Validating…" in place, and the page changes when the SERVER's stage does.
-    this.setState({ submitting: true, error: "" });
+    this.setState({ probing: false });
     this.poll();
   };
 
@@ -579,7 +595,7 @@ export class WizardApp extends Component {
         </form>
         <button type="button" class="wizard-link"
             onClick=${() => this.setState({ restoreMode: false, error: "" })}>
-            Back to the setup form</button>
+            ${restoreBackLabel(this.state.savedRole, this.state.setUpAgain)}</button>
     </div>`;
   }
 
@@ -638,6 +654,7 @@ export class WizardApp extends Component {
             onClick=${() => this.setState({ restoreMode: true, error: "" })}>
             Restoring an existing Pithead? Upload its backup instead.</button></p>
         <${Err}>${error}<//>
+        ${this.state.probing && html`<${NodeProbeProgress} config=${cfg} />`}
         <${NodeProbeReport} report=${this.state.nodeProbe}>Setup does not continue while a
         check is failing. Correct the address below and submit again.<//>
         <${failure.ConfigChanges} changes=${this.state.configChanges} />
@@ -831,7 +848,9 @@ export class WizardApp extends Component {
               html`<button type="submit" class="btn-toggle active" disabled=${(!rig && !!jsonError) || this.state.submitting}>
                 ${
                   this.state.submitting
-                    ? "Validating…"
+                    ? this.state.probing
+                      ? "Reaching remote nodes…"
+                      : "Validating…"
                     : keepEverything
                       ? "Reinstall the system — keep everything"
                       : installer
