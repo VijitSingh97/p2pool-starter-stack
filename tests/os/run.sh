@@ -220,7 +220,6 @@ _ssh_unreachable_reason() {
     printf 'guest never answered the network at all (last ssh error: %s) — DHCP/routing/firewall problem, not an sshd problem' "$(tr -s ' \n' ' ' <"$SSH_ERR" 2>/dev/null || echo none)"
 }
 _marker() { _ssh cat /etc/pithead-test-marker 2>/dev/null | tr -d "\r\n"; }
-
 # The marker baked INTO the dashboard image and served by whatever container actually answers
 # (/static/os-test-marker.txt, stamped by os/build-image.sh on harness builds). Distinct from
 # /etc/pithead-test-marker, which only names the OS slot: the image tag is identical across
@@ -236,7 +235,6 @@ _dash_marker_served() {
     printf '%s' "${got:-nothing}"
     return 1
 }
-
 # Poll until the guest has taken a DHCP lease. No guest agent in the appliance image (by
 # design), so the lease is the source of truth. Sets the global `ip`. $1 seconds.
 _wait_dhcp_ip() {
