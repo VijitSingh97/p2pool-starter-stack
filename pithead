@@ -2702,7 +2702,8 @@ monero_rpc_speaks() { # <config-file> <host> <port>
     case "$code" in 200) ;; 401 | 403) NODE_PROBE_REASON=auth && return 1 ;; *) NODE_PROBE_REASON=protocol && return 1 ;; esac
     printf '%s' "$body" | jq -e '(.status == "OK") and
         (.nettype | IN("mainnet", "testnet", "stagenet")) and
-        ([.height, .target_height] | all(type == "number" and floor == . and . >= 0))' >/dev/null 2>&1 || {
+        ([.height, .target_height] | all(type == "number" and
+            (tostring | test("^(0|[1-9][0-9]*)$"))))' >/dev/null 2>&1 || {
         NODE_PROBE_REASON=protocol
         return 1
     }

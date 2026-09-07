@@ -168,6 +168,16 @@ out=$(
     # shellcheck disable=SC1090
     source "$STACK"
     set +e
+    timeout() { printf '{"status":"OK","nettype":"mainnet","height":10.0,"target_height":11}\n200'; }
+    monero_rpc_speaks "$PFSB/rpc.json" node.example 18081
+    printf '%s' "$NODE_PROBE_REASON"
+)
+assert_eq "integral JSON floats do not pass as integer heights" "$out" "protocol"
+out=$(
+    cd "$PFSB" || exit
+    # shellcheck disable=SC1090
+    source "$STACK"
+    set +e
     timeout() { return 63; }
     monero_rpc_speaks "$PFSB/rpc.json" node.example 18081
     printf '%s' "$NODE_PROBE_REASON"
