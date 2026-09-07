@@ -146,8 +146,9 @@ addresses, runs no node, and serves nothing to log into. If a Pithead already an
 network at `pithead.local:3333`, its address is filled in for you; otherwise enter it by hand
 from that machine's own "Point miners at" line. Confirming shows a summary card with the worker
 name, where it mines, this machine's address and a **control token** — **not a login**, because
-a rig has none. The token is shown once and never again: a rig serves no page after this, so copy
-it now. It is what lets that Pithead adopt the rig: in its dashboard, under Workers, the adopt
+a rig has none. The token is shown once — a rig serves no page after this — so copy it now. If you lose
+it, the boot menu's **Set up again** with the same worker name shows the same token again
+(see [The boot menu](#the-boot-menu)). It is what lets that Pithead adopt the rig: in its dashboard, under Workers, the adopt
 form takes this rig's address, control port `8082` and the token. Until you do that, the rig
 still mines and still appears under Workers once it connects, but its row reads as an API error,
 because the token guards every API on the rig — the miner's own included, so nothing else on the
@@ -220,7 +221,7 @@ Everything below applies to the **Pithead** and **Pithead + RigForge** roles. A 
 rig skips all of it — see [What is this machine?](#what-is-this-machine) above for its three
 questions.
 
-**Paste your payout addresses — do not type them.** A Monero address is 95 characters and a
+**Paste your payout address — do not type it.** A Monero address is 95 characters and a
 single wrong character pays a stranger. The page checks the address as you paste it and tells
 you immediately if it is the wrong kind: p2pool cannot pay a subaddress (starting `8`) or an
 integrated address, only your **primary** address, which starts with `4`.
@@ -229,11 +230,12 @@ Then a handful of choices, all with sensible defaults:
 
 | Question | Default | When to change it |
 |---|---|---|
-| Tari payout address | — | Required, like the Monero one: this stack always merge-mines both coins from the same work. |
+| Merge-mine Tari? | no | Off on a new machine. Say yes and the same work earns on both chains, at no cost in hashrate; it then asks for a Tari payout address — paste that one too — and where the Tari node runs. It cannot be turned on from the dashboard afterwards — the Configuration view does not carry this switch; set the machine up again from the boot menu to change it. |
 | P2Pool sidechain | mini | `nano` for a single low-power rig, `main` only for very large hashrate. Changeable later. |
 | Telegram bot | — | Optional. Alerts and status commands; needs both the token and the chat id. |
 | Monero node | run it here | Point at a node you already run. It has to be on your own network — a private address (10.x, 172.16–31.x, 192.168.x) or one reached over a VPN — because the machine only lets the mining containers dial private ranges; everything else goes through Tor. |
-| Tari node | run it here | Same, over a network you trust, and the same private-address requirement. Pointing Tari elsewhere is the single biggest saving on a small disk: it takes about 200 GB out of the budget. |
+| Where the Tari node runs | run it here | Only asked once you say yes above. Same private-address requirement as the Monero node, over a network you trust. Pointing Tari elsewhere is the single biggest saving on a small disk: it takes about 200 GB out of the budget. |
+| Join the XMRvsBeast raffle? | on | Off if you would rather send every hash to your own P2Pool payouts. On, the switching engine donates only enough hashrate to hold your tier and routes the rest to P2Pool; donating past a tier's threshold earns nothing extra, because the raffle picks its winners at random. Changeable later. |
 | Mine on this machine too? | on | Off if this box should only coordinate — it is the same answer as the **Pithead** role above. Nothing to install: the image carries its own [RigForge](https://github.com/p2pool-starter-stack/rigforge) miner, pointed at this machine's own pool. It starts by itself once the stack is up, comes back on every boot, and appears in the dashboard's Workers view. The box is tuned for hashrate either way — the CPU governor and the HugePages reservation are set on every boot whether or not this switch is on. |
 | First sync | private over Tor | Faster over the open internet if days of syncing is too slow; it uses Tor afterwards either way. |
 | Dashboard login | generate one for me | Or choose your own password. "No login" is offered but leaves the dashboard — payout addresses, hashrate — open to anyone on your network; never combine it with the Tor onion. It also leaves the machine **unconfigurable from the dashboard** — editing settings can change the payout address, so that stays behind a login — and on a machine with no shell that is permanent: changing it means a factory reset and setting up again. |
@@ -246,11 +248,10 @@ the time zone (detected from the machine unless set). They are still there to ch
 
 The dashboard login is also the machine's **console login**: sit at the machine, log in as
 `root` with the dashboard password. It is set fresh at every boot and never stored on disk.
-Two more switches live only in the **Advanced** view, deliberately out of the quick form:
-`ssh.enabled` with `ssh.authorized_key` turns on key-only SSH (never passwords) for remote
-debugging. Neither can be changed from the dashboard later, and its Configuration view does not
-list them at all — anyone who could flip them from a browser session would own the machine,
-wallets and all.
+Two more switches live only in the setup page's **Advanced** view, deliberately out of the quick
+form: `ssh.enabled` with `ssh.authorized_key` turns on key-only SSH (never passwords) for remote
+debugging. The day-two Configuration view does not list them and cannot approve them remotely;
+changing SSH still requires a configuration stick.
 
 **Already know exactly what you want?** Open **Advanced** at the bottom. It shows the complete
 configuration — every key, with its default filled in — and it *is* what the machine will run:
@@ -259,17 +260,24 @@ wins. Paste a whole `config.json` in there if you have one.
 
 ### Press "Validate, then install"
 
-The machine checks your answers first — including reaching any remote node you named, so a
-wrong host fails here with the reason and your answers kept, not after the disk is gone. For a
-Monero node it asks the node itself rather than only opening the port, so a different service
-answering on that port is caught here too. For a Tari node it can open the gRPC port but cannot
-speak gRPC, so it reports that the port answered and that nothing confirmed a Tari node behind
-it — that is the honest result, not a warning about your node. Only
-when everything passes does it show you, on this page, the things you must save:
+The machine checks your answers first — including dialing any remote node you named, so a
+wrong host fails here with the reason and your answers kept, not after the disk is gone. The
+page lists every endpoint it tried and the address it used: a Monero node is checked twice, on
+its RPC port and its ZMQ port, and each completes a live protocol exchange; ZMQ must identify a
+publisher. A Tari
+node must answer the base node's `GetTipInfo` gRPC call. A hostname that passes is pinned to
+the exact address the checks reached, so installation cannot resolve it to a different machine.
+Only when everything passes does the page show the things you must save:
 
 - the **dashboard login** (generated, or the one you chose)
 - the **dashboard address** (`https://pithead.local`)
 - where to **point your miners** (`stratum+tcp://pithead.local:3333`)
+
+A remote node's address is not a one-time answer. If the node you point at goes away, moves, or
+you want to try another one, the dashboard's Configuration view changes it on a running machine:
+type `APPLY` to confirm, and the machine dials the new endpoint and refuses it if nothing answers
+there ([#1888](https://github.com/p2pool-starter-stack/pithead/issues/1888)). The node's RPC
+username and password are the exception and stay fixed at setup.
 
 **Copy the login somewhere safe, then press "I saved these — erase the disk and install."**
 Nothing touches the disk until that press. The install takes a few minutes, and when it
@@ -379,11 +387,61 @@ install-then-fall-back protection as any other update. The practical consequence
 an old image keeps running fine, but it keeps the old image's known holes too. The base
 system is Debian 13, which receives security support upstream into 2030.
 
+## The boot menu
+
+Every start shows a short menu for five seconds, then boots by itself. You never need to
+touch it: the machine keeps two copies of the system and boots the last one that worked,
+so an update that fails to come up is undone on the next start without you.
+
+- The first entry names the Pithead version the machine chose, its slot, and **current**.
+  The other populated slot names its version and says **previous**. Two slots may hold the
+  same version; **slot A** and **slot B** still tell them apart.
+- A slot the installer verified as unused says **empty**. An older installation with no saved
+  version says **Pithead version unknown** until that slot boots and repairs its label.
+- **Set up again** opens the setup page, keeping everything the machine already has. Use it
+  when a machine's answers need changing and there is no other way in. A RigForge rig has no
+  dashboard and no login, so this entry is its only way back to the setup page from the
+  machine itself.
+
+### Set up again
+
+Choose it with a keyboard on the machine during the countdown. The machine starts the
+setup page instead of its normal work, prints the address and one-time token on the
+console as it did on the first boot, and the page opens by naming what the machine is: a
+rig mining at a pool as a worker, or a Pithead coordinator. Two choices:
+
+- **Keep it** closes the page and starts the machine exactly as it was. Nothing changes,
+  and the same holds for a page you never touch or a machine switched off part way: the
+  saved settings are replaced only when you accept new ones.
+- **Set up again** opens the form filled in with the saved answers and the secrets left
+  out: a stratum password, and for a coordinator the dashboard login and node credentials,
+  are typed again. Accept the form and the machine provisions itself with the new answers.
+
+A rig kept as a rig with the same worker name keeps its control token: the Pithead that
+adopted it goes on reaching it, and the card shows that same token again, so this is also
+the way to see a token you did not copy the first time. A different worker name, or a
+change of role, makes a new one. A rig that becomes a coordinator, or the other way round,
+is provisioned as the new role; whatever the old role kept on the data partition stays
+there until a [factory reset](#starting-over-the-two-resets).
+
+### Getting a rig back to setup from another computer
+
+A run-from-USB rig with no monitor or keyboard cannot reach the menu. Plug the stick into
+another computer instead:
+
+- Delete `pithead/machine-role` and `pithead/rig.json` from the stick's partition labelled
+  `data`. It is ext4, so a Linux machine can open it; macOS and Windows cannot without extra
+  software. The setup page runs on the next boot and the installed systems are kept.
+- Or create an empty file named `pithead-reset` at the top of the stick's first partition,
+  the small FAT one that any computer can open. The next boot erases the data area and
+  starts from a blank setup page: a factory reset.
+- Or write the image to the stick again ([step 1](#1-write-the-image-to-a-usb-stick)).
+
 ## Backing up your data
 
 The machine holds state a resync cannot rebuild: your wallet settings, the Tor onion
 keys that give it its address, and the dashboard's history. There is no filesystem to
-copy from a shell-less box, so the dashboard's **Configuration → Backup** card exports it
+copy from a shell-less box, so the dashboard's **Backup** view exports it
 for you as one encrypted file.
 
 Click **Back up now** and the machine stops the stack, archives `config.json`, `.env`,
@@ -444,7 +502,7 @@ factory reset you asked for never shows this notice.
 Fresh flash, restore, done — if the machine is gone (dead disk, stolen, dropped), a backup
 taken beforehand provisions a replacement in one page, with nothing retyped.
 
-**Take a backup before you need it.** The dashboard's **Configuration → Backup** card is
+**Take a backup before you need it.** The dashboard's **Backup** view is
 the machine's own way to do that ([Backing up your data](#backing-up-your-data) above): the
 archive it downloads and the passphrase from its kit are exactly what restore asks for. The
 console works too — log in as `root` with the dashboard password and run:
@@ -471,8 +529,9 @@ setup, so it is treated as first-time provisioning even though the identity unde
 This works on the installation medium's combined page too, alongside the disk choice.
 
 A wrong passphrase or a damaged archive is rejected with the reason, and the page falls back to
-the normal form — restore never blocks setup. Restore only runs at first setup, on a machine
-that has no configuration yet; it does not restore over a running install.
+the normal form — restore never blocks setup. Restore is available at first setup and from the
+saved-setup screen. In both cases it runs through setup again; the day-two `restore` command is
+the separate path for restoring a running stack in place.
 
 ## Changing settings with a USB stick
 

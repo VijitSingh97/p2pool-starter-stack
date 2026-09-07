@@ -204,6 +204,22 @@ _rigforge_upgrade_real_leg() { # <rig> <latest-tag>
     fi
 }
 
+# Explicit no-feed bootstrap. Return status is meaningful even though assertion helpers and the
+# real leg deliberately return zero after recording failures.
+rigforge_bootstrap() { # <rig> <target-tag>
+    local before="$IT_FAIL"
+    if _pred_rig_version_is "$1" "$2"; then
+        it_fail "bootstrap target requires a real version transition" "'$1' already reports $2"
+        return 1
+    fi
+    _rigforge_upgrade_real_leg "$1" "$2"
+    if [ "$IT_FAIL" -gt "$before" ] || ! _pred_rig_version_is "$1" "$2"; then
+        [ "$IT_FAIL" -gt "$before" ] || it_fail "bootstrap rig reports requested version" "'$1' does not report $2"
+        return 1
+    fi
+    return 0
+}
+
 # Dispatcher. Picks the branch from the DASHBOARD's verdict (#596 rigforge_update), which is the
 # same input the Worker Inspect upgrade button uses, so the leg selects the way a user's click
 # would rather than on a comparison of the harness's own devising.

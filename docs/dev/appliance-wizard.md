@@ -30,6 +30,7 @@ renders what it is told. The client must never infer the stage.
 
 | Stage | True when | View |
 |---|---|---|
+| `failed` | the installation medium has `error.txt` | the failure reason and **Back to the settings** |
 | `handoff` | `handoff.json` exists and `handoff-ack` does not | credentials card |
 | `installing` | `installing` or `installed` exists | install progress, then the switch-off steps |
 | `done` | `applied` or `handoff-ack` exists — but `installing` when the machine is the installation medium | provisioning notice |
@@ -59,6 +60,19 @@ machine 1's answers. Pure convenience: any failure (no config, unreadable, ambig
 opens the form blank and blocks nothing. On keep, none of it matters — the survivor config
 wins and no config crosses.
 
+Before a pre-fill reaches the form, the server moves the removed `xmrig_proxy.*` and
+`dashboard.workers[]` names to `xvb.*` and `workers.list[]`. It then drops keys absent from the
+current reference schema. The same preparation runs again on submit, so a hand-edited JSON pane
+cannot put an obsolete or unknown name back into the host's candidate. Known keys keep their
+values and types for the host parser to validate; the wizard never weakens that gate. The page
+lists changed key paths without rendering their values.
+
+An install error outranks a stale `installing` marker and survives a page refresh as `failed`.
+The authenticated return action clears only the error and stale progress marker. The settings
+come from the retained `last-attempt.json`; the disk and wipe choice return, but the typed disk
+confirmation does not. Retype it before another destructive attempt. Passwords and payout
+addresses stay in the config copy and are never included in the changed-path summary.
+
 **Why the server owns this.** Two defects came from the client deciding:
 
 - A client-side stage flag was set with `setState` and read back on the next line. Preact
@@ -70,14 +84,6 @@ wins and no config crosses.
 **Rule for changes:** any new step is a new spool file and a new `wizard_stage()` branch.
 Never a client flag. `/api/wizard-state` carries the handoff payload inline for the same
 reason — a separate fetch is a separate race.
-
-**And a spool file that judges a submission is cleared where submissions ARRIVE.** `error.txt`
-and `node-probe.json` (#1889) each describe one config, not the machine, and the host only ever
-writes them — every arm that hands the form back before `preflight_remote_nodes` runs would
-otherwise leave the previous verdict standing. So the wizard voids both at each of its four
-spool-writing entry points (`_spool_clear_host_verdict`) rather than removing them arm by arm,
-which the next arm added would silently defeat. The probe report is the half that bites: it is
-written on the PASS path too, so the survivor is the one that reads as "the nodes were reached".
 
 ## The role select — one stick, three machines
 
@@ -97,7 +103,58 @@ whatever the role says: the survivor config wins, and no role change crosses.
 
 The rig submission travels on its own spool channel (`rig-request.json`; the server never
 writes a `config.json` candidate for it), and the host dials the pool BEFORE anything
-irreversible — the same discipline `preflight_remote_nodes` gives remote nodes.
+irreversible — the same discipline the wizard server gives remote nodes.
+
+### The remote-node probe report
+
+Before it stages a configuration, the wizard server asks every configured remote endpoint the
+same protocol-level question its mining consumer needs (#1889). Monero RPC must answer
+`get_info`, using the configured Digest login, and its ZMQ port must complete a ZMTP handshake
+with a publication-capable peer.
+A Tari base node must answer `GetTipInfo` over gRPC. The browser names those checks while they run.
+Failure keeps the operator's complete form in `last-attempt.json`, removes any install request,
+and returns the report as `node_probe`; nothing writes a `config.json` candidate.
+
+The server resolves a name once, dials that vetted address and stores its numeric form in the
+accepted candidate. Loopback, unspecified, link-local,
+multicast and reserved addresses are refused, including names that resolve to one (#1946). With
+the Tor egress firewall on, every answer must also be in the private LAN or VPN IPv4 ranges the
+mining container can dial. Credentials are used only for the RPC request and never enter the
+report.
+
+| Field | Meaning |
+|---|---|
+| `ok` | the verdict, and the ONLY gate — true when every configured endpoint was probed and every probe passed |
+| `configured` | endpoints the config asked for: a remote Monero node contributes 2 (RPC and ZMQ), a remote Tari node 1 |
+| `probed` | rows actually produced; a skipped endpoint emits no row, so `probed < configured` is how the page names one |
+| `probes[]` | `{target, host, resolved_host, port, ok, checked, reason, detail, elapsed_ms}` per endpoint |
+
+`reason` is one of `ok`, `protocol`, `timeout`, `refused`, `auth`, `address`, `dns`, `unusable`,
+`missing-tool` or `unknown`. Two do not mean the node is unreachable: `auth` means a node answered
+but rejected the configured login, and legacy `missing-tool` reports that the machine could not
+run its old check. A reason the page does not recognise reads as "the check did not complete" —
+never as "not reached", because inventing a reachability claim for an unrecognised value is the
+defect #1913 names.
+
+`checked` says what was proved: `rpc`, `zmq` and `grpc` are live protocol checks. The renderer
+still understands a legacy `connect` row, but qualifies it because any open socket can satisfy a
+bare TCP dial.
+
+An ABSENT report is not a failed one. A machine running its own nodes probes nothing and writes no
+file, so `node_probe` is `null` there and on any host older than the report; the wizard reads the
+verdict only when `ok` arrives as a real boolean, and a malformed file falls through to `null` the
+way every other spool reader fails open.
+
+`nodeprobe.mjs` renders it, and owns the operator's words for all nine reasons in one place: the
+setup screen shows the report today, and the Configuration view's preview will show the same one
+once the control channel carries a probe of its own, so a reason worded twice cannot come to mean
+two things. Three rules in it are load-bearing rather than stylistic. A reason the module does not
+recognise reads as "the check did not complete" and never as "not reached"; an invented
+reachability claim would reintroduce the defect this fallback prevents. A `missing-tool` row drops
+the host's own `detail`, which is the generic
+reach sentence naming the operator's host, port and LAN switch — none of them at fault when the
+check could not run at all. And the module renders no control: the gate is the wizard server's, so
+a failed probe leaves the form editable and the submit button live, which is the only way out.
 
 ### The machine-role contract
 
@@ -113,12 +170,39 @@ carried to the target by `pithead-install` beside the config and token pre-seeds
 installed machine's first boot lands them as the two files above, scrubbing the ESP copy the
 way the config pre-seed is scrubbed. The stick keeps neither copy after a disk install: a
 stick whose own `/data` carries the rig marker IS a rig (run-from-USB), and that marker
-outranks installer mode on every later boot.
+outranks installer mode on every later boot — except one chosen from the boot menu's **Set up
+again** entry, which opens the wizard beside the role (below).
 
-**Getting a machine back out of the rig role** is the installer, not a setting: a rig serves no
-dashboard and answers on no port, so there is nothing to log into and change. Boot the stick
-beside it and install with the wipe, and it is a blank machine that can pick any role again. A
-*keep* reinstall deliberately leaves it a rig — keep means keep whatever the role says.
+**Getting a machine back out of the rig role** is the boot menu's **Set up again** entry
+(#1318) or the installer, never a setting: a rig serves no dashboard and answers on no port, so
+there is nothing to log into and change. Boot the stick beside it and install with the wipe, and
+it is a blank machine that can pick any role again. A *keep* reinstall deliberately leaves it a
+rig — keep means keep whatever the role says.
+
+### Set up again: the wizard beside a saved role
+
+`os/rauc/grub.cfg`'s fourth entry boots the slot the default would have booted and appends
+`pithead.setup=1` to that one boot's kernel cmdline. `pithead-setup-again.service`, the flag's
+only reader, runs `pithead firstboot-wizard` on a provisioned machine with `PITHEAD_SETUP_AGAIN=1`
+and `Before=pithead-boot.service`, so the role's normal boot waits behind the page. Under the
+switch (`lib/pithead/12a-setup-again.sh`) three things change and nothing else: the "already a
+rig" and "config.json present" short-circuits are skipped; `stage_wizard_spool` publishes
+`saved-role.json` and points the pre-fill at the saved answers (`rig-defaults.json` gets the saved
+pool + worker; `last-attempt.json` gets `config.json` through `strip_config_secrets`, unless a
+failed retry's context is already there); and the inner loop honours `keep-role`. The page shows
+its Keep it / Set up again screen exactly when `saved-role.json` exists (`saved_role` in
+`/api/state`, `null` otherwise; a malformed file falls through to the normal form).
+
+| Spool file | Written by | Meaning |
+|---|---|---|
+| `saved-role.json` | host | present only on a set-up-again boot: `{role, pool, worker}` for a rig, `{role}` for a coordinator, never a secret |
+| `keep-role` | page | Keep it: the host ends the session with nothing on `/data` touched, the unit exits, pithead-boot runs the normal boot |
+
+Set up again is the ordinary submit. A rig accepted with the same worker name keeps its
+`access_token` (`firstboot_consume_rig` carries it over); any other change mints a new one on the
+next render. `record_machine_role` removes `rig.json` when the accepted role is not `rig`, so a
+role's data goes with the role. A coordinator's `config.json` is NOT removed by a change to `rig`:
+it is operator data, and the factory reset is the erase.
 
 ## Restore-at-setup
 
@@ -126,24 +210,27 @@ A third spool channel, beside the config candidate and the rig request: an uploa
 backup (`pithead backup`'s own archive format) plus its passphrase, as an alternative to the
 config form. `POST /submit-restore` writes `restore-archive` (binary) and `restore-passphrase`
 (plain, read once) — on the installation medium the disk/wipe fields ride beside them through
-the SAME `_gate_install_request` a typed submission takes.
+the same side-effect-free disk validation a typed submission takes.
 
 `firstboot_consume_restore` (host-side) does the whole job in one call, staged through a COPY —
 the same "validate before mutating real state" idiom `consume_preseed_config` already uses:
 
 1. Magic-byte format check, then a full-stream integrity verify (decrypt + `tar -tzf`) —
    identical to `stack_restore`'s own pre-flight — BEFORE anything is extracted.
-2. Extract to a `mktemp -d` staging tree, not to the real filesystem yet.
+2. Reject links, special files and members outside the appliance backup layout before
+   extracting to a private staging tree. The accepted items are `config.json`, `.env`,
+   `Caddyfile`, and the `data/{tor,dashboard,monero,tari,p2pool}` trees under the install
+   directory. Backups with custom data paths need the administrative restore workflow.
 3. Validate the staged `config.json` through the same fresh-process `parse_and_validate_config`
    call `firstboot_consume_spool` uses.
-4. Only on success: `cp -a` the whole staged tree onto `/` (config, `.env`, Caddyfile, the Tor
-   data dir, the dashboard database — never the chains, which `stack_backup` excludes by
-   default) and touch `applied` — the exact contract a typed submission leaves. The firstboot
+4. Only on success: install the accepted configuration files at mode `0600`, copy the
+   accepted data trees to their mapped destinations, and publish `applied`. Optional chain
+   data is accepted within the upload cap; normal backups exclude it. The firstboot
    loop short-circuits straight into that acceptance path; `prepare_directories` (run by the
    `setup` it feeds) unconditionally re-chowns every data dir, so restore does not need to.
 
 A rejected archive (bad passphrase, wrong format, failed integrity, unparseable config) writes
-`error.txt` and returns 1 — nothing is extracted, nothing already on disk is touched, and the
+`error.txt` and returns 1 — nothing already on disk is touched, and the
 page falls back to the form exactly like a rejected typed config. The passphrase file is deleted
 at the top of the call, accepted or not; it never outlives the attempt.
 
@@ -347,3 +434,31 @@ The orchestration row is the one that was missing. pytest proved the endpoint pu
 credentials; a render probe proved the card renders given them; nothing proved the app *asked*.
 When adding a step, cover it at the layer that owns the promise **and** at the seam to the next
 one.
+
+## Host and page spool files
+
+The host owns the wizard spool directory (`root:1000`, mode `1770`). The page
+runs as UID/GID 1000. Host publishers create a private temporary directory, write
+mode-0600 files there, and rename completed files into the spool. TLS files,
+schema, inventories, saved role and the credentials card remain `root:1000` at
+mode `0640`. The page can read these files but cannot replace them.
+
+`error.txt`, `last-attempt.json` and `installing` belong to UID/GID 1000 at mode
+`0600` after publication. The page removes or replaces them during retry. Full
+configuration snapshots can contain credentials; they receive the same private
+creation as the credentials card. No host writer opens these published paths for
+writing or changes their ownership after publication.
+
+Host consumers pin a request without following links, reject nonregular files
+and existing hard links, and copy accepted bytes into a private inode before
+validation. Parsing and application use that copy. The page can still replace its
+request or hold its original inode open; neither changes the validated copy.
+The shared helpers live in `lib/pithead/11a-wizard-spool.sh`. The shell boundary
+suite exercises hostile entries, replacement, private creation and the real root
+and page permissions. The integrated KVM battery checks boot and browser setup.
+
+A new installer session clears saved configuration, disk selection, authentication
+choice and change notices from the previous machine. Retry re-staging keeps those
+files for the current attempt. The bare reinstall path enforces its keep-only
+policy on the consumed request. Oversize or unsafe restore submissions consume
+the submitted passphrase when rejected.

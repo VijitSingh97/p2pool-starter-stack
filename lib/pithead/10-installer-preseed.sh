@@ -53,15 +53,13 @@ data_wipe_note() {
 # spool never hands machine 2 machine 1's note. Skipped on removable boot media, where
 # PRESEED_DIR is the STICK's own ESP and would describe the stick, not this machine.
 publish_data_wipe_note() { # <spool-dir>
-    local tmp="$1/.data-wiped.json.$$" note
+    local note
     if boot_is_removable; then
         note="{}"
     else
         note=$(data_wipe_note) || note="{}"
     fi
-    printf '%s' "$note" >"$tmp" 2>/dev/null || : >"$tmp"
-    chown 1000:1000 "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$1/data-wiped.json"
+    wizard_spool_publish "$1" data-wiped.json printf '%s' "$note"
 }
 
 # The restore pre-seed (#909): an installer boot that accepted a backup archive stages it —
@@ -164,12 +162,7 @@ installer_mode_available() {
 # able to name a target the host did not offer — that is the same boundary the #33 control
 # channel draws, and here the action erases a disk.
 publish_disk_inventory() { # <spool-dir>
-    # Atomic: the wizard reads this file between our writes, and a truncate-then-write would
-    # hand it an empty inventory mid-write — rendering a disk picker with no disks.
-    local tmp="$1/.disks.tsv.$$"
-    "$(install_bin)" --list >"$tmp" 2>/dev/null || : >"$tmp"
-    chown 1000:1000 "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$1/disks.tsv"
+    wizard_spool_publish "$1" disks.tsv "$(install_bin)" --list
 }
 
 # The strip a previous install's config passes through before any of it may be SHOWN (#794):
@@ -213,8 +206,8 @@ strip_config_secrets() { # <config-file> -> stripped JSON on stdout
 # anything) and pure convenience: every failure path returns 1 and the page simply opens
 # blank — nothing here may block an install. rc 0 = a pre-fill was published.
 prefill_from_previous_install() { # <spool-dir>
-    local spool="$1" disk part mnt cfg tmp rc=1
-    disk=$(awk -F'\t' '$5 == "pithead-with-data" {print $1}' "$spool/disks.tsv" 2>/dev/null)
+    local spool="$1" disk part mnt cfg rc=1
+    disk=$(wizard_spool_read "$spool" disks.tsv | awk -F'\t' '$5 == "pithead-with-data" {print $1}')
     # Two candidates would make the pre-fill a guess about WHICH machine's answers; offer none.
     [ -n "$disk" ] && [ "$(printf '%s\n' "$disk" | wc -l)" -eq 1 ] || return 1
     part=$(lsblk -lnpo NAME,PARTLABEL "/dev/$disk" 2>/dev/null | awk '$2 == "data" {print $1; exit}')
@@ -225,7 +218,6 @@ prefill_from_previous_install() { # <spool-dir>
     # runs against its content.
     if mount -t ext4 -o ro,nosuid,nodev,noexec "$part" "$mnt" 2>/dev/null; then
         cfg="$mnt/pithead/config.json"
-        tmp="$spool/.last-attempt.json.$$"
         # The -L guards close a symlink escape: a crafted disk could point pithead/ or
         # config.json at a file on the RUNNING host, and jq follows symlinks — the read-only
         # mount keeps both components stable under the checks. The size cap bounds what an
@@ -233,11 +225,9 @@ prefill_from_previous_install() { # <spool-dir>
         # it needs) rejects everything else.
         if [ ! -L "$mnt/pithead" ] && [ ! -L "$cfg" ] &&
             [ -f "$cfg" ] && [ "$(wc -c <"$cfg" 2>/dev/null || echo 0)" -le 1048576 ] &&
-            [ -s "$cfg" ] && strip_config_secrets "$cfg" >"$tmp"; then
-            chown 1000:1000 "$tmp" 2>/dev/null || true
-            mv -f "$tmp" "$spool/last-attempt.json" && rc=0
+            [ -s "$cfg" ] && wizard_spool_publish "$spool" last-attempt.json strip_config_secrets "$cfg"; then
+            rc=0
         fi
-        rm -f "$tmp"
         umount "$mnt" 2>/dev/null || umount -l "$mnt" 2>/dev/null || true
     fi
     rmdir "$mnt" 2>/dev/null || true
@@ -279,41 +269,35 @@ zmq_endpoint_greets() { # <host> <port>; rc 0 only for a ZMTP >=3 peer; sets NOD
         exec 3<>/dev/tcp/"$0"/"$1" 2>/dev/null || exit 1
         { printf "\xff\x00\x00\x00\x00\x00\x00\x00\x00\x7f\x03\x01NULL"; head -c 48 /dev/zero; } >&3
         head -c 64 <&3 | od -An -v -tx1 | tr -d " \n"' "$1" "$2" 2>/dev/null) || rc=$?
-    case "$rc" in
-    0) NODE_PROBE_REASON="protocol" ;;
-    124) NODE_PROBE_REASON="timeout" ;;
-    *) NODE_PROBE_REASON="refused" ;;
-    esac
-    [ "$rc" -eq 0 ] || return 1
-    zmq_greeting_ok "$g" || return 1
+    case "$rc" in 0) NODE_PROBE_REASON="protocol" ;; 124) NODE_PROBE_REASON="timeout" ;; *) NODE_PROBE_REASON="refused" ;; esac
+    [ "$rc" -eq 0 ] && zmq_greeting_ok "$g" || return 1
     NODE_PROBE_REASON="ok"
 }
 
-# --- #1889: probe what the endpoint IS, not only that it answered ----------------------------
-# The dial proves a port ANSWERED and nothing more. On the ZMQ port the gap was half closed:
-# zmq_endpoint_greets spoke ZMTP but reported a refused port and a wrong protocol alike, so it
-# now sets NODE_PROBE_REASON (declared below) to say which. On the RPC port nothing was checked
-# at all, so a wrong service on 18081 passed the whole preflight. get_info is monerod's own
-# status method and `.status == "OK"` the well-formedness test the rest of the stack already
-# uses (21-doctor-stack-checks.sh:328), so this adds no new notion of "a real node".
-# NAMED RATHER THAN HIDDEN: `monero.remote` has no auth keys, so this goes out UNAUTHENTICATED —
-# a node with RPC auth answers 401, reported as `auth` and REFUSED, never passed. Bounded twice:
-# curl's --max-time and an outer `timeout`, so a missing curl (127) or a wedge is still capped.
 NODE_PROBE_REASON=""
-monero_rpc_speaks() { # <host> <port>; rc 0 only for a monerod that answers get_info
-    local body rc=0
-    body=$(timeout 6 curl -fsS --max-time 5 "http://$1:$2/get_info" 2>/dev/null) || rc=$?
+monero_rpc_speaks() { # <config-file> <host> <port>; verifies bounded get_info with configured auth
+    local cfg="$1" host="$2" port="$3" user pass url_host body code rc=0
+    user=$(jq -r '.monero.node_username // ""' "$cfg")
+    pass=$(jq -r '.monero.node_password // ""' "$cfg")
+    url_host="$host"
+    case "$url_host" in \[*\]) ;; *:*) url_host="[$url_host]" ;; esac
+    if [ -n "$user" ]; then
+        body=$(timeout 6 curl -sS --max-time 5 --max-filesize "${CURL_CAP_SMALL:-1048576}" \
+            --digest -u "$user:$pass" -w '\n%{http_code}' "http://$url_host:$port/get_info" 2>/dev/null) || rc=$?
+    else
+        body=$(timeout 6 curl -sS --max-time 5 --max-filesize "${CURL_CAP_SMALL:-1048576}" \
+            -w '\n%{http_code}' "http://$url_host:$port/get_info" 2>/dev/null) || rc=$?
+    fi
     if [ "$rc" -ne 0 ]; then
-        case "$rc" in
-        7) NODE_PROBE_REASON="refused" ;;
-        22) NODE_PROBE_REASON="auth" ;;
-        28 | 124) NODE_PROBE_REASON="timeout" ;;
-        127) NODE_PROBE_REASON="missing-tool" ;;
-        *) NODE_PROBE_REASON="unknown" ;;
-        esac
+        case "$rc" in 7) NODE_PROBE_REASON="refused" ;; 28 | 124) NODE_PROBE_REASON="timeout" ;; 63) NODE_PROBE_REASON="unusable" ;; 127) NODE_PROBE_REASON="missing-tool" ;; *) NODE_PROBE_REASON="unknown" ;; esac
         return 1
     fi
-    if printf '%s' "$body" | jq -e '.status == "OK"' >/dev/null 2>&1; then
+    code=${body##*$'\n'}
+    body=${body%$'\n'*}
+    case "$code" in 200) ;; 401 | 403) NODE_PROBE_REASON="auth" && return 1 ;; *) NODE_PROBE_REASON="protocol" && return 1 ;; esac
+    if printf '%s' "$body" | jq -e '
+        (.status == "OK") and (.nettype | IN("mainnet", "testnet", "stagenet")) and
+        ([.height, .target_height] | all(type == "number" and floor == . and . >= 0))' >/dev/null 2>&1; then
         NODE_PROBE_REASON="ok"
         return 0
     fi
@@ -321,130 +305,74 @@ monero_rpc_speaks() { # <host> <port>; rc 0 only for a monerod that answers get_
     return 1
 }
 
-# One probe, one JSON row. `checked` is the honesty field: it says WHICH check was made, so a
-# bare TCP connect never renders as an unqualified pass. That distinction is load-bearing for
-# Tari — a gRPC port answers a dial from an ssh forward or the wrong container exactly as a real
-# node does, and the shipped CLI has no gRPC client to tell them apart, so `connect` is the
-# permanent honest answer there for 2.0 rather than a degraded one.
-# jq -n --arg builds the row: a host read from a config file is never concatenated into JSON.
-node_probe_one() { # <target> <host> <port> <checked> <detail-on-failure>; prints one row
-    local target="$1" host="$2" port="$3" checked="$4" fail_detail="$5" t0 t1 el rc=0 ok=true detail
-    NODE_PROBE_REASON="ok"
-    t0=$(date +%s%N 2>/dev/null) || t0=0
-    case "$checked" in
-    rpc) monero_rpc_speaks "$host" "$port" || rc=1 ;;
-    zmq) zmq_endpoint_greets "$host" "$port" || rc=1 ;;
-    *)
-        timeout 5 bash -c "</dev/tcp/$host/$port" 2>/dev/null || {
-            rc=1
-            NODE_PROBE_REASON="refused"
-        }
-        ;;
-    esac
-    t1=$(date +%s%N 2>/dev/null) || t1=0
-    el=$(((t1 - t0) / 1000000))
-    [ "$el" -ge 0 ] 2>/dev/null || el=0
-    if [ "$rc" -ne 0 ]; then
-        ok=false
-        detail="$fail_detail"
-        # The REACH failures keep the caller's message, which names the LAN-access switch. A
-        # failure the probe can name more precisely overrides it, on EITHER leg: "cannot reach"
-        # about a port that answered, and "it answered" about one that refused, are one defect.
-        case "$checked:$NODE_PROBE_REASON" in
-        rpc:protocol)
-            detail="$host:$port answered, but what is listening there does not speak monerod's RPC — the port is open and the service behind it is the wrong one. Check that this is the right host and RPC port for a Monero node."
-            ;;
-        rpc:auth)
-            detail="the node at $host:$port requires RPC authentication, and Pithead has nowhere to store remote-node credentials (monero.remote has no auth keys). It cannot verify this node, so it will not accept it — point it at a node that answers get_info unauthenticated on the LAN."
-            ;;
-        zmq:protocol)
-            detail="the remote Monero node at $host answers on ZMQ port $port but nothing there speaks ZMQ — a published container port with no publisher behind it answers a reachability check exactly like a live node does. Check that monerod is running with ZMQ enabled, and that zmq_lan_access is on if it is a Pithead host."
-            ;;
-        esac
-    elif [ "$checked" = "connect" ]; then
-        detail="$host:$port accepted a TCP connection; the protocol behind it was NOT checked"
-    else
-        detail="reached $host:$port and verified it with a live $checked check"
-    fi
-    jq -nc --arg t "$target" --arg h "$host" --argjson p "$port" --argjson o "$ok" \
-        --arg c "$checked" --arg r "$NODE_PROBE_REASON" --arg d "$detail" --argjson e "$el" \
-        '{target:$t,host:$h,port:$p,ok:$o,checked:$c,reason:$r,detail:$d,elapsed_ms:$e}'
-    return "$rc"
-}
-
-# The report every consumer reads (#1889).
-# TOP-LEVEL `ok` IS COMPUTED HERE, and it compares probes RUN against endpoints the config ASKED
-# FOR. Both halves are needed and neither alone is right:
-#   - `all()` over an empty array is TRUE, so a consumer deriving the gate from
-#     `.probes[] | all(.ok)` reads a run that probed NOTHING as "everything passed" and lets a
-#     wrong config through. (Caught by the dashboard lane reviewing the contract, not by a test.)
-#   - but "nothing probed" is ALSO the correct, healthy state of an all-local config, so keying
-#     failure on an empty array alone would block every machine that runs its own nodes.
-# `configured` is what separates them: 0 of 0 is a pass, 0 of 3 is a broken run, and only the
-# count the config asked for can tell those apart.
-node_probe_report() { # <config-file>; prints {ok, configured, probed, probes:[...]}
-    local cfg="$1" host port zmq rows="" want=0
+preflight_remote_nodes() { # <config-file>
+    local cfg="$1" host port zmq
     if [ "$(jq -r '.monero.mode // "local"' "$cfg")" = "remote" ]; then
         host=$(jq -r '.monero.remote.host // ""' "$cfg")
         port=$(jq -r '.monero.remote.rpc_port // 18081' "$cfg")
         zmq=$(jq -r '.monero.remote.zmq_port // 18083' "$cfg")
-        want=$((want + 2))
-        rows="$rows$(node_probe_one monero "$host" "$port" rpc "cannot reach the remote Monero node at $host:$port — check the host, the port, and that the node allows LAN access (monero.rpc_lan_access / zmq_lan_access on a Pithead host)")"$'\n'
-        rows="$rows$(node_probe_one monero "$host" "$zmq" zmq "cannot reach the remote Monero node's ZMQ port at $host:$zmq — check the host, the port, and that the node allows LAN access (monero.zmq_lan_access on a Pithead host)")"$'\n'
+        if ! monero_rpc_speaks "$cfg" "$host" "$port"; then
+            case "$NODE_PROBE_REASON" in
+            auth) printf 'the remote Monero node at %s:%s rejected the configured RPC login' "$host" "$port" ;;
+            protocol) printf 'the endpoint at %s:%s answered, but did not return a usable monerod get_info response' "$host" "$port" ;;
+            unusable) printf 'the remote Monero node at %s:%s returned more than 1 MiB to get_info — refusing the response' "$host" "$port" ;;
+            missing-tool) printf 'cannot check the remote Monero node because curl is missing from this machine' ;;
+            *) printf 'cannot reach the remote Monero node at %s:%s — check the host, the port, and that the node allows LAN access (monero.rpc_lan_access on a Pithead host)' "$host" "$port" ;;
+            esac
+            return 1
+        fi
+        if ! zmq_endpoint_greets "$host" "$zmq"; then
+            if [ "$NODE_PROBE_REASON" = "protocol" ]; then
+                printf 'the remote Monero node at %s answers on ZMQ port %s but nothing there speaks ZMQ — check that monerod is running with ZMQ enabled, and that zmq_lan_access is on if it is a Pithead host' "$host" "$zmq"
+            else
+                printf 'cannot reach the remote Monero node at %s:%s — check the host, the port, and that zmq_lan_access is on if it is a Pithead host' "$host" "$zmq"
+            fi
+            return 1
+        fi
     fi
     if [ "$(jq -r '.tari.mode // "local"' "$cfg")" = "remote" ]; then
         host=$(jq -r '.tari.remote.host // ""' "$cfg")
         port=$(jq -r '.tari.remote.grpc_port // 18142' "$cfg")
-        want=$((want + 1))
-        rows="$rows$(node_probe_one tari "$host" "$port" connect "cannot reach the remote Tari node at $host:$port — check the host, the port, and that the node allows LAN access (tari.grpc_lan_access on a Pithead host)")"$'\n'
+        if ! timeout 5 bash -c "</dev/tcp/$host/$port" 2>/dev/null; then
+            printf 'cannot reach the remote Tari node at %s:%s — check the host, the port, and that the node allows LAN access (tari.grpc_lan_access on a Pithead host)' "$host" "$port"
+            return 1
+        fi
     fi
-    printf '%s' "$rows" | jq -sc --argjson want "$want" \
-        '{ok: ((length == $want) and all(.[]; .ok)), configured: $want, probed: length, probes: .}'
-}
-
-# #1889: the probes run ONCE, in node_probe_report, and BOTH the rc and the operator-facing
-# sentence are derived from that one report — there is no second code path that could disagree
-# with what the page is shown. The prose contract is unchanged (rc 1 plus one line naming the
-# endpoint), so the wizard's call site and its existing assertions still hold.
-# The optional <spool-dir> is where the machine-readable half lands, AHEAD OF ITS CONSUMER —
-# nothing reads node-probe.json at this head; the page that will is #1888. It is written on the
-# PASS path too: Tari's "answered, protocol not checked" IS a pass the page must be able to show.
-preflight_remote_nodes() { # <config-file> [spool-dir]
-    local cfg="$1" spool="${2:-}" report
-    report=$(node_probe_report "$cfg")
-    if [ -n "$spool" ] && [ -d "$spool" ]; then
-        printf '%s\n' "$report" >"$spool/node-probe.json"
-        chown 1000:1000 "$spool/node-probe.json" 2>/dev/null || true
-    fi
-    if printf '%s' "$report" | jq -e '.ok' >/dev/null 2>&1; then
-        return 0
-    fi
-    printf '%s' "$report" | jq -r '[.probes[] | select(.ok | not) | .detail] | first // "no remote node could be probed"'
-    return 1
+    return 0
 }
 
 # rc: 0 installed, 1 failed, 2 nothing requested. The request is "disk<TAB>wipe" written by
 # the wizard's combined submit; both fields are re-validated HERE because they arrive through
 # a web form — the disk against the inventory this host published, the wipe mode against the
 # fixed set. The container asks, the host decides.
-consume_install_request() { # <spool-dir>
+consume_install_request() ( # <spool-dir> [required-wipe]
     local spool="$1" req="$1/install-request" target wipe err
-    [ -f "$req" ] || return 2
+    local snap rc=0
+    snap=$(wizard_spool_request "$spool" install-request) || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+    trap 'wizard_spool_clean "${snap%/*}"' EXIT
+    req="$snap"
     target=$(cut -f1 <"$req" | tr -dc 'a-zA-Z0-9_-')
     wipe=$(cut -f2 <"$req" | tr -dc 'a-z')
-    rm -f "$req"
+    rm -f "$spool/install-request"
     case "$wipe" in keep | data | all) ;; *) wipe="keep" ;; esac
+    # The bare-reinstall door may only preserve data, even if the page replaces its request
+    # after that door's readiness check. Enforce the policy on THIS consumed snapshot.
+    if [ -n "${2:-}" ] && [ "$wipe" != "$2" ]; then
+        wizard_spool_publish "$spool" error.txt printf '%s' 'The install request changed — submit the settings again.'
+        return 1
+    fi
     if ! "$(install_bin)" --list 2>/dev/null | cut -f1 | grep -qx "$target"; then
-        printf 'not an offered target: %s' "$target" >"$spool/error.txt"
+        printf 'not an offered target: %s' "$target" | wizard_spool_publish "$spool" error.txt cat
         return 1
     fi
     log "Installing to /dev/$target (data: $wipe) ..."
     if err=$("$(install_bin)" --target "/dev/$target" --wipe "$wipe" --yes 2>&1); then
-        touch "$spool/installed"
+        wizard_spool_publish "$spool" installed true
         log "Installed to /dev/$target."
         return 0
     fi
-    printf '%s' "$err" | tail -n 2 | tr -d '[:cntrl:]' | tail -c 240 >"$spool/error.txt"
+    printf '%s' "$err" | tail -n 2 | tr -d '[:cntrl:]' | tail -c 240 | wizard_spool_publish "$spool" error.txt cat
     warn "Install to /dev/$target failed."
     return 1
-}
+)

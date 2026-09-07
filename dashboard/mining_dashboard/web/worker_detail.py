@@ -199,7 +199,7 @@ def build_worker_detail(name, data, state_mgr, range_arg="all", window=None):
     """
     workers = data.get("workers", []) if data else []
     worker = next((w for w in workers if w.get("name") == name), None)
-    descriptor = next((e for e in config.DASHBOARD_WORKERS if e["name"] == name), None)
+    descriptor = next((e for e in config.current_worker_endpoints() if e["name"] == name), None)
     history = state_mgr.get_worker_config_history(name, limit=_HISTORY_LIMIT)
     # None means the read FAILED; [] means the rig genuinely has no recorded changes (#1409). The
     # two are the same object downstream, so the distinction has to be captured HERE or it is gone.
@@ -254,7 +254,9 @@ def build_worker_detail(name, data, state_mgr, range_arg="all", window=None):
         "ip": worker.get("ip") if worker else None,  # OBSERVED only — the adopt-form prefill (#893)
         "status": worker.get("status") if worker else None,
         "hashrate": format_hashrate(worker.get("h60", 0)) if worker else None,
-        "rigforge": _rigforge_display(worker.get("rigforge")) if worker else None,
+        "rigforge": _rigforge_display(worker.get("rigforge"), worker.get("status") == "online")
+        if worker
+        else None,
         # {available, latest, url} | None — this rig runs an older RigForge (#596).
         "rigforge_update": rigforge_update_for(worker, (data or {}).get("rigforge_release")),
         "writable_keys": sorted(WORKER_WRITABLE_KEYS),

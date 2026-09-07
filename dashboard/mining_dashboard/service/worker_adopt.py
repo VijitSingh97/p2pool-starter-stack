@@ -28,8 +28,9 @@ NAME_RE = re.compile(r"^[!-~]{1,128}$")
 HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
 TOKEN_RE = re.compile(r"^[!-~]{1,128}$")
 
-# RigForge's default writable control-API port (rigforge#185); the adopt form prefills it and the
-# operator may override it, same as any other ``workers.list[].control_port``.
+# RigForge's default read and writable control API ports; the adopt form prefills both and the
+# operator may override them, same as ``workers.list[].port`` / ``control_port``.
+DEFAULT_API_PORT = 8081
 DEFAULT_CONTROL_PORT = 8082
 
 
@@ -54,6 +55,9 @@ def validate_worker_descriptor(entry):
             "(letters, digits, and . _ - only — no port or path)."
         )
     control_port = entry.get("control_port", DEFAULT_CONTROL_PORT)
+    api_port = entry.get("port", DEFAULT_API_PORT)
+    if isinstance(api_port, bool) or not isinstance(api_port, int) or not 1 <= api_port <= 65535:
+        return f"worker '{name}': port must be an integer between 1 and 65535."
     if (
         isinstance(control_port, bool)
         or not isinstance(control_port, int)

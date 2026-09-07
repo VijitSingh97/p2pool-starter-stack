@@ -10,15 +10,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/stack/lib.sh
 source "$HERE/lib.sh"
 
-# ---------------------------------------------------------------------------
 # shellcheck source=tests/stack/test-harness-tooling.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-harness-tooling.sh" && domain_ran test-harness-tooling.sh "$_d0" "$?" || domain_ran test-harness-tooling.sh "$_d0" "$?"
 
-# ---------------------------------------------------------------------------
 # shellcheck source=tests/stack/test-doctor.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-doctor.sh" && domain_ran test-doctor.sh "$_d0" "$?" || domain_ran test-doctor.sh "$_d0" "$?"
 
-# ---------------------------------------------------------------------------
 # shellcheck source=tests/stack/test-control-upgrade.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-control-upgrade.sh" && domain_ran test-control-upgrade.sh "$_d0" "$?" || domain_ran test-control-upgrade.sh "$_d0" "$?"
 
@@ -35,13 +32,10 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-dashboard.sh" && domain_ran test-dash
 # shellcheck source=tests/stack/test-dashboard-onion.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-dashboard-onion.sh" && domain_ran test-dashboard-onion.sh "$_d0" "$?" || domain_ran test-dashboard-onion.sh "$_d0" "$?"
 
-# Regression (#1330): test-dashboard-onion.sh must not depend on running after test-dashboard.sh.
-# A `( ... )` subshell is a fork of THIS process and inherits its whole variable table, exported
-# or not — including $auth_hb64/$caddy_https, already left behind here by test-dashboard.sh's
-# earlier `source` a few lines up, so a subshell guard would stay green even if this file went
-# back to reading those as globals. Only a genuinely separate `bash` process is isolated: it
-# inherits the environment (exported vars), never a parent shell's plain variables. $HERE isn't
-# exported either, so it's passed as an argument rather than read from the environment.
+# Regression (#1330): test-dashboard-onion.sh must not depend on running after test-dashboard.sh. A
+# `( ... )` subshell forks THIS process and inherits its whole variable table, exported or not — including
+# $auth_hb64/$caddy_https left behind by test-dashboard.sh's `source` above — so a subshell guard would
+# stay green. Only a separate `bash` process is isolated (environment only); $HERE is passed as an argument.
 # shellcheck disable=SC1090,SC2015  # STACK/HERE paths are dynamic by design
 bash -c '
     set -uo pipefail
@@ -85,17 +79,17 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-install-verify.sh" && domain_ran test
 # shellcheck source=tests/stack/test-secrets.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-secrets.sh" && domain_ran test-secrets.sh "$_d0" "$?" || domain_ran test-secrets.sh "$_d0" "$?"
 
-# ---------------------------------------------------------------------------
 # shellcheck source=tests/stack/test-rig-worker.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-rig-worker.sh" && domain_ran test-rig-worker.sh "$_d0" "$?" || domain_ran test-rig-worker.sh "$_d0" "$?"
 
 # shellcheck source=tests/stack/test-control-status-vocabulary.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-control-status-vocabulary.sh" && domain_ran test-control-status-vocabulary.sh "$_d0" "$?" || domain_ran test-control-status-vocabulary.sh "$_d0" "$?"
-
-# ---------------------------------------------------------------------------
 # shellcheck source=tests/stack/test-monero-tari.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-monero-tari.sh" && domain_ran test-monero-tari.sh "$_d0" "$?" || domain_ran test-monero-tari.sh "$_d0" "$?"
-
+# shellcheck source=tests/stack/test-p2pool-tari-off.sh disable=SC2015
+_d0=$((PASS + FAIL)) && source "$HERE/test-p2pool-tari-off.sh" && domain_ran test-p2pool-tari-off.sh "$_d0" "$?" || domain_ran test-p2pool-tari-off.sh "$_d0" "$?"
+# shellcheck source=tests/stack/test-tari-mode-off.sh disable=SC2015
+_d0=$((PASS + FAIL)) && source "$HERE/test-tari-mode-off.sh" && domain_ran test-tari-mode-off.sh "$_d0" "$?" || domain_ran test-tari-mode-off.sh "$_d0" "$?"
 # xmrig-proxy wrapper entrypoint: optional stratum access-password (#152). The flag moved out of the
 # compose command (a `${VAR:+--flag}` list element rendered a stray '' positional arg when the password
 # was unset — xmrig-proxy warns `unsupported non-option argument ''`) into this wrapper, which appends
@@ -211,10 +205,10 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-wizard-setup.sh" && domain_ran test-w
 
 # shellcheck source=tests/stack/test-control-provisioning.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-control-provisioning.sh" && domain_ran test-control-provisioning.sh "$_d0" "$?" || domain_ran test-control-provisioning.sh "$_d0" "$?"
-
 # shellcheck source=tests/stack/test-appliance-identity.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-identity.sh" && domain_ran test-appliance-identity.sh "$_d0" "$?" || domain_ran test-appliance-identity.sh "$_d0" "$?"
-
+# shellcheck source=tests/stack/test-appliance-hostname.sh disable=SC2015
+_d0=$((PASS + FAIL)) && source "$HERE/test-appliance-hostname.sh" && domain_ran test-appliance-hostname.sh "$_d0" "$?" || domain_ran test-appliance-hostname.sh "$_d0" "$?"
 # shellcheck source=tests/stack/test-appliance-defaults.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-defaults.sh" && domain_ran test-appliance-defaults.sh "$_d0" "$?" || domain_ran test-appliance-defaults.sh "$_d0" "$?"
 
@@ -223,6 +217,12 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-install.sh" && domain_ran t
 
 # shellcheck source=tests/stack/test-appliance-rig-miner.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-rig-miner.sh" && domain_ran test-appliance-rig-miner.sh "$_d0" "$?" || domain_ran test-appliance-rig-miner.sh "$_d0" "$?"
+
+# shellcheck source=tests/stack/test-appliance-wizard-spool.sh disable=SC2015
+_d0=$((PASS + FAIL)) && source "$HERE/test-appliance-wizard-spool.sh" && domain_ran test-appliance-wizard-spool.sh "$_d0" "$?" || domain_ran test-appliance-wizard-spool.sh "$_d0" "$?"
+
+# shellcheck source=tests/stack/test-appliance-setup-again.sh disable=SC2015
+_d0=$((PASS + FAIL)) && source "$HERE/test-appliance-setup-again.sh" && domain_ran test-appliance-setup-again.sh "$_d0" "$?" || domain_ran test-appliance-setup-again.sh "$_d0" "$?"
 
 # shellcheck source=tests/stack/test-appliance-boot.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-boot.sh" && domain_ran test-appliance-boot.sh "$_d0" "$?" || domain_ran test-appliance-boot.sh "$_d0" "$?"
@@ -238,7 +238,7 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-boot-release.sh" && domain_
 
 # shellcheck source=tests/stack/test-appliance-os-update.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-os-update.sh" && domain_ran test-appliance-os-update.sh "$_d0" "$?" || domain_ran test-appliance-os-update.sh "$_d0" "$?"
-
+source "$HERE/test-appliance-boot-labels.sh"
 # shellcheck source=tests/stack/test-appliance-os-update-verbs.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-os-update-verbs.sh" && domain_ran test-appliance-os-update-verbs.sh "$_d0" "$?" || domain_ran test-appliance-os-update-verbs.sh "$_d0" "$?"
 

@@ -57,11 +57,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 . "$SCRIPT_DIR/data-floor-fallback-leg.sh"
 # shellcheck source=tests/os/aged-version.sh
 . "$SCRIPT_DIR/aged-version.sh"
-
+# shellcheck source=tests/os/provision-browser-submit.sh
+. "$SCRIPT_DIR/provision-browser-submit.sh"
+# shellcheck source=tests/os/reinstall-prefill-submit-leg.sh
+. "$SCRIPT_DIR/reinstall-prefill-submit-leg.sh"
+# shellcheck source=tests/os/setup-again-leg.sh
+. "$SCRIPT_DIR/setup-again-leg.sh"
+. "$SCRIPT_DIR/boot-label-serial-verdict.sh"
 IMAGE=""
 KEEP=0
 PHASE="all"
-
 VM="pithead-os-test"
 DISK="/srv/code/bench-vm/pithead-os-test.img"
 SERIAL="/tmp/pithead-os-serial.log"
@@ -563,7 +568,7 @@ phase_update() {
     # not: a redefinition capturing a local outlives the phase, and the NEXT phase in an
     # --phase all run then calls it with the variable gone — an unbound-variable crash that no
     # standalone phase run can ever reproduce. The top-level helpers already do this job.
-    local ip="" marker bundle
+    local ip="" marker bundle menu_mark menu_verdict
 
     info "building v1 test image (test SSH key + marker v1)"
     local img
@@ -682,6 +687,7 @@ phase_update() {
         return
     }
     ok "committed the booted update"
+    menu_mark=$(wc -c <"$SERIAL" 2>/dev/null | tr -d ' ')
     _reboot_wait reboot 300 || {
         bad "guest never returned after the post-commit reboot"
         return
@@ -689,8 +695,8 @@ phase_update() {
     marker=$(_ssh cat /etc/pithead-test-marker)
     [ "$marker" = "v2" ] && ok "COMMIT: a committed update persists across reboot" ||
         bad "expected v2 after commit, got '$marker'"
-    # #894/#895: host identity must survive the A/B swap — it lives on /data, which an update
-    # never touches, unlike the system slot an update replaces wholesale.
+    menu_verdict=$(boot_label_serial_verdict "$SERIAL" "$menu_mark" "$(tr -d '[:space:]' <VERSION)" B A) && ok "$menu_verdict" || bad "$menu_verdict"
+    # #894/#895: host identity on /data must survive the system-slot swap.
     local id_v2 hostkey_fp_v2
     id_v2=$(_ssh cat /etc/machine-id)
     hostkey_fp_v2=$(_ssh ssh-keygen -lf /data/ssh/ssh_host_ed25519_key 2>/dev/null | awk '{print $2}')
@@ -1358,16 +1364,16 @@ phase_install() {
     fi
 
     # ---- reinstall leg: the path that must NOT lose data --------------------------------
-    # A disk that already carries a pithead layout is reinstalled in place: the system slot is
-    # replaced, /data — the wallets and the synced chain — survives. This is the promise that
-    # costs a user days of re-syncing if it breaks, so it gets its own leg: plant a sentinel in
-    # /data, reinstall over the disk, and require the sentinel afterwards.
+    # A disk that already carries a pithead layout is reinstalled in place; /data must survive.
     info "reinstall leg — a second install over the same disk must preserve /data"
     _ssh "echo chain-data-survives > /data/pithead/reinstall-sentinel &&
           mkdir -p /data/pithead/data/monero /data/pithead/data/tari &&
           echo synced-chain > /data/pithead/data/monero/chain-sentinel &&
-          echo synced-chain > /data/pithead/data/tari/chain-sentinel" || {
-        bad "could not plant the reinstall sentinels"
+          echo synced-chain > /data/pithead/data/tari/chain-sentinel &&
+          tmp=\$(mktemp /data/pithead/.config.legacy.XXXXXX) &&
+          jq '.xmrig_proxy={enabled:false} | del(.xvb)' /data/pithead/config.json >\"\$tmp\" &&
+          chmod 600 \"\$tmp\" && mv \"\$tmp\" /data/pithead/config.json" || {
+        bad "could not plant the reinstall sentinels and 1.x-shaped config"
         return
     }
     _ssh "systemctl poweroff" 2>/dev/null || true
@@ -1396,18 +1402,9 @@ phase_install() {
     else
         bad "inventory does not flag the installed disk as carrying data"
     fi
-    # ---- reinstall pre-fill: the previous machine's answers, never its secrets ----------
-    # The host mounted the target's data partition read-only at wizard start and published
-    # the stripped previous config as the page's pre-fill (pithead:2350,
-    # prefill_from_previous_install). A wallet-address match on the page's own state API alone
-    # cannot tell "the branch read the target disk and published it" from "the page shows that
-    # value for some other reason" — #1038 found this leg green for four consecutive batteries
-    # while never proving the branch itself had run. Pairing the outcome with the branch's OWN
-    # record — the exact log line it prints ONLY on that path (StandardOutput=journal+console
-    # per pithead-firstboot.service, so it lands on $SERIAL) — is what tells the two apart, the
-    # same discrimination #1212 needed for hugepages; reinstall_prefill_verdict is fixture-tested
-    # at tier 1 (tests/stack/run.sh) for exactly that reason. Runs BEFORE the wipe legs on
-    # purpose — they destroy the config the pre-fill was read from.
+    # ---- reinstall pre-fill: previous answers and removed aliases, never secrets --------
+    # Pair the page state with this boot's own pre-fill log; #1038 proved a matching wallet alone
+    # cannot identify the producer. This runs before the wipe legs destroy the source config.
     token=""
     tries2=0
     while [ -z "$token" ] && [ "$tries2" -lt 40 ]; do
@@ -1425,13 +1422,19 @@ phase_install() {
             branch_logged=1
         printf '%s' "$pf_state" | grep -q "\"wallet_address\": \"${HARNESS_WALLET:0:8}" &&
             wallet_prefilled=1
-        # The provisioned config held a generated dashboard password; the merged state may
-        # only ever show the reference's empty default for any "password" key.
+        # The provisioned config held a generated dashboard password; it must stay stripped.
         printf '%s' "$pf_state" | grep -Eq '"password": "[^"]' && password_leaked=1
         if pf_verdict=$(reinstall_prefill_verdict "$branch_logged" "$wallet_prefilled" "$password_leaked"); then
             ok "$pf_verdict"
         else
             bad "$pf_verdict"
+        fi
+        if printf '%s' "$pf_state" | jq -e '
+            .config.xvb.enabled == false and (.config | has("xmrig_proxy") | not) and
+            (.config_changes | index("xmrig_proxy.enabled → xvb.enabled"))' >/dev/null; then
+            ok "reinstall pre-fill migrates the removed xmrig_proxy key to xvb"
+        else
+            bad "reinstall pre-fill kept or dropped the removed 1.x XvB setting instead of migrating it"
         fi
     else
         bad "no wizard session for the pre-fill check (token: ${token:-none})"
@@ -1940,24 +1943,22 @@ phase_install() {
         [ -n "$new_onion" ] && [ -n "$tor_hostname" ] && break
         sleep 15
     done
-    # .env is itself an archive member that load_preserved_state replays verbatim whenever it is
-    # already non-empty (pithead:6155-6166) — new_onion == orig_onion here proves only that the
-    # CONFIG FILE made the round trip, which holds even if the Tor data dir (the actual onion
-    # PRIVATE KEYS) was dropped from the backup: the stale address string rides along in .env while
-    # Tor silently mints a fresh, unrelated hidden service underneath it (#1090). The only
-    # comparison that proves the keys themselves came back is against Tor's OWN hostname file,
-    # sourced from the restored key material rather than from the archived config.
+    # .env is an archive member load_preserved_state replays verbatim when non-empty (pithead:6155-6166),
+    # so new_onion == orig_onion proves only that the CONFIG FILE made the round trip — true even when
+    # the Tor data dir (the onion PRIVATE KEYS) was dropped and Tor mints a fresh service underneath
+    # (#1090). Only Tor's OWN hostname file, from the restored key material, proves the keys came back.
     if [ -n "$new_onion" ] && [ -n "$tor_hostname" ] && [ "$new_onion" = "$orig_onion" ] && [ "$tor_hostname" = "$orig_onion" ]; then
         ok "restore leg: restored machine kept the ORIGINAL Tor identity, not a regenerated one"
     else
         bad "restore leg: onion identity not restored (.env: $orig_onion -> ${new_onion:-none}, Tor's own hostname: ${tor_hostname:-none})"
     fi
+    phase_install_prefill_submit_leg "$target_disk" # #1846, last: nothing after it needs the disk
     rm -f "$target_disk" "$restore_archive" "$restore_target"
 }
 
 phase_provision() {
     info "phase: provision (wizard HTTP submit -> setup -> stack containers up)"
-    local img token jar body scode
+    local img token jar scode
 
     img=$(_build_image v1) || {
         bad "image build failed (/tmp/os-fault-build.log)"
@@ -1988,10 +1989,9 @@ phase_provision() {
     }
 
     jar=$(mktemp)
-    # https, and PROVE the cookie landed: auth against :80 once hit the new TLS redirect, whose
-    # 301 carries no cookie — curl -f called that success, the jar stayed empty, and the
-    # unauthenticated submit's redirect then ALSO read as success. Two phantom green checks in a
-    # row while nothing was written. Status codes and the jar are asserted now, not inferred.
+    # https, and PROVE the cookie landed: auth against :80 once hit the TLS redirect, whose 301
+    # carries no cookie — curl -f called that success, the jar stayed empty, and the unauthenticated
+    # submit's redirect ALSO read as success. Status codes and the jar are asserted, not inferred.
     curl -fsSk -c "$jar" -d "token=$token" "https://$ip/auth" -o /dev/null 2>/dev/null || {
         bad "token was not accepted"
         rm -f "$jar"
@@ -2002,27 +2002,25 @@ phase_provision() {
         rm -f "$jar"
         return
     }
-    # Minimal honest config: a checksum-valid primary Monero address (see HARNESS_WALLET — the
-    # old dummy crash-looped p2pool, #829). Tari's gate is deliberately format-free host-side
-    # and p2pool tolerates a bad merge-mine address, so a labelled dummy stays obviously fake.
-    # Everything else keeps its default — which is itself part of what this proves.
-    # local_miner=true: the Both role (#796) — the same submit must also light the built-in
-    # RigForge worker, asserted in the local-miner leg below.
-    body="monero_wallet=$HARNESS_WALLET&tari_wallet=$HARNESS_TARI&pool=mini&local_miner=true"
-    scode=$(curl -sSk -b "$jar" --data "$body" "https://$ip/submit" -o /dev/null -w '%{http_code}' 2>/dev/null)
+    provision_node_preflight_retention "$ip" "$jar" || {
+        rm -f "$jar"
+        return
+    }
+    provision_setup_failure_recovery "$ip" "$jar" "$token" || {
+        rm -f "$jar"
+        return
+    }
+    scode=$(provision_browser_submit "$ip" "$jar")
     [ "$scode" = "200" ] || {
         bad "config submit did not return 200 (got ${scode:-none} — a 30x means the session was not accepted)"
         rm -f "$jar"
         return
     }
-    # The jar lives on: the handoff below is authenticated too, and a real operator's session
-    # does not end at submit. (Deleting it here made the handoff poll silently unauthenticated,
-    # which read as "the appliance never published credentials" — it had.)
+    # The jar lives on: the handoff below is authenticated too (deleting it here once made the poll silently unauthenticated).
     ok "config submitted through the wizard"
-    # The credentials handoff: the host publishes the generated login and HOLDS provisioning
-    # until it is acknowledged — the page goes dark afterwards, so the card must come first.
-    # The login is kept: the OS-update presence check below drives the authenticated state API.
-    local handoff_body=""
+    # The credentials handoff: the host publishes the generated login and HOLDS provisioning until
+    # it is acknowledged (the page goes dark after). The login is kept for the OS-update check below.
+    local handoff_body="" page_err=""
     tries=0
     while [ "$tries" -lt 24 ]; do
         handoff_body=$(curl -sSk -b "$jar" -m 5 "https://$ip/api/handoff" 2>/dev/null)
@@ -2030,14 +2028,21 @@ phase_provision() {
             ok "generated credentials published to the page"
             break
         fi
+        page_err=$(provision_page_error "$ip" "$jar")
+        [ -z "$page_err" ] || break # the host refused: say what it said, not that it timed out
         sleep 5
         tries=$((tries + 1))
     done
-    [ "$tries" -lt 24 ] || {
-        bad "no credentials handoff appeared on the page"
+    [ "$tries" -lt 24 ] && [ -z "$page_err" ] || {
+        bad "no credentials handoff appeared on the page${page_err:+ — the page says: $page_err}"
         rm -f "$jar"
         return
     }
+    if printf '%s' "$handoff_body" | jq -r '.password // ""' | grep -qE '^[A-Za-z0-9]{32}$'; then
+        ok "the card carries a generated 32-character password (auth_mode=auto, #1846)"
+    else
+        bad "the card's password is not a generated one: $(printf '%s' "$handoff_body" | jq -c '.password // null')"
+    fi
     scode=$(curl -sSk -b "$jar" -X POST "https://$ip/handoff-ack" -o /dev/null -w '%{http_code}' 2>/dev/null)
     [ "$scode" = "200" ] || {
         bad "handoff acknowledgement did not return 200 (got ${scode:-none})"
@@ -2105,10 +2110,6 @@ phase_provision() {
         return
     fi
 
-    # ---- OS-update presence: the appliance state must carry os_update ------------------------
-    # The header renders the OS update control (and suppresses the DIY tarball Upgrade button)
-    # exactly when /api/state.os_update exists — seeded host-side for appliances only. Absent, an
-    # operator has no reachable update path and the first update after GA means a reflash.
     local pv_user pv_pass
     pv_user=$(printf '%s' "$handoff_body" | jq -r '.username // "admin"' 2>/dev/null)
     pv_pass=$(printf '%s' "$handoff_body" | jq -r '.password // ""' 2>/dev/null)
@@ -2118,6 +2119,7 @@ phase_provision() {
     else
         bad "no os_update in /api/state — the appliance has no reachable OS-update control"
     fi
+    phase_provision_control_regressions "$pv_user" "$pv_pass"
 
     # ---- Tor-only egress backstop (#855): the fail-closed firewall must actually DROP -------
     # The whole product is Tor-first; the guarantee is that nothing CAN bypass Tor even if an app is
@@ -2865,15 +2867,13 @@ phase_rig() {
     else
         bad "a rig started containers: '$names'"
     fi
-    # Prebuilt-first, proven by identity: a native recompile produces a DIFFERENT binary, and a
-    # clone could not have happened at all (this guest has no path to github).
+    # Prebuilt-first, proven by identity: a recompile gives a DIFFERENT binary; a clone has no path to github.
     if _ssh "cmp -s /data/rigforge/data/worker/xmrig/build/xmrig /opt/rigforge/prebuilt/xmrig/build/xmrig"; then
         ok "the rig mines the BAKED binary byte for byte — no compile, no clone, no clearnet"
     else
         bad "the running miner is not the baked prebuilt — something compiled or fetched on first boot"
     fi
-    # Removable-root tolerance: the journal is in memory, so a stick root takes no rotating
-    # writes. (This guest's root is virtual, but the setting is the role's, not the medium's.)
+    # Removable-root tolerance: an in-memory journal, so a stick root takes no rotating writes (the role's setting, not the medium's).
     [ "$(_ssh 'systemd-analyze cat-config systemd/journald.conf 2>/dev/null | grep -c "^Storage=volatile"')" != "0" ] &&
         ok "journald is volatile on a rig (a rig's root may be the stick it mines from)" ||
         bad "journald is still persistent on a rig — a USB root would take rotating writes"
@@ -2887,8 +2887,7 @@ phase_rig() {
     _rig_mining_up 24 &&
         ok "the rig returned mining with no hands on it (its unit lives in /run and died with the reboot)" ||
         bad "the rig did not return after the reboot — its runtime unit was never re-rendered"
-    # WHICH unit owns the boot is the whole R4 fork: the wizard's window is closed by rig.json,
-    # and pithead-boot — skipped on a rig before this phase existed — is what runs.
+    # WHICH unit owns the boot is the whole R4 fork: the wizard's window is closed, pithead-boot runs.
     [ "$(_ssh 'systemctl is-active pithead-boot' | tr -d '\r\n')" = "active" ] &&
         ok "pithead-boot owns a provisioned rig's boot" ||
         bad "pithead-boot did not run on the rig (its condition still excludes a machine with no config.json)"
@@ -2900,8 +2899,7 @@ phase_rig() {
         awk '$1 !~ /^[0-9a-f]{64}-[0-9a-f]+\.service$/' | tr -s ' ' | tr '\n' ';')
     [ -z "${failed_units//[; ]/}" ] && ok "no failed systemd units on the rig after the reboot" ||
         bad "failed units on the rig after the reboot: $failed_units"
-    # The commit gate, rig-shaped: a rig that could not commit would roll back every A/B update
-    # it ever received. Note the pool here answers nothing — the commit must not depend on it.
+    # The commit gate, rig-shaped: a rig that cannot commit rolls back every update; the pool answers nothing, and must not matter.
     local genv tries3=0
     while [ "$tries3" -lt 18 ]; do
         genv=$(_ssh "grub-editenv /boot/efi/grub/grubenv list" 2>/dev/null | tr '\n' ' ')
@@ -2915,6 +2913,7 @@ phase_rig() {
         ;;
     *) bad "the rig never self-committed — grubenv: ${genv:-unreadable}" ;;
     esac
+    rig_setup_again_legs "$card_tok" "$token" # #1318: Keep it, then Set up again as the same rig (tests/os/setup-again-leg.sh)
 
     # ---- A/B update: identical pipeline, identical outcome --------------------------------
     info "update leg — a rig takes a bundle exactly like a coordinator"
@@ -2975,6 +2974,7 @@ phase_rig() {
     marker=$(_ssh cat /etc/pithead-test-marker | tr -d '\r\n')
     [ "$marker" = "v2" ] && ok "COMMIT: the update persists on the rig across reboot" ||
         bad "expected v2 on the rig after commit, got '$marker'"
+    rig_setup_again_coordinator_leg "$token" # #1318: Set up again as a coordinator, from the updated slot
 }
 
 phase_fault() {

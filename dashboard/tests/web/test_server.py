@@ -1,6 +1,7 @@
 import asyncio
 import json
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -15,6 +16,10 @@ SECURITY_HEADERS = [
     "Referrer-Policy",
     "Content-Security-Policy",
 ]
+
+
+def _fresh_version(version):
+    return {"version": version, "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}
 
 
 @pytest.fixture
@@ -978,9 +983,7 @@ async def worker_client(aiohttp_client, control_spool, monkeypatch):
                 "status": "online",
                 "active_pool": "3333",
                 "h60": 5100,
-                # Bare rig-reported version (#596/#597) — the upgrade noop guard compares it
-                # (parsed) against the v-prefixed proposal.
-                "rigforge": {"version": "1.11.0"},
+                "rigforge": _fresh_version("1.11.0"),
             }
         ]
     }
@@ -1129,8 +1132,7 @@ class TestWorkerUpgrade:
         assert "spool dir gone" not in await resp.text()
 
     async def test_noop_when_rig_already_reports_the_version(self, worker_client, control_spool):
-        # The fixture rig reports bare "1.11.0"; proposing tag v1.11.0 must short-circuit —
-        # no spool, no host dial, no burn of the rig's own 6h upgrade throttle.
+        # Bare "1.11.0" and tag v1.11.0 must compare equal without a host dial.
         resp = await worker_client.post(
             "/api/control/worker-upgrade",
             json={"worker": "rig1", "version": "v1.11.0"},
@@ -1139,8 +1141,6 @@ class TestWorkerUpgrade:
         assert resp.status == 200
         assert (await resp.json())["status"] == "noop"
         assert list((control_spool / "requests").glob("*.json")) == []
-        # Nothing was ever asked of a rig — a local version comparison, not an upgrade attempt —
-        # so it gets no history row (#1014 is about recording real attempts, not every click).
         assert worker_client.sm.get_worker_config_history("rig1") == []
 
     async def test_route_absent_when_control_disabled(self, client):

@@ -269,12 +269,11 @@ rx() {
     if [ "$IT_MODE" = "local" ]; then
         (cd "$IT_REMOTE_DIR" && bash -c "$snippet")
     else
-        local remote
+        local remote stdin_flag=(-n)
         remote="cd $(quote_arg "$IT_REMOTE_DIR") && { $snippet; }"
-        # -n: never read OUR stdin. rx runs inside `while read … done < <(scenario_matrix)` loops;
-        # an ssh that inherits stdin drains the loop's remaining input, silently running only the
-        # first scenario. rx never needs stdin (push_config has its own piped ssh), so -n is safe.
-        ssh -n "${IT_SSH_OPTS[@]}" "$IT_SSH_DEST" "$remote"
+        # Default -n protects scenario loops; --stdin opts in for a dedicated input pipe.
+        [ "${2:-}" != --stdin ] || stdin_flag=()
+        ssh "${stdin_flag[@]}" "${IT_SSH_OPTS[@]}" "$IT_SSH_DEST" "$remote"
     fi
 }
 
@@ -382,7 +381,7 @@ monero_caught_up() { # 0 caught up / 1 answered, behind / ANY other could-not-as
     rx 'u=$(grep -E "^MONERO_NODE_USERNAME=" .env 2>/dev/null | cut -d= -f2-);
         p=$(grep -E "^MONERO_NODE_PASSWORD=" .env 2>/dev/null | cut -d= -f2-);
         url=$(grep -E "^MONERO_RPC_URL=" .env 2>/dev/null | cut -d= -f2-); [ -n "$url" ] || url=$(jq -r "if (.monero.mode // \"local\") == \"remote\" and .monero.remote.host then \"http://\" + .monero.remote.host + \":\" + ((.monero.remote.rpc_port // 18081) | tostring) else \"http://127.0.0.1:18081\" end" config.json 2>/dev/null); [ -n "$url" ] || url="http://127.0.0.1:18081";
-        if [ -n "$u" ]; then body=$(curl -fsS --max-time 8 --digest -u "$u:$p" "$url/get_info" 2>/dev/null);
+        if [ -n "$u" ]; then body=$(printf "user = %s\n" "$(printf "%s:%s" "$u" "$p" | jq -Rs .)" | curl -fsS --max-time 8 --digest -K - "$url/get_info" 2>/dev/null);
         else body=$(curl -fsS --max-time 8 "$url/get_info" 2>/dev/null); fi;
         [ -n "$body" ] || exit 2; printf "%s" "$body" | jq -e "(.status==\"OK\") and ((.synchronized==true) or (.target_height==0))" >/dev/null 2>&1; case $? in 0) exit 0 ;; 1) exit 1 ;; *) exit 2 ;; esac'
 }

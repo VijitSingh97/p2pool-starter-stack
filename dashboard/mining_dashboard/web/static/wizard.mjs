@@ -16,9 +16,13 @@ import {
   pathSet,
   telegramPairReady,
 } from "./configsync.mjs";
+import { NodeProbeProgress, NodeProbeReport, needsNodeProbe } from "./nodeprobe.mjs";
 import { Component, html, render } from "./preact.mjs";
 import { rigCardFields, rigCardNote } from "./rigcardlogic.mjs";
-import { savedRoleOrSetup } from "./savedrole.mjs";
+import { restoreBackLabel, savedRoleOrSetup } from "./savedrole.mjs";
+import * as failure from "./wizardfailure.mjs";
+import { MachineName } from "./wizardhostname.mjs";
+import { TariSection, tariAnswer, XvbField } from "./wizardmining.mjs";
 import { Err, Field, Note } from "./wizardparts.mjs";
 
 // The simple questions, each bound to its config path. Conditional blocks name the field that
@@ -39,6 +43,7 @@ const FIELDS = {
   tariRemoteGrpc: { path: "tari.remote.grpc_port" },
   pool: { path: "p2pool.pool" },
   localMiner: { path: "local_miner.enabled" },
+  xvb: { path: "xvb.enabled" },
   clearnetSync: { path: "monero.clearnet_initial_sync" },
   healthchecks: { path: "healthchecks.ping_url" },
   telegramToken: { path: "telegram.bot_token" },
@@ -80,7 +85,7 @@ export const Gate = ({ error, onSubmit }) => html`<div class="card">
                 spellcheck=${false} placeholder="pit-XXXXXX" />
         <//>
         <${Note}>Case doesn't matter, and the ${" "}<code>pit-</code>${" "}prefix is optional.<//>
-        <button type="submit">Continue</button>
+        <button type="submit" class="btn-toggle active">Continue</button>
     </form>
 </div>`;
 
@@ -206,7 +211,7 @@ export const Done = ({ status, handoff, installer, stick, rig, onAck }) => html`
             <p>This is what the machine will be.</p>
             ${rigCardFields(handoff).map((f) => html`<${Field} label=${f.label}><code class="wizard-mono">${f.value}</code><//>`)}
             <${Note}>${rigCardNote(handoff)}<//>
-            <button type="button" onClick=${onAck}>
+            <button type="button" class="btn-toggle active" onClick=${onAck}>
                 ${installer && !stick ? "Looks right — erase the disk and install" : "Looks right — save it"}</button>`
         : handoff
           ? html`<h3>Save this before anything else</h3>
@@ -215,7 +220,7 @@ export const Done = ({ status, handoff, installer, stick, rig, onAck }) => html`
             <${Field} label="Dashboard password"><code class="wizard-mono">${handoff.password}</code><//>
             <${Field} label="Dashboard address"><code class="wizard-mono">${handoff.dashboard}</code><//>
             <${Field} label="Point miners at"><code class="wizard-mono">${handoff.stratum}</code><//>
-            <button type="button" onClick=${onAck}>
+            <button type="button" class="btn-toggle active" onClick=${onAck}>
                 ${installer ? "I saved these — erase the disk and install" : "I saved these — start provisioning"}</button>
             <${Note}>${
               installer
@@ -251,6 +256,7 @@ export class WizardApp extends Component {
     confirm: "",
     wipe: "keep",
     submitting: false,
+    probing: false,
     jsonText: "",
     jsonError: "",
     authMode: "auto", // auto | set | none — travels beside the config (see wizard.py submit)
@@ -285,10 +291,7 @@ export class WizardApp extends Component {
     const next = {
       // The installation medium gets the SAME setup form with an install section folded in —
       // one page, one submission (config + disk + wipe), one credentials card, then the erase.
-      stage:
-        { installer: "setup", installing: "installing", handoff: "done", done: "done" }[s.stage] ||
-        "setup",
-      installer: s.stage === "installer",
+      ...failure.restoredState(s, this.state),
       reference: s.reference,
       disks: s.disks,
       error: s.error || "",
@@ -296,6 +299,7 @@ export class WizardApp extends Component {
       dataWiped: s.data_wiped || {},
       handoff: s.handoff || null,
       savedRole: s.saved_role || null,
+      nodeProbe: s.node_probe || null,
     };
     // The host's discovery pre-fills the rig fields, but only while they are untouched — the
     // form polls, and a half-typed pool address must survive it (same rule as cfg below).
@@ -445,19 +449,34 @@ export class WizardApp extends Component {
         body.wipe = this.state.wipe;
       }
     }
-    const res = await fetch("/submit", { method: "POST", body: new URLSearchParams(body) });
+    const probing = !rig && !keepEverything && needsNodeProbe(this.state.cfg);
+    this.setState({ submitting: true, probing, error: "" });
+    let res;
+    try {
+      res = await fetch("/submit", { method: "POST", body: new URLSearchParams(body) });
+    } catch {
+      this.setState({
+        submitting: false,
+        probing: false,
+        error: "Could not reach this machine. Retry when it is available.",
+      });
+      return;
+    }
     if (!res.ok) {
       let msg = "Submit failed — check the configuration and retry.";
+      let nodeProbe = null;
       try {
-        msg = (await res.json()).error || msg;
+        const failure = await res.json();
+        msg = failure.error || msg;
+        nodeProbe = failure.node_probe || null;
       } catch {}
-      this.setState({ error: msg });
+      this.setState({ submitting: false, probing: false, error: msg, nodeProbe });
       return;
     }
     // No optimistic view swap: flipping the stage locally re-rendered a different page and
     // threw the scroll to the top while nothing had happened yet. The button reads
     // "Validating…" in place, and the page changes when the SERVER's stage does.
-    this.setState({ submitting: true, error: "" });
+    this.setState({ probing: false });
     this.poll();
   };
 
@@ -571,13 +590,13 @@ export class WizardApp extends Component {
               html`<${RestoreSection} file=${this.state.restoreFile} passphrase=${restorePassphrase}
                 onFile=${(e) => this.setState({ restoreFile: e.target.files[0] || null })}
                 onPassphrase=${(e) => this.setState({ restorePassphrase: e.target.value })} />
-            <button type="submit" disabled=${submitting}>
+            <button type="submit" class="btn-toggle active" disabled=${submitting}>
                 ${submitting ? "Validating…" : "Restore and provision"}</button>`
             }
         </form>
         <button type="button" class="wizard-link"
             onClick=${() => this.setState({ restoreMode: false, error: "" })}>
-            Back to the setup form</button>
+            ${restoreBackLabel(this.state.savedRole, this.state.setUpAgain)}</button>
     </div>`;
   }
 
@@ -589,7 +608,7 @@ export class WizardApp extends Component {
     const addr = classifyMoneroAddress(v("moneroWallet"));
     const tg = telegramPairReady(v("telegramToken"), v("telegramChat"));
     const remoteMonero = v("moneroMode") === "remote";
-    const remoteTari = v("tariMode") === "remote";
+    const tariMode = tariAnswer(v("tariMode"));
     const { installer, disks, chosen, confirm, wipe, dataWiped } = this.state;
     // The select is stored for a rig and read out of the config for the two coordinators.
     const role = this.state.role || (v("localMiner") ? "both" : "pithead");
@@ -636,6 +655,10 @@ export class WizardApp extends Component {
             onClick=${() => this.setState({ restoreMode: true, error: "" })}>
             Restoring an existing Pithead? Upload its backup instead.</button></p>
         <${Err}>${error}<//>
+        ${this.state.probing && html`<${NodeProbeProgress} config=${cfg} />`}
+        <${NodeProbeReport} report=${this.state.nodeProbe}>Setup does not continue while a
+        check is failing. Correct the address below and submit again.<//>
+        <${failure.ConfigChanges} changes=${this.state.configChanges} />
         <form onSubmit=${this.submit}>
             <${Field} label="What is this machine?">
                 <select value=${role} onChange=${this.setRole}>
@@ -656,12 +679,13 @@ export class WizardApp extends Component {
                 onWipe=${(e) => this.setState({ wipe: e.target.value })} />`
             }
             ${diskPicked && !keepEverything && rig && this.renderRigFields()}
+            ${diskPicked && !keepEverything && !rig && html`<${MachineName} cfg=${cfg} edit=${this.edit} />`}
             ${
               diskPicked &&
               !keepEverything &&
               !rig &&
-              html`<h3>Payout addresses</h3>
-            <${Note}>Paste these — they are far too long to type, and a typo pays a stranger.<//>
+              html`<h3>Payout address</h3>
+            <${Note}>Paste it — it is far too long to type, and a typo pays a stranger.<//>
             <${Field} label="Monero payout address">
                 <input class="wizard-mono" value=${v("moneroWallet") || ""} onInput=${on("moneroWallet")}
                     autocomplete="off" autocapitalize="off" spellcheck=${false}
@@ -670,12 +694,6 @@ export class WizardApp extends Component {
             <p class=${addr.kind === "ok" || addr.kind === "empty" || addr.kind === "partial" ? "text-muted" : "c-bad"}>
                 ${addr.message}
             </p>
-            <${Field} label="Tari payout address">
-                <input class="wizard-mono" value=${v("tariWallet") || ""} onInput=${on("tariWallet")}
-                    autocomplete="off" autocapitalize="off" spellcheck=${false} required />
-            <//>
-            <${Note}>Merge-mining earns Tari from the same work that mines Monero — this stack
-            always does both, so it needs both addresses.<//>
 
             <h3>Monero node</h3>
             <${Field} label="Where does Monero data come from?">
@@ -710,28 +728,7 @@ export class WizardApp extends Component {
                 : null
             }
 
-            <h3>Tari node</h3>
-            <${Field} label="Where does Tari data come from?">
-                <select value=${remoteTari ? "remote" : "local"} onChange=${on("tariMode")}>
-                    <option value="local">Run the bundled node on this machine (default)</option>
-                    <option value="remote">Use a Tari node I already run</option>
-                </select>
-            <//>
-            ${
-              remoteTari &&
-              html`<div class="wizard-when">
-                <${Field} label="Node host">
-                    <input value=${v("tariRemoteHost") || ""} onInput=${on("tariRemoteHost")}
-                        placeholder="192.168.1.10 or my-node.local" autocomplete="off" spellcheck=${false} />
-                <//>
-                <${Field} label="gRPC port">
-                    <input value=${v("tariRemoteGrpc") ?? 18142} onInput=${on("tariRemoteGrpc")}
-                        inputmode="numeric" pattern="[0-9]+" />
-                <//>
-                <${Note}>An IP or a hostname both work. Only over a network you trust — this
-                connection is not encrypted.<//>
-            </div>`
-            }
+            <${TariSection} answer=${tariMode} v=${v} on=${on} />
 
             
             <h3>Mining</h3>
@@ -759,6 +756,7 @@ export class WizardApp extends Component {
                 CPU governor, memory reservations — which is exactly what a dedicated
                 appliance is for.<//>`
             }
+            <${XvbField} v=${v} on=${on} />
 
             <h3>First sync</h3>
             <${Field} label="Downloading the chain the first time">
@@ -816,9 +814,12 @@ export class WizardApp extends Component {
                         <option value="false">Full — about 320 GB (only if you need the whole chain)</option>
                     </select>
                 <//>
-                <${Note}>A local Tari node adds about 170 GB on top. Under roughly 350 GB of
-                disk, pruned Monero plus a ${" "}<em>remote</em>${" "}Tari node is the
-                combination that fits.<//>`
+                ${
+                  tariMode !== "off" &&
+                  html`<${Note}>A local Tari node adds about 170 GB on top. Under roughly 350 GB
+                    of disk, pruned Monero plus a ${" "}<em>remote</em>${" "}Tari node is the
+                    combination that fits.<//>`
+                }`
                 }
                 <${Field} label="Healthchecks.io ping URL">
                     <input value=${v("healthchecks") || ""} onInput=${on("healthchecks")}
@@ -846,10 +847,12 @@ export class WizardApp extends Component {
 
             ${
               diskPicked &&
-              html`<button type="submit" disabled=${(!rig && !!jsonError) || this.state.submitting}>
+              html`<button type="submit" class="btn-toggle active" disabled=${(!rig && !!jsonError) || this.state.submitting}>
                 ${
                   this.state.submitting
-                    ? "Validating…"
+                    ? this.state.probing
+                      ? "Reaching remote nodes…"
+                      : "Validating…"
                     : keepEverything
                       ? "Reinstall the system — keep everything"
                       : installer
@@ -867,6 +870,7 @@ export class WizardApp extends Component {
     const { stage, error, status } = this.state;
     let view;
     if (stage === "gate") view = html`<${Gate} error=${error} onSubmit=${this.auth} />`;
+    else if (stage === "failed") view = failure.failedView(this);
     else if (stage === "installing") view = html`<${Installing} status=${status} />`;
     else if (stage === "done")
       view = html`<${Done} status=${status} handoff=${this.state.handoff}
@@ -877,8 +881,9 @@ export class WizardApp extends Component {
   }
 }
 
-// Mount only in a browser: node --test imports this module to render-probe the views, and a
-// bare `document` reference at import time would make the whole file untestable.
+// Mount only in a browser (node --test imports this module; a bare `document` would break that).
+// Clear #app: the shell ships the heading and "Loading…" inside it, and preact APPENDS (#1868).
 if (typeof document !== "undefined") {
+  document.getElementById("app").replaceChildren();
   render(html`<${WizardApp} />`, document.getElementById("app"));
 }

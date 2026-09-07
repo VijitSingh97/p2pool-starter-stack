@@ -4,13 +4,14 @@ import logging
 import time
 
 from mining_dashboard.client.rig_config_meta import parse_config_meta
+from mining_dashboard.client.rigforge_freshness import STALE_AFTER_S, feed_age
 from mining_dashboard.config.config import (
     API_TIMEOUT,
-    DASHBOARD_WORKERS,
     MINING_NET_CIDR,
     XMRIG_API_AUTH,
     XMRIG_API_PORT,
     XMRIG_API_TOKEN,
+    current_worker_endpoints,
 )
 
 # The writable-key allowlist lives with the WRITE path (control_service) and is imported here
@@ -21,13 +22,7 @@ from mining_dashboard.config.config import (
 from mining_dashboard.helper.http import ResponseTooLarge, bounded_read
 from mining_dashboard.service.control_service import SECRET_SENTINEL, WORKER_WRITABLE_KEYS
 
-# Per-worker endpoint descriptors (#172): the validated workers.list[] list from config.json.
-# Module-level (not from-import at call sites) so tests can swap it per case. Fleets are small, so
-# the per-poll lookups below are linear scans — no index to keep in sync.
-WORKER_ENDPOINTS = DASHBOARD_WORKERS
-
-# Longest worker-name we'll ever echo back as a Bearer token (#122). xmrig names/tokens are short;
-# this just bounds a pathological miner-supplied value before it goes into a header.
+WORKER_ENDPOINTS = None  # test override; production reads mounted files live
 _MAX_NAME_TOKEN = 128
 
 # Ceiling on one rig's /1/summary. The poll pulls a device's response straight into the
@@ -52,29 +47,25 @@ except ValueError:
     _INTERNAL_NET = ipaddress.ip_network("172.28.0.0/16")
 
 
-def parse_rigforge(payload):
+def parse_rigforge(payload, now=None):
     """Normalize the optional ``rigforge`` block off a worker ``/1/summary`` (#235).
 
     A RigForge rig serves an ENRICHED feed on its ``api_port`` (default 8081): the whole XMRig
     ``/1/summary`` object unchanged, plus one added ``rigforge`` key (rigforge#99). Point the rig's
     descriptor ``port`` at that feed and the block rides in on the existing poll — no new read path.
-    A plain-xmrig rig has no ``rigforge`` key, so this returns ``None`` and the UI renders it exactly
-    as before (backward compatible).
+    A plain-xmrig rig has no ``rigforge`` key, so this returns ``None``. Nullable enriched fields
+    are defaulted; ``xmrig_api == "unreachable"`` becomes ``miner_down``. The top-level RigForge
+    ``generated_at`` stamp decides whether live telemetry is stale.
 
-    Every enriched field is nullable on the wire — no RAPL / non-root → ``power.watts`` null, no
-    governor read → ``governor`` null — so each access is defaulted. A present-but-miner-down rig
-    (``xmrig_api == "unreachable"``, XMRig keys absent) is flagged via ``miner_down`` so the UI can
-    show it as up-but-miner-down rather than offline. Returns a compact dict for the UI, or ``None``.
-
-    ``config`` is the rig's EFFECTIVE writable config (rigforge#253, shipped in RigForge v1.10.0),
-    riding this same poll. It is what the Worker Inspect editor prefills from (#1235): the rig's
-    own current values, rather than Pithead's record of what it last pushed — which is empty on a
-    never-edited rig and stale on one changed directly with ``rigforge.sh apply``. A rig older than
+    ``config`` is the rig's EFFECTIVE writable config (rigforge#253). Worker Inspect prefills it
+    from (#1235), rather than Pithead's last pushed record. A rig older than
     v1.10.0 sends no ``config`` and this stays ``None``, so the editor falls back to the record.
     """
     rf = payload.get("rigforge") if isinstance(payload, dict) else None
     if not isinstance(rf, dict):
         return None
+    stamp = payload.get("generated_at")
+    age = feed_age(stamp, now)
     tune = rf.get("tune") or {}
     autotune = tune.get("autotune") or {}
     power = rf.get("power") or {}
@@ -83,6 +74,9 @@ def parse_rigforge(payload):
     watchdog = rf.get("watchdog") or {}
     wd_on = watchdog.get("mode") == "enabled"
     return {
+        "generated_at": stamp if age is not None else None,
+        "age_sec": age,
+        "stale": age is None or age > STALE_AFTER_S,
         "version": rf.get("version"),
         "miner_down": rf.get("xmrig_api") == "unreachable",
         "power": {"watts": power.get("watts"), "hs_per_watt": power.get("hs_per_watt")},
@@ -296,11 +290,12 @@ def _worker_override(name_token, safe_ip):
     address). config.py already enforces unique names (first-declared wins), so the first list
     hit is the match.
     """
-    for entry in WORKER_ENDPOINTS:
+    entries = WORKER_ENDPOINTS if WORKER_ENDPOINTS is not None else current_worker_endpoints()
+    for entry in entries:
         if entry["name"] == name_token:
             return entry
     if safe_ip:
-        for entry in WORKER_ENDPOINTS:
+        for entry in entries:
             if entry.get("host") == safe_ip:
                 return entry
     return None
@@ -325,10 +320,8 @@ class XMRigWorkerClient:
         A per-worker token (#172) implies token-auth for that worker only, whatever the
         fleet-wide mode says.
         """
-        # Only a real STRING token overrides the fleet auth. The container reads the MASKED config
-        # (#440), where a per-worker token is the {"__secret__": true} sentinel — it means "a token
-        # exists but the container doesn't hold it", so fall through to the fleet auth mode (e.g. name)
-        # for the read probe. The host-side runner still uses the real token for control (#508/#440).
+        # Only a real string overrides fleet auth. Masked sentinels are handled by get_stats before
+        # this helper; they may never fall through to a fleet credential (#1983).
         if isinstance(override_token, str) and override_token:
             return {"Authorization": f"Bearer {override_token}"}
         mode = XMRIG_API_AUTH
@@ -378,9 +371,10 @@ class XMRigWorkerClient:
 
         The auth method is chosen by ``XMRIG_API_AUTH`` (``none`` default / ``name`` / ``token``);
         the port by ``XMRIG_API_PORT``. There is no auto-detection fallback: if the configured probe
-        fails, we return ``{"api_ok": False}`` and log a single (rate-limited) WARNING with a fix
-        hint, rather than silently trying alternatives or swallowing the error. On success the parsed
-        summary is returned with ``api_ok`` set to ``True``.
+        fails, we return ``{"api_ok": False, "adopted": bool}`` and log a single (rate-limited)
+        WARNING with a fix hint, rather than silently trying alternatives or swallowing the error.
+        ``adopted`` — does the descriptor we resolved carry a control token — lets the row read
+        "not adopted" rather than blame config (#1857); it rides the success payload too.
 
         Per-worker overrides (#506, ``workers.list[]``) merge on top: per-worker field >
         fleet default > inherit. An operator-set ``host`` replaces the connecting IP as the probe
@@ -393,8 +387,12 @@ class XMRigWorkerClient:
         """
         name_token = name.split("+")[0].strip()[:_MAX_NAME_TOKEN] if name else ""
         safe_ip = _safe_probe_host(ip)
-        override = _worker_override(name_token, safe_ip)
-        if override and "host" in override:
+        override = _worker_override(name_token, safe_ip) or {}
+        # Adoption (#1836/#1857): decided HERE so it reuses the probe's own name-then-host
+        # descriptor match — a name-only lookup downstream would miss a `+suffix` stratum name.
+        # It rides BOTH verdicts, so the field cannot contradict itself between two polls.
+        adopted = bool(override.get("token"))
+        if "host" in override:
             # Operator-set in config.json — never miner-advertised (#122). Pinning the host also
             # means an imposter claiming this rig's name can't pull the rig's token to its own
             # address; docs recommend host+token together for exactly that reason.
@@ -402,30 +400,30 @@ class XMRigWorkerClient:
         elif safe_ip:
             host = safe_ip
         else:
-            # No safe target: ip is missing/internal/not a bare address, and no operator-set host.
-            # This isn't a misconfigured miner — it's a worker we deliberately won't probe — so
-            # stay quiet and leave api_ok unset (unknown) rather than flagging a failure. Never
-            # fall back to the miner-controlled name as a host: that is the SSRF this guard exists
-            # to prevent (#122).
+            # Never fall back to the miner-controlled name as a host (#122).
             return {}
 
-        port = override.get("port", XMRIG_API_PORT) if override else XMRIG_API_PORT
+        port = override.get("port", XMRIG_API_PORT)
         url = f"http://{host}:{port}/1/summary"
-        headers = self._auth_header(name_token, override.get("token", "") if override else "")
+        if isinstance(override.get("token"), dict):
+            read_token = override.get("read_token")
+            if not read_token:
+                self._warn(
+                    host, name_token, url, "the adopted rig's read credential is unavailable"
+                )
+                return {"api_ok": False, "adopted": adopted}
+            headers = self._auth_header(name_token, read_token)
+        else:
+            headers = self._auth_header(name_token, override.get("token", ""))
 
         try:
             async with self.session.get(url, headers=headers, timeout=API_TIMEOUT) as response:
                 if response.status == 200:
-                    # This loop is where the bounded async read was worked out (#1347); #1360
-                    # lifted it into ``bounded_read`` and this is the call site coming back to it.
-                    # Keeping a second copy meant two implementations of one contract, and they had
-                    # already diverged: the helper's accumulator was fixed to a ``bytearray``
-                    # because immutable ``bytes +=`` is O(n^2) in the NUMBER of reads, and the read
-                    # is SHORT, so the far end picks that number. This is the least trustworthy
-                    # endpoint we read — a rig's own API — so it is the last place to keep the
-                    # slow copy. Overflow is a refusal for THIS rig only, never an exception that
-                    # takes the poll down for every other worker, so it is caught here rather than
-                    # left to the blanket handler below, which would log it differently.
+                    # The bounded async read was worked out here (#1347) and lifted into
+                    # ``bounded_read`` by #1360 — one contract, one implementation; the
+                    # ``bytearray``/short-read rationale lives in ``helper/http.py``. Overflow is a
+                    # refusal for THIS rig only, never an exception that takes the poll down for
+                    # every other worker, so it is caught here, not by the blanket handler below.
                     try:
                         body = await bounded_read(
                             response.content,
@@ -434,16 +432,16 @@ class XMRigWorkerClient:
                         )
                     except ResponseTooLarge:
                         self._warn(host, name, url, f"body over {_MAX_SUMMARY_BYTES} bytes")
-                        return {"api_ok": False}
+                        return {"api_ok": False, "adopted": adopted}
                     payload = json.loads(body)
                     if isinstance(payload, dict):
                         self._warned.pop(host, None)  # recovered — allow the next failure to log
-                        payload["api_ok"] = True
+                        payload["api_ok"], payload["adopted"] = True, adopted
                         return payload
                     self._warn(host, name, url, f"HTTP 200 but body was {type(payload).__name__}")
-                    return {"api_ok": False}
+                    return {"api_ok": False, "adopted": adopted}
                 self._warn(host, name, url, f"HTTP {response.status}")
-                return {"api_ok": False}
+                return {"api_ok": False, "adopted": adopted}
         except Exception as e:
             self._warn(host, name, url, f"{type(e).__name__}: {e}")
-            return {"api_ok": False}
+            return {"api_ok": False, "adopted": adopted}

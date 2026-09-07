@@ -2,3 +2,8 @@
 # immutable — the live file has since been fixed; verify any new entry is NOT a real credential
 # before adding it (this one was checked against the machines it could have come from).
 7c6d4ec49e3347d51f255f7339f05ba5f1248732:build/dashboard/tests/frontend/wizard.test.mjs:generic-api-key:75
+# Fixed HMAC-vector input used only by the isolated RigForge read-credential tests.
+fa2a05ad20af64dd0372816917048829de7dab20:dashboard/tests/frontend/workeradopt.test.mjs:generic-api-key:21
+fa2a05ad20af64dd0372816917048829de7dab20:dashboard/tests/frontend/workeradoptlogic.test.mjs:generic-api-key:24
+fa2a05ad20af64dd0372816917048829de7dab20:tests/stack/test-worker-config.sh:generic-api-key:140
+e55d839eb8bbd47a8a1567031c2269af26f17549:tests/stack/test-worker-config.sh:generic-api-key:140
