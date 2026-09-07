@@ -10,10 +10,7 @@
 # so honestly instead of promising a scheme it is not serving.
 stage_wizard_spool() { # <spool-dir> -> fingerprint on stdout
     local spool="$1"
-    mkdir -p "$spool"
-    # The wizard container runs as uid 1000 and must write the spool; transient dir, addresses
-    # only by design, removed at handoff.
-    chown 1000:1000 "$spool" 2>/dev/null || chmod 777 "$spool"
+    prepare_wizard_spool "$spool"
     # The wizard renders the EXACT config that will be written, defaults included, so it needs
     # the reference. It is a read-only schema, not a secret.
     cp /opt/pithead/config.reference.json "$spool/config.reference.json" 2>/dev/null ||
@@ -525,8 +522,7 @@ firstboot_wizard() {
                 # failures this was, and whether a copy is taken at all, is wizard_setup_failed's.
                 local kept_copy=0
                 if wizard_setup_failed "$setup_rc"; then kept_copy=1; fi
-                mkdir -p "$spool"
-                chown 1000:1000 "$spool" 2>/dev/null || chmod 777 "$spool"
+                prepare_wizard_spool "$spool"
                 # The reopened page gets BOTH halves of a usable retry: the reason it failed, and
                 # the configuration that failed — nobody re-pastes a 95-character address the
                 # machine still holds. The accept path wiped the spool, so both are restored here.

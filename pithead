@@ -2658,10 +2658,7 @@ load_baked_images() { # $1 (optional): image ref whose absence forces a load des
 # so honestly instead of promising a scheme it is not serving.
 stage_wizard_spool() { # <spool-dir> -> fingerprint on stdout
     local spool="$1"
-    mkdir -p "$spool"
-    # The wizard container runs as uid 1000 and must write the spool; transient dir, addresses
-    # only by design, removed at handoff.
-    chown 1000:1000 "$spool" 2>/dev/null || chmod 777 "$spool"
+    prepare_wizard_spool "$spool"
     # The wizard renders the EXACT config that will be written, defaults included, so it needs
     # the reference. It is a read-only schema, not a secret.
     cp /opt/pithead/config.reference.json "$spool/config.reference.json" 2>/dev/null ||
@@ -3173,8 +3170,7 @@ firstboot_wizard() {
                 # failures this was, and whether a copy is taken at all, is wizard_setup_failed's.
                 local kept_copy=0
                 if wizard_setup_failed "$setup_rc"; then kept_copy=1; fi
-                mkdir -p "$spool"
-                chown 1000:1000 "$spool" 2>/dev/null || chmod 777 "$spool"
+                prepare_wizard_spool "$spool"
                 # The reopened page gets BOTH halves of a usable retry: the reason it failed, and
                 # the configuration that failed — nobody re-pastes a 95-character address the
                 # machine still holds. The accept path wiped the spool, so both are restored here.
@@ -3210,6 +3206,25 @@ firstboot_wizard() {
 # same accept paths a first boot takes, unchanged.
 setup_again_mode() { [ -n "${PITHEAD_SETUP_AGAIN:-}" ]; }
 
+# Root writes credentials into this directory while the uid-1000 wizard reads the finished card
+# and writes requests. Keep root as the directory owner and make uid 1000 the writable group: the
+# sticky bit then stops the wizard from replacing root's temp between creation and write. A test or
+# DIY non-root caller gets a private directory it already owns. No world-writable fallback.
+prepare_wizard_spool() { # <spool-dir>
+    local uid
+    [ ! -L "$1" ] || return 1
+    mkdir -p "$1" || return 1
+    uid=$(id -u)
+    if [ "$uid" = 0 ]; then
+        if ! chown 0:1000 "$1" 2>/dev/null || ! chmod 1770 "$1"; then
+            chmod 700 "$1" 2>/dev/null || true
+            return 1
+        fi
+    else
+        [ "$(stat -c '%u' "$1" 2>/dev/null)" = "$uid" ] && chmod 700 "$1"
+    fi
+}
+
 # What the page is told the machine already is, secrets left out: the role, and for a rig the pool
 # and worker it mines as (no stratum password, no control token). The rig form's pre-fill is
 # pointed at the SAME answers, so "Set up again" opens on them rather than on a fresh LAN probe; a
@@ -3239,18 +3254,32 @@ publish_saved_role() { # <spool-dir>
 # control token. It is owner-only from its FIRST byte (#1842): a chmod after the write leaves a
 # world-readable window under the default umask, and a predictable temp left by an earlier attempt
 # keeps THAT temp's mode (or may be a symlink) — so mktemp creates a new inode, its private mode is
-# enforced before stdin is read, and that inode replaces the card whole. Owned by the page's user;
-# the ack that gates the erase is unchanged.
+# enforced before stdin is read, and the sticky spool prevents replacement before that write. The
+# inode then replaces the card whole and is owned by the page's user; the ack is unchanged.
 write_handoff_card() { # <spool-dir>; the card's JSON on stdin
-    local tmp
+    local tmp tmp_id tmp_fd
     tmp=$(mktemp "$1/.handoff.json.XXXXXX") || return 1
-    if [ -L "$tmp" ] || [ ! -f "$tmp" ] || ! chmod 600 "$tmp"; then
+    if [ -L "$tmp" ] || [ ! -f "$tmp" ] || ! chmod 600 "$tmp" ||
+        ! tmp_id=$(stat -Lc '%d:%i' "$tmp" 2>/dev/null) || ! exec {tmp_fd}>"$tmp"; then
         rm -f "$tmp"
         return 1
     fi
-    if ! cat >"$tmp" || ! chown 1000:1000 "$tmp" 2>/dev/null ||
+    # Write through the already-open inode, never by resolving the path again. The identity check
+    # also makes a replacement attempt a refusal rather than publishing the replacement.
+    if [ "$(stat -Lc '%d:%i' "/proc/$BASHPID/fd/$tmp_fd" 2>/dev/null)" != "$tmp_id" ] ||
+        ! cat >&"$tmp_fd"; then
+        exec {tmp_fd}>&-
+        rm -f "$tmp"
+        return 1
+    fi
+    exec {tmp_fd}>&-
+    if [ "$(stat -Lc '%d:%i' "$tmp" 2>/dev/null)" != "$tmp_id" ] ||
         ! mv -f "$tmp" "$1/handoff.json"; then
         rm -f "$tmp"
+        return 1
+    fi
+    if ! chown 1000:1000 "$1/handoff.json" 2>/dev/null; then
+        rm -f "$1/handoff.json"
         return 1
     fi
 }

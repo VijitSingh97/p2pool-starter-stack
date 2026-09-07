@@ -112,12 +112,33 @@ assert_rc "switch: config.json does not short-circuit — the page path is reach
 assert_not_contains "...and setup did not run" "$out" "setup-ran"
 unset PITHEAD_PRESEED_DIR PITHEAD_RIGFORGE_DIR RF_LOG SAW_STUBS
 rm -rf "$SAWB" "$SAESP"
+echo "== unit: prepare_wizard_spool — root temp files cannot be replaced by the page user (#1842) =="
+mk_tmpdir HPSB
+mkdir "$HPSB/spool"
+chmod 777 "$HPSB/spool"
+run_sourced "$HPSB" eval 'id() { echo 0; }; chown() { [ "$1" = "0:1000" ]; }; prepare_wizard_spool "$HPSB/spool"'
+assert_rc "root preparation -> rc 0" "$?" "0"
+assert_eq "the spool is sticky, root-owned by contract and group-writable for uid 1000" "$(stat -c '%a' "$HPSB/spool")" "1770"
+mkdir "$HPSB/refused"
+chmod 777 "$HPSB/refused"
+run_sourced "$HPSB" eval 'id() { echo 0; }; chown() { return 1; }; prepare_wizard_spool "$HPSB/refused"'
+assert_rc "an ownership failure is refused" "$?" "1"
+assert_eq "the refused directory is made private, never left world-writable" "$(stat -c '%a' "$HPSB/refused")" "700"
+mkdir "$HPSB/target"
+ln -s "$HPSB/target" "$HPSB/link"
+run_sourced "$HPSB" prepare_wizard_spool "$HPSB/link"
+assert_rc "a spool-directory symlink is refused" "$?" "1"
+rm -rf "$HPSB"
+unset HPSB
 echo "== unit: write_handoff_card — the credentials card is owner-only from its first byte (#1842) =="
 # The card carries the login or the rig's control token. The caller's umask is permissive and chmod
 # is a no-op in the first row, so mktemp itself must create the private inode. A stale constructor
 # result is tightened before use, a symlink is refused, and an old destination is replaced whole.
 mk_tmpdir HCSB
 mkdir -p "$HCSB/spool"
+run_sourced "$HCSB" prepare_wizard_spool "$HCSB/spool"
+assert_rc "the real non-root test spool is private -> rc 0" "$?" "0"
+assert_eq "the non-root spool is owner-only" "$(stat -c '%a' "$HCSB/spool")" "700"
 printf '{"role":"rig","token":"tok-1"}' | run_sourced "$HCSB" eval 'umask 022; chmod() { :; }; write_handoff_card "$HCSB/spool"'
 assert_rc "writing the card -> rc 0" "$?" "0"
 assert_eq "mktemp creates the card at 600 under a permissive umask with chmod a no-op" "$(stat -c '%a' "$HCSB/spool/handoff.json")" "600"
@@ -135,6 +156,19 @@ printf '{"role":"rig","token":"must-not-land"}' | run_sourced "$HCSB" eval 'mkte
 assert_rc "a symlink returned by the constructor is refused before the write" "$?" "1"
 assert_eq "the symlink target is untouched" "$(cat "$HCSB/symlink-target")" "sentinel"
 assert_eq "the prior card is untouched on refusal" "$(jq -r '.token' "$HCSB/spool/handoff.json")" "tok-2"
+printf '{"role":"rig","token":"must-not-land"}' | run_sourced "$HCSB" eval '
+    cat() {
+        local victim
+        victim=$(find "$HCSB/spool" -maxdepth 1 -type f -name ".handoff.json.*")
+        rm -f "$victim"
+        ln -s "$HCSB/symlink-target" "$victim"
+        command cat
+    }
+    write_handoff_card "$HCSB/spool"
+'
+assert_rc "replacement after the private temp is checked is refused" "$?" "1"
+assert_eq "the post-check replacement target receives no credential bytes" "$(cat "$HCSB/symlink-target")" "sentinel"
+assert_eq "the prior card remains after the post-check refusal" "$(jq -r '.token' "$HCSB/spool/handoff.json")" "tok-2"
 chmod 644 "$HCSB/spool/handoff.json"
 printf '{"username":"admin","password":"p"}' | run_sourced "$HCSB" eval 'umask 022; chmod() { :; }; write_handoff_card "$HCSB/spool"'
 assert_eq "a 644 card left by an earlier attempt is replaced, not truncated in place" "$(stat -c '%a' "$HCSB/spool/handoff.json")" "600"
