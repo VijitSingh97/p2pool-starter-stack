@@ -224,12 +224,20 @@ To point it at a differently-configured fleet, set
 
 Only the worker's validated IP is ever contacted; a miner-controlled worker name is never used as a
 request host (the SSRF guard). If a probe fails, the worker isn't dropped: it keeps its
-proxy-reported hashrate and is flagged `api ⚠` on the dashboard, with a single log line naming the
-URL, status, and likely fix, so a misconfigured API reads differently from an offline miner.
+proxy-reported hashrate and is badged on the dashboard, with a single log line naming the URL,
+status, and likely fix, so a misconfigured API reads differently from an offline miner. Which badge
+depends on whether the rig is *adopted* — whether its [`workers.list`](#per-worker-overrides) entry
+carries a control token:
+
+| Rig | Badge | Meaning |
+|---|---|---|
+| adopted | `api ⚠` | the configured probe failed — check `workers.api_auth` / `api_port`, or the miner's xmrig `http` settings |
+| not adopted | `not adopted` | the probe failed and the dashboard holds no control token for the rig. A rig the setup wizard set up needs adopting from [Worker Inspect](dashboard.md#worker-inspect); a miner you configured yourself needs the same check as the row above |
 
 > Upgrading? Earlier builds provisioned each miner with `access-token = <worker name>`. If your
 > miners still carry a token, set `workers.api_auth: name`, otherwise the new no-auth default probe
-> gets `401` and every worker shows `api ⚠`. (Reprovisioning the miners to drop the token is the
+> gets `401` and every worker is badged — `api ⚠` if adopted, `not adopted` if not; both tooltips
+> name this key. (Reprovisioning the miners to drop the token is the
 > other option; new RigForge workers ship open by default.)
 
 #### Per-worker overrides
@@ -250,13 +258,14 @@ multi-homed), or carries its own token — override just that rig with
 }
 ```
 
-`dashboard.workers` is a deprecated alias for `workers.list` (#506): a config from before the move
-still works — the old location is read as a fallback with a one-time warning, and the next
-`./pithead apply` migrates it in place (#679): the entries move to `workers.list`, the old key is
-deleted, and the pre-migration file is kept beside the config as `config.json.bak-workers`.
-Populating both locations is refused at apply. An empty array beside the populated key is fine:
-`[]` is the schema default `config.reference.json` ships for both keys, and the dashboard's config
-editor round-trips it (#679).
+`dashboard.workers` was a deprecated alias for `workers.list` (#506) and was removed in 2.0.0
+(#1832): it is no longer read. A config from before the move still works, because the first
+command to read it migrates it in place — the entries move to `workers.list`, the old key is
+deleted, and the pre-migration file is kept beside the config as `config.json.bak-1x`. The same
+pass renames a `xmrig_proxy.*` block to `xvb.*`. Setting an old and a new key to *different*
+values is refused, so the migration never has to guess which one you meant; set to the same value,
+the old key is dropped. An empty array never refuses either — `[]` carries no descriptors, so there
+is nothing to conflict over — and the dashboard's config editor round-trips it (#679).
 
 The merge rule is: **per-worker field > fleet default > built-in default.** A rig with no entry (or
 an entry that only sets `port`) inherits everything else from `workers.*`. A per-worker `token`
@@ -272,23 +281,33 @@ its own watts and needs no estimate.
 [Worker Inspect](dashboard.md#worker-inspect) to push config changes from the dashboard. Set it
 alongside `host` and `token` to make a rig editable — either by hand in `config.json`, or from
 Worker Inspect's own **adopt form** on a rig that doesn't have an entry yet; leave the whole
-feature off by not enabling the dashboard control channel. The token is the rig's `ACCESS_TOKEN`
-and never leaves the stack host — the dashboard container doesn't hold it.
+feature off by not enabling the dashboard control channel. The token is the rig's `ACCESS_TOKEN`;
+the Adopt POST handles it transiently, then Pithead persists it host-side for writes. The steady
+dashboard runtime gets only a lowercase hex HMAC-SHA256 read bearer (token as key,
+`rigforge:api-read:v1` as the message). This split requires a
+cryptographically random token of at least 32 ASCII characters; generate one with
+`openssl rand -hex 16`. A shorter legacy token still works for raw host control but gets no derived
+read bearer, because the bearer would make guessing that token offline practical.
 
 ! The control token is **write-capable** and travels in **cleartext HTTP** over the LAN (like the
 stratum password): a change can alter a rig's pools or its thermal `watchdog`/`max_temp_c`, so anyone
 who can sniff or MITM the mining LAN and capture the token can push config to your rigs. Keep the
-mining LAN isolated from untrusted devices, and treat the token as a secret (it lives only in the
-owner-only `config.json`/`.env`, never in the dashboard container).
+mining LAN isolated from untrusted devices, and treat the token as a secret. After the Adopt POST,
+it is retained only in owner-protected host config and spool state, never in dashboard responses,
+logs, feed credentials, support bundles, or other exported artifacts.
 
-NOTE: a rig provisioned by the appliance (the installer's RigForge choice) ships with control
-**off**. Its rendered RigForge config carries the `pools` entry — pool, worker name, stratum
-password — and nothing else: no `control` flag, no `ACCESS_TOKEN`. The appliance's built-in
-miner ships without control the same way. Such a rig mines and reports like any other, but
-Worker Inspect's config push and the [one-click rig upgrade](#one-click-rig-upgrade) cannot
-reach it. To make it editable, enable control on the rig itself (RigForge's `control` flag plus
-an `ACCESS_TOKEN`), then add its `host` + `token` entry to `workers.list[]` here, like any
-other rig.
+NOTE: a rig provisioned by the appliance (the setup page's RigForge choice) ships with control
+**on**, pinned to the Pithead it was pointed at. Its rendered RigForge config carries the `pools`
+entry — pool, worker name, stratum password — plus an `ACCESS_TOKEN` minted at setup, `api:
+enabled` and `control: enabled` with `api_allow_from` set to that Pithead's IPv4 address.
+`control_upgrade` stays off: an appliance rig updates through its own signed image, never through
+RigForge's upgrade path. The token is shown once, on the setup page's rig card, beside the rig's
+address. Until you adopt the rig — paste both into Worker Inspect's adopt form, or add its
+`host` + `token` entry to `workers.list[]` by hand — the dashboard's probe is refused (the feed
+wants the token) and the rig's row is badged `not adopted`, though it mines all the while. A rig
+pointed at a pool with no IPv4 address (an onion address) renders with control off and the feed
+on. The appliance's built-in miner (the **Pithead + RigForge** choice) still ships without
+control: it sits on the same machine as the dashboard.
 
 Entries are matched by `name` — the rig's stratum worker name (the part before any `+` suffix).
 On a name miss the dashboard falls back to matching by the rig's connecting IP against an
@@ -299,8 +318,9 @@ updating its entry** here.
 `host` exists for the case where a rig's API isn't reachable at the address it mines from. It must
 be set by you in `config.json` and is never taken from anything a miner advertises: the dashboard
 will not send a configured token to a host a miner could control (the same [SSRF guard](#authentication)
-as the worker-name rule). Pinning `host` alongside `token` is the recommended pair — it stops an
-imposter that claims a listed rig's name from pulling that rig's token to its own address.
+as the worker-name rule). Pinning `host` alongside `token` is the recommended pair. The derived
+read bearer is bound to that name, host, and API port, so a stale credential map fails closed during
+an endpoint change instead of forwarding the old rig's read capability to a new address or service.
 
 The standard fleet — everyone on `8080`, token = rig name or open — needs no `workers.list`
 at all.
@@ -323,8 +343,18 @@ watchdog temperatures. Point that rig's descriptor `port` at it to pick the bloc
 Nothing else changes — the enriched feed is a superset, so uptime and per-miner hashrate come from
 the same response. The dashboard then shows a RigForge version badge and health/power/tune/watchdog
 chips for that rig (see [Dashboard › Workers Alive](dashboard.md#workers-alive)). A plain-xmrig rig
-on `8080` sends no `rigforge` block and reads exactly as before — no chips, no error. Auth is
-unchanged: send the rig's `token` only if it sets an `ACCESS_TOKEN` (the read API is open otherwise).
+on `8080` sends no `rigforge` block and reads exactly as before — no chips, no error. The feed is
+open when the rig has no `ACCESS_TOKEN`. For an adopted token-protected rig, RigForge 1.17.2 or
+newer accepts the read-only bearer Pithead derives; an older release needs a RigForge upgrade before
+it can enrich (through Worker Inspect where remote upgrades are enabled, or locally otherwise). The
+raw control token is not retained in the dashboard runtime or used for feed reads.
+
+Current RigForge feeds stamp each response with UTC `generated_at`. Pithead ages that producer stamp,
+not the HTTP fetch: cached bytes can still arrive successfully after the refresh job freezes. Reports
+over a minute old show only their age; reports from older RigForge versions without the stamp show
+**agent freshness unknown**. In either case Pithead hides the report's miner state, version, health,
+power and temperature until a current stamped payload arrives. The proxy's connection and accepted
+shares remain the source for whether the worker is online and for worker-offline alerts.
 
 If the block also carries a `control` object — `{change_id, status, reason}`, mirroring the rig's
 own control-API `/status` response read-only — the dashboard reconciles it against the [Worker
@@ -365,7 +395,7 @@ the latest RigForge release itself — the per-worker twin of the stack's one-cl
 The rig side must opt in: RigForge's `control_upgrade` capability (default off, on top of its
 `control` flag, bearer token, and source pin) and RigForge **v1.11.2 or newer** — earlier versions
 refuse legitimate upgrades on a fresh clone. See
-[RigForge › ADR 0002](https://github.com/p2pool-starter-stack/rigforge/blob/main/docs/adr/0002-remote-upgrade.md)
+[RigForge › ADR 0002](https://github.com/p2pool-starter-stack/rigforge/blob/main/docs/adr/0002-remote-worker-upgrade.md)
 for the rig's own guard chain (monotonic version, tag must be an ancestor of `main`, rollback when
 the miner doesn't come back live, and a six-hour throttle between attempts).
 

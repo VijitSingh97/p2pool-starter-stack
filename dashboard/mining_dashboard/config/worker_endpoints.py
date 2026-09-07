@@ -1,8 +1,7 @@
 # Split out of config.py to keep it under its file-budget ceiling (#1285). Unlike the rest of
 # config.py's flat environment settings, these two loaders parse the read-only config.json bind
-# mount itself (not an env var) — config.py calls them once at import time to populate
-# DASHBOARD_WORKERS / DASHBOARD_ENERGY, passing its own HOST_CONFIG_PATH explicitly so this module
-# never has to import config.py back (that would be circular).
+# mount itself (not an env var). config.py passes paths explicitly so this module never imports
+# config.py back (that would be circular); worker endpoints are reloaded for atomic host updates.
 
 import json
 import logging
@@ -20,10 +19,10 @@ logger = logging.getLogger("Config")
 # to the miner-IP fallback path (#122). pithead validates the same shape loudly at apply; this
 # parse only has to stay safe if the mount is stale or hand-edited.
 #
-# workers.list[] is the current sub-key (#506); dashboard.workers[] (#172) is read as a deprecated
-# fallback when workers.list is unset or empty, logged once, and removed in v1.9 — pithead's
-# apply-time validation refuses a config that populates both, so this loader only needs to pick
-# whichever is populated (an empty array is a schema default, never an operator choice, #679).
+# The descriptors live at workers.list[] (#506) and nowhere else. Until 2.0.0 an unset or empty
+# workers.list fell back to the deprecated dashboard.workers[] (#172); that alias was removed in
+# #1832 and pithead migrates a pre-2.0 config to workers.list[] before the dashboard ever reads
+# the mount, so this loader needs no fallback and an alias left in a stale mount reads as absent.
 #   name  — 1-128 printable non-space ASCII chars (matched against the stratum name, '+' stripped)
 #   host  — hostname or IPv4 literal: letters/digits/dot/dash/underscore only, so a config value
 #           can never smuggle a port, path, or userinfo into the probe URL (no ':/@?#'; IPv6
@@ -35,6 +34,7 @@ logger = logging.getLogger("Config")
 #           calculator (#260) can still total the fleet draw. Marked "estimated" in the UI.
 _WORKER_NAME_RE = re.compile(r"^[\x21-\x7e]{1,128}$")
 _WORKER_HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
+_READ_TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _valid_watts(v):
@@ -42,13 +42,12 @@ def _valid_watts(v):
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 1e6 else None
 
 
-def load_worker_endpoints(path) -> list[dict]:
+def load_worker_endpoints(path, read_tokens_path=None) -> list[dict]:
     """The validated workers.list[] entries (#506); invalid entries dropped, first name wins.
 
-    dashboard.workers[] (#172) is read as a deprecated fallback when workers.list is unset or an
-    empty array (removed in v1.9 — pithead's apply-time validation refuses a config that
-    populates both, but an empty workers.list may legitimately sit alongside a populated legacy
-    key, #679: empty arrays are schema defaults, not operator choices).
+    The deprecated dashboard.workers[] fallback (#172) was removed in 2.0.0 (#1832): pithead
+    migrates a pre-2.0 config in place before this mount is written, so the alias never reaches
+    here. A stale mount still carrying it reads as no descriptors at all, which is fail-closed.
     """
     try:
         with open(path) as f:
@@ -57,16 +56,31 @@ def load_worker_endpoints(path) -> list[dict]:
         return []
     workers_block = doc.get("workers") if isinstance(doc, dict) else None
     raw = workers_block.get("list") if isinstance(workers_block, dict) else None
-    if raw is None or raw == []:
-        dashboard_block = doc.get("dashboard") if isinstance(doc, dict) else None
-        if isinstance(dashboard_block, dict) and "workers" in dashboard_block:
-            raw = dashboard_block["workers"]
-            logger.info(
-                "dashboard.workers[] is deprecated — move these entries to workers.list[] "
-                "(removed in v1.9)."
-            )
     if not isinstance(raw, list):
         return []
+    read_tokens = {}
+    if read_tokens_path:
+        try:
+            with open(read_tokens_path) as f:
+                read_rows = json.load(f)
+            if isinstance(read_rows, list):
+                for row in read_rows:
+                    if (
+                        isinstance(row, dict)
+                        and isinstance(row.get("name"), str)
+                        and _WORKER_NAME_RE.fullmatch(row["name"])
+                        and isinstance(row.get("host"), str)
+                        and _WORKER_HOST_RE.fullmatch(row["host"])
+                        and isinstance(row.get("port"), int)
+                        and not isinstance(row["port"], bool)
+                        and 1 <= row["port"] <= 65535
+                        and isinstance(row.get("read_token"), str)
+                        and _READ_TOKEN_RE.fullmatch(row["read_token"])
+                        and row["name"] not in read_tokens
+                    ):
+                        read_tokens[row["name"]] = (row["host"], row["port"], row["read_token"])
+        except (OSError, ValueError, AttributeError):
+            pass
     out, seen = [], set()
     for item in raw:
         if not isinstance(item, dict):
@@ -110,6 +124,11 @@ def load_worker_endpoints(path) -> list[dict]:
             if watts is None:
                 continue  # fail-closed like every other field: a bad watts drops the whole entry
             entry["watts"] = watts
+        if "host" in entry and isinstance(entry.get("token"), dict):
+            read_token = read_tokens.get(name)
+            default_port = workers_block.get("api_port", 8080)
+            if read_token and read_token[:2] == (entry["host"], entry.get("port", default_port)):
+                entry["read_token"] = read_token[2]
         seen.add(name)
         out.append(entry)
     return out

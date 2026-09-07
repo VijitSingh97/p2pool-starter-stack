@@ -4,17 +4,8 @@
 import { EstTable } from "./esttable.mjs";
 import { coinFiat, fmtHashrate, formatFiat, formatXmr } from "./logic.mjs";
 import { html } from "./preact.mjs";
+import { StatCard } from "./statcards.mjs";
 import { computeXvbTier, xvbDecisionRows } from "./xvblogic.mjs";
-
-// --- Small shared pieces (local copies of components.mjs's private helpers; see components.mjs
-// for the shared convention — kept private there too, so each caller gets its own small copy
-// rather than a shared export, following workerview.mjs's InfoCard precedent) ---------------
-
-const StatCard = ({ label, value, cls, span, title }) => html`
-    <div class=${"stat-card" + (span ? " col-span-2" : "")} title=${title || ""}>
-        <h5>${label}</h5>
-        <p class=${cls || ""}>${value}</p>
-    </div>`;
 
 // XvB tier decision block (#872, study-final): the analytical tool a miner decides with. Every
 // donor tier gets a block — the two net verdicts (what XvB says, and what the study says) as
@@ -48,6 +39,37 @@ function XvbDecisionTable({ calc, coeffDay, hr, energy }) {
   // Fiat mirror (#520) for the best sustainable net only — one line, never a fiat number whose
   // XMR figure is hidden.
   const best = rows.filter((r) => r.sustainable && r.net).sort((a, b) => b.net[1] - a.net[1])[0];
+  // #1231: the Odds cell rendered a bare "—" on a box that has never enabled XvB, which reads as
+  // "the odds are zero" rather than "nothing has been read yet". The winners feed that fills the
+  // round-stats cache is ENABLE_XVB-gated (build_xvb_calc's own fallback keys on the same flag),
+  // so a disabled box structurally has nothing to show and an enabled one is merely waiting. Name
+  // which of the two it is, off the `calc.enabled` every other live-donation surface already uses.
+  // #1214's constraint holds: nothing here is derived or estimated, only named.
+  //
+  // "awaiting sync" rather than the issue's suggested "computed after first sync": build_xvb_calc
+  // empties round_types when the cache is STALE as well as when it was never filled, so an
+  // enabled box reaching this branch may well have synced before. The payload publishes staleness
+  // for the reward-estimates cache only — a different cache — so the two cannot be told apart
+  // here, and wording that claims no sync has ever happened would be false for half of them.
+  const oddsPending = calc.enabled ? "awaiting sync" : "needs XvB enabled";
+  const oddsTitle =
+    "How often this tier's rounds pay out, and among how many qualifiers — from XvB's public winners feed.";
+  const oddsPendingTitle = calc.enabled
+    ? "No round statistics are cached right now — XvB's winners feed fills this in at the next sync."
+    : "XvB is off, so its winners feed is never read — and that feed is the only source for draw frequency and qualifier counts. Enable XvB to compute this.";
+  const rewardPending = calc.enabled
+    ? calc.estimates_stale
+      ? "reward feed stale"
+      : calc.estimates_available
+        ? "no published reward for this tier"
+        : "waiting for reward feed"
+    : "no published reward for this tier";
+  const missingNet = (r) => {
+    if (!(hr > 0)) return "needs hashrate";
+    if (!r.sustainable) return "insufficient hashrate";
+    if (!(coeffDay > 0)) return "needs P2Pool network stats";
+    return rewardPending;
+  };
   return html`
         <div class="xvb-comparison">
             <label class="xvb-compare-label">Should I donate? — per-tier verdict (per year)</label>
@@ -67,19 +89,19 @@ function XvbDecisionTable({ calc, coeffDay, hr, energy }) {
                     ${r.name}${r.sustainable ? "" : " ⚠"}</h5>
                 <div class="stat-grid">
                     <${StatCard} label="Net (XvB says)"
-                        value=${r.sustainable ? fmtMid(r.netFace) : "—"}
+                        value=${r.sustainable && r.netFace ? fmtMid(r.netFace) : missingNet(r)}
                         cls=${r.sustainable ? r.clsFace : ""}
                         title=${`XvB's own published reward minus the P2Pool earnings given up. ${costNote} Green: profits. Amber: could go either way. Red: loses.`} />
                     <${StatCard} label=${`Net (${measured ? "yours" : "study"})`}
-                        value=${r.sustainable ? fmtMid(r.net) : "—"}
+                        value=${r.sustainable && r.net ? fmtMid(r.net) : missingNet(r)}
                         cls=${r.sustainable ? r.cls : ""}
                         title=${`The ${measured ? "measured" : "study"} estimate minus the P2Pool earnings given up — the verdict this table is about. ${costNote} ${bandNote(r.net)} Green: profits even at the pessimistic end. Amber: the range straddles zero. Red: loses even at the optimistic end.`} />
                 </div>
                 <p class="text-muted text-xs mt-1">
-                    <span title="P2Pool earnings forgone by donating the tier threshold for a year, at your current rate.">Cost ${r.cost !== null ? formatXmr(r.cost) : "—"}</span> ·
-                    <span title="XvB's own published expected reward — face value: prices every bonus hash at full block reward.">XvB says ${r.xvbSays !== null ? formatXmr(r.xvbSays) : "—"}</span> ·
-                    <span title=${`${estTitle} ${bandNote(est)}`}>${estLabel} ${fmtMid(est)}</span> ·
-                    <span title="How often this tier's rounds pay out, and among how many qualifiers — from XvB's public winners feed.">Odds / 30d ${r.oddsPer30d ? `≈ ${Number(r.oddsPer30d.toPrecision(2))} wins · ${Number((r.players || 0).toPrecision(2))} players` : "—"}</span>
+                    <span title="P2Pool earnings forgone by donating the tier threshold for a year, at your current rate.">Cost ${r.cost !== null ? formatXmr(r.cost) : "needs P2Pool network stats"}</span> ·
+                    <span title="XvB's own published expected reward — face value: prices every bonus hash at full block reward.">XvB says ${r.xvbSays !== null ? formatXmr(r.xvbSays) : rewardPending}</span> ·
+                    <span title=${`${estTitle} ${bandNote(est)}`}>${estLabel} ${est !== null ? fmtMid(est) : rewardPending}</span> ·
+                    <span title=${r.oddsPer30d ? oddsTitle : oddsPendingTitle}>Odds / 30d ${r.oddsPer30d ? `≈ ${Number(r.oddsPer30d.toPrecision(2))} wins · ${Number((r.players || 0).toPrecision(2))} players` : oddsPending}</span>
                 </p>
               </div>`;
             })}
@@ -88,6 +110,15 @@ function XvbDecisionTable({ calc, coeffDay, hr, energy }) {
               energy && energy.xmr_price > 0 && best
                 ? html`<p class="text-muted text-xs mt-1" id="xvb-fiat-line" title=${bandNote(best.net)}>
                     ${best.name}: net ≈ ${formatFiat(coinFiat((best.net[0] + best.net[1]) / 2, energy.xmr_price), energy.currency)} per year at the current XMR price</p>`
+                : null
+            }
+            ${
+              !energy || !(energy.xmr_price > 0)
+                ? html`<p class="text-muted text-xs mt-1" id="xvb-fiat-missing">Fiat net unavailable: ${
+                    energy && energy.price_source && energy.price_source.feed
+                      ? "waiting for the price feed"
+                      : "set dashboard.energy.xmr_price or enable its price feed"
+                  }.</p>`
                 : null
             }
             <p class="text-muted text-xs mt-2">
@@ -128,13 +159,14 @@ export function XvbTierBlock({ calc, hr, coeffDay, energy, est }) {
                     : calc.estimates_source === "live"
                       ? ", so the reward columns run from the last live read"
                       : ""
-                }. The odds column needs the live winners feed, so it stays empty until
-                XvB runs again.</p>`
+                }. The odds column needs the live winners feed, so each row names what it
+                is waiting for instead of a figure until XvB runs again.</p>`
         }
         <div class="stat-grid">
             <${StatCard} label="Sustainable Tier" value=${t ? t.tier : "None"} cls="c-purple"
                          title="The highest XvB donor tier this hashrate sustains while leaving P2Pool its share — the same auto rule the donation controller uses." />
-            <${StatCard} label="Hashrate Cost" value=${t ? fmtHashrate(t.cost) : "—"}
+            <${StatCard} label="Hashrate Cost"
+                         value=${t ? fmtHashrate(t.cost) : hr > 0 ? "below the lowest tier" : "needs hashrate"}
                          title="Holding the tier means continuously donating about its threshold — hashrate that earns no P2Pool shares while donated." />
             ${
               calc.enabled

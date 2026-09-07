@@ -1,6 +1,6 @@
 # shellcheck shell=bash
-#
-# Appliance install domain (#1105 Phase 1, develop-v2 lane): getting Pithead onto a machine, and
+: "${STACK_SUITE:?is unset: this file is a tests/stack/run.sh fragment, not a script — run tests/stack/run.sh}"
+# Appliance install domain (#1105 Phase 1, appliance lane): getting Pithead onto a machine, and
 # what the next install reads back off the one before it. The installer gate retries a device
 # probe that has not settled yet, so a reinstall boot does not fall through into setup mode; the
 # installation medium's pre-seeded config and the ESP's wipe note are read as input rather than
@@ -49,7 +49,7 @@ echo "== unit: the installer gate outlasts a slow device probe =="
 # An empty FIRST inventory put a reinstall boot into setup mode (KVM keep leg): the gate runs
 # ~18s into boot and races udev settling the target's partitions. It now retries before giving
 # up — a probe that answers on the third try still opens the installer.
-IGSB=$(mktemp -d)
+mk_tmpdir IGSB
 cat >"$IGSB/fake-install" <<'FAKE'
 #!/usr/bin/env bash
 [ "$1" = "--list" ] || exit 0
@@ -76,7 +76,7 @@ unset IGSB igout
 
 echo "== unit: pre-seeding from the installation medium =="
 # The ESP is FAT and anyone can write it, so both readers treat its contents as input, not truth.
-PSD=$(mktemp -d)
+mk_tmpdir PSD
 export PITHEAD_PRESEED_DIR="$PSD"
 
 run_sourced "$SANDBOX" preseed_token >/dev/null 2>&1
@@ -122,7 +122,7 @@ echo "== unit: data_wipe_note / publish_data_wipe_note — the wipe note reader 
 # discriminates a deliberate factory-reset (the operator asked for it, nothing to warn about)
 # from the wedged-/data case, where the wizard's next-move advice differs: restore a backup,
 # don't set up as if this were a fresh machine.
-DWN=$(mktemp -d)
+mk_tmpdir DWN
 mkdir -p "$DWN/esp" "$DWN/spool"
 export PITHEAD_PRESEED_DIR="$DWN/esp"
 
@@ -199,7 +199,7 @@ echo "== unit: consume_install_request (disk installer host side) =="
 # The request file is operator input arriving through a web form; the host must validate it
 # against its own inventory and never trust a browser-supplied target. Driven against a fake
 # pithead-install via PITHEAD_INSTALL_BIN — the real one partitions disks.
-INSTSB=$(mktemp -d)
+mk_tmpdir INSTSB
 cat >"$INSTSB/fake-install" <<'FAKE'
 #!/usr/bin/env bash
 case "$1" in
@@ -264,7 +264,7 @@ echo "== unit: strip_config_secrets — no secret class survives the reinstall p
 # The strip runs before a previous install's config may be SHOWN on the setup page. Every
 # secret carries the same marker value, so one grep proves the whole list at once; the
 # non-secret answers (the point of the pre-fill) must all survive.
-SCS=$(mktemp -d)
+mk_tmpdir SCS
 cat >"$SCS/prev.json" <<'PREV'
 {
   "monero": {"wallet_address": "4KEEP-WALLET", "mode": "remote",
@@ -276,6 +276,8 @@ cat >"$SCS/prev.json" <<'PREV'
   "p2pool": {"pool": "main", "stratum_password": "LEAK-stratum"},
   "dashboard": {"timezone": "Europe/Berlin",
                 "auth": {"username": "LEAK-dashuser", "password": "LEAK-dashpw"},
+                "control": {"enabled": true},
+                "onion": {"enabled": true, "client_auth": true},
                 "workers": [{"name": "w0", "host": "h", "token": "LEAK-oldworker"}]},
   "workers": {"api_auth": true, "api_token": "LEAK-apitoken",
               "list": [{"name": "rig1", "host": "rig1.lan", "token": "LEAK-workertoken"}]},
@@ -294,6 +296,16 @@ assert_eq "remote node mode survives" "$(printf '%s' "$stripped" | jq -r '.tari.
 assert_eq "remote node host survives" "$(printf '%s' "$stripped" | jq -r '.tari.remote.host')" "tari.lan"
 assert_eq "pool tier survives" "$(printf '%s' "$stripped" | jq -r '.p2pool.pool')" "main"
 assert_eq "timezone survives" "$(printf '%s' "$stripped" | jq -r '.dashboard.timezone')" "Europe/Berlin"
+# Secret-free is not the same as SUBMITTABLE (#1846). parse_and_validate_config fails closed on
+# dashboard.control.enabled (:455) and dashboard.onion.enabled (:432) whenever the password is
+# empty — and this strip is what empties it. Leaving either switch on published a pre-fill the
+# page offers back and the first validation then refuses, which is how "Generate a strong
+# password for me" became unusable on a reinstall: the HOST generates one only AFTER validation.
+assert_eq "control.enabled goes with the login it needs" "$(printf '%s' "$stripped" | jq -r '.dashboard.control.enabled // "absent"')" "absent"
+assert_eq "onion.enabled goes with the login it needs" "$(printf '%s' "$stripped" | jq -r '.dashboard.onion.enabled // "absent"')" "absent"
+# The sibling that keeps the two above narrow: a dashboard answer that depends on NO credential is
+# still carried over, so this is not "strip the whole dashboard block and call it safe".
+assert_eq "client_auth, which needs no login, survives" "$(printf '%s' "$stripped" | jq -r '.dashboard.onion.client_auth')" "true"
 # Not-a-config shapes are refused, not partially stripped: rc != 0 means "no pre-fill".
 printf 'not json at all' >"$SCS/garbage.json"
 if run_sourced "$SANDBOX" strip_config_secrets "$SCS/garbage.json" >/dev/null 2>&1; then
@@ -314,7 +326,7 @@ echo "== unit: prefill_from_previous_install — fail open, publish only the str
 # The orchestration around the strip: exactly one disk with an install, a read-only mount, and
 # every failure degrading to "no pre-fill" — never to a blocked install. mount/umount/lsblk are
 # PATH stubs; the fake mount copies a fixture tree under the mountpoint.
-PFSB=$(mktemp -d)
+mk_tmpdir PFSB
 mkdir -p "$PFSB/bin" "$PFSB/spool" "$PFSB/prev/pithead"
 printf '#!/bin/bash\necho "/dev/fake2 data"\n' >"$PFSB/bin/lsblk"
 cat >"$PFSB/bin/mount" <<'MNT'

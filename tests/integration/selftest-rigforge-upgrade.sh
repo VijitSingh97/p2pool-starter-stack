@@ -259,5 +259,23 @@ answers '{"status":"pending","id":"q-1"}'
 _rigforge_upgrade_noop_leg rig1 v1.16.0 >/dev/null 2>&1
 want "a non-noop answer to a repeat click -> FAIL" 0 2 0 0 0
 
+echo "== explicit no-feed bootstrap =="
+snap
+rig_reports ""
+answers "$PENDING"
+queue_results applied
+comes_back_on "1.17.2"
+rigforge_bootstrap rig1 v1.17.2 >/dev/null 2>&1
+check "an explicit target drives the real leg and succeeds only after version readback" $?
+want "no-feed bootstrap records pending handoff, applied, and target version" 3 0 0 0 0
+
+snap
+rig_reports "1.17.2"
+rigforge_bootstrap rig1 v1.17.2 >/dev/null 2>&1
+brc=$?
+if [ "$brc" -ne 0 ]; then check "an already-target rig is not misreported as a real bootstrap" 0; else check "an already-target rig is not misreported as a real bootstrap" 1; fi
+want "already-target bootstrap records a failure and makes no assertions" 0 1 0 0 0
+check_no_posts "and it never POSTed a downgrade or noop"
+
 printf '\n%s: %d case(s), %d bad\n' "$([ "$BAD" -eq 0 ] && echo PASS || echo FAIL)" "$CASES" "$BAD"
 [ "$BAD" -eq 0 ]

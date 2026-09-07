@@ -1,6 +1,6 @@
 # shellcheck shell=bash
-#
-# Appliance rig-miner domain (#1105 Phase 1, develop-v2 lane): a machine that mines instead of
+: "${STACK_SUITE:?is unset: this file is a tests/stack/run.sh fragment, not a script — run tests/stack/run.sh}"
+# Appliance rig-miner domain (#1105 Phase 1, appliance lane): a machine that mines instead of
 # coordinating. The rig role's pre-fill dials for a Pithead on the host side and publishes what it
 # finds to the spool, failing open when it finds nothing (#797 R3); first boot consumes that
 # finding, dialing the pool before anything irreversible happens; the machine-role marker is
@@ -42,7 +42,7 @@ echo "== unit: publish_rig_defaults — host-side pool discovery, fail open (#79
 # The rig role's pre-fill: the HOST dials for a Pithead and publishes the finding to the spool
 # like the disk inventory. The dial is 'timeout N bash -c </dev/tcp/...' — timeout is a PATH
 # stub here (like mount in the pre-fill tests), so the probe answers deterministically.
-RDSB=$(mktemp -d)
+mk_tmpdir RDSB
 mkdir -p "$RDSB/bin" "$RDSB/spool"
 printf '#!/bin/bash\nexit 0\n' >"$RDSB/bin/timeout"
 chmod +x "$RDSB/bin/timeout"
@@ -59,7 +59,7 @@ rm -rf "$RDSB"
 unset RDSB
 
 echo "== unit: firstboot_consume_rig — the pool is dialed BEFORE anything irreversible (#797 R3) =="
-RCSB=$(mktemp -d)
+mk_tmpdir RCSB
 mkdir -p "$RCSB/bin" "$RCSB/spool"
 printf '#!/bin/bash\nexit 0\n' >"$RCSB/bin/timeout"
 chmod +x "$RCSB/bin/timeout"
@@ -95,7 +95,7 @@ rm -rf "$RCSB"
 unset RCSB
 
 echo "== unit: the machine-role marker, written and read back (#797 R3/R4) =="
-MRSB=$(mktemp -d)
+mk_tmpdir MRSB
 printf '{"local_miner":{"enabled":true}}' >"$MRSB/config.json"
 assert_eq "local_miner on -> both (the role IS the switch)" "$(run_sourced "$MRSB" machine_role_from_config "$MRSB/config.json")" "both"
 printf '{}' >"$MRSB/config.json"
@@ -115,7 +115,7 @@ echo "== unit: the rig boot leg — a role=rig machine mines instead of coordina
 # contract. Driven against a fake rigforge.sh, like the Both role's leg — the real one compiles
 # miners and tunes kernels. What this owns: the derived config (pool + worker + password), the
 # invocation contract, and the refusals.
-RIGL=$(mktemp -d)
+mk_tmpdir RIGL
 mkdir -p "$RIGL/rigforge" "$RIGL/bin" "$RIGL/run" "$RIGL/journal"
 cat >"$RIGL/rigforge/rigforge.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -172,6 +172,67 @@ assert_rc "re-run (the leg fires every boot) -> rc 0" "$?" "0"
 assert_eq "the config is re-derived, not repaired" "$(jq -r '.pools[0].url' "$RIGL/rigforge/config.json")" "pithead.local:3333"
 assert_eq "the stratum password lands as the pool pass" "$(jq -r '.pools[0].pass' "$RIGL/rigforge/config.json")" "s3cret"
 assert_not_contains "already volatile -> journald is not restarted again" "$(cat "$RF_LOG")" "restart systemd-journald"
+# #1817: a first boot binds the persistent journal home onto this path before the role is
+# known (pithead-journal-persist), so the reclaim meets a MOUNTPOINT. The bind comes off
+# first — after journald has let go of the files under it, which is why the restart moves
+# ahead of the umount — and only then is the directory reclaimed.
+printf '#!/usr/bin/env bash\n[ -f "%s/bound" ] && exit 0\nexit 1\n' "$RIGL" >"$RIGL/bin/mountpoint"
+printf '#!/usr/bin/env bash\necho "umount:$*" >>"${RF_LOG:?}"\nrm -f "%s/bound"\n' "$RIGL" >"$RIGL/bin/umount"
+chmod +x "$RIGL/bin/mountpoint" "$RIGL/bin/umount"
+mkdir -p "$RIGL/journal/abc"
+touch "$RIGL/bound"
+: >"$RF_LOG"
+rigl_out=$(run_rig provision_local_miner 2>&1)
+assert_rc "a bound journal path -> rc 0" "$?" "0"
+assert_eq "journald lets go first, then the bind comes off, then the miner is set up" \
+    "$(grep -o 'systemctl:restart systemd-journald\|umount:[^ ]*\|rigforge:setup' "$RF_LOG" | tr '\n' ' ')" \
+    "systemctl:restart systemd-journald umount:$RIGL/journal rigforge:setup "
+[ -d "$RIGL/journal" ] && bad "the directory under the bind is reclaimed" "still there" ||
+    ok "the directory under the bind is reclaimed"
+# A reclaim that cannot complete must not take the boot verb down: pithead-boot calls
+# `pithead local-miner` BARE under the CLI's errexit, while the wizard calls the same leg under
+# `|| true` — a failure inside the minimization passed first boot and killed every boot after
+# (the #1651 gate, BUILD_COMMIT 4fb4943a: the rig booted mining and never committed its slot).
+# Driven under errexit for real. The armed-runner control is an ABSENCE row, paired with the
+# positive rows after it (rc 0 + console text); rm is stubbed to refuse the path as a mountpoint does.
+run_rig_errexit() { (
+    cd "$RIGL" || exit 99
+    export PITHEAD_APPLIANCE=1 PATH="$RIGL/bin:$PATH"
+    # shellcheck disable=SC1090
+    source "$STACK"
+    "$@"
+); }
+_errexit_probe() {
+    false
+    echo survived
+}
+assert_not_contains "control: the errexit runner is armed" "$(run_rig_errexit _errexit_probe 2>/dev/null)" "survived"
+cat >"$RIGL/bin/rm" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+    [ "\$a" = "$RIGL/journal" ] && { echo "rm: cannot remove '\$a': Device or resource busy" >&2; exit 1; }
+done
+exec /bin/rm "\$@"
+EOF
+chmod +x "$RIGL/bin/rm"
+mkdir -p "$RIGL/journal/abc"
+touch "$RIGL/bound"
+: >"$RF_LOG"
+rigl_out=$(run_rig_errexit provision_local_miner 2>&1)
+assert_rc "a reclaim that cannot complete does not take the boot verb down (errexit armed)" "$?" "0"
+assert_contains "the miner is still set up behind it" "$(cat "$RF_LOG")" "rigforge:setup appliance=1"
+assert_contains "the console says the journal was not reclaimed" "$rigl_out" "could not be reclaimed"
+# Review (#1817): a bind that will not come off is LEFT ALONE — `rm -rf` through it would empty the
+# persistent home on /data. Real rm here, so a reclaim that reached it would empty the directory.
+printf '#!/usr/bin/env bash\necho "umount:$*" >>"${RF_LOG:?}"\nexit 32\n' >"$RIGL/bin/umount"
+rm -f "$RIGL/bin/rm" && mkdir -p "$RIGL/journal/abc" && touch "$RIGL/bound" && : >"$RF_LOG"
+rigl_out=$(run_rig_errexit provision_local_miner 2>&1)
+assert_rc "umount fails (busy) -> the verb still completes" "$?" "0"
+[ -d "$RIGL/journal/abc" ] && ok "a bind still up is not reclaimed through" || bad "a bind still up is not reclaimed through" "emptied"
+assert_contains "the console says the bind is still up" "$rigl_out" "bind is still up"
+rm -f "$RIGL/bin/rm" "$RIGL/bin/mountpoint" "$RIGL/bin/umount" "$RIGL/bound"
+rm -rf "$RIGL/journal"
+unset -f run_rig_errexit _errexit_probe
 # No prebuilt (a wiped workspace): the operator gets told why the console is silent for minutes.
 rm -rf "$RIGL/rigforge/data/worker/xmrig"
 rigl_out=$(run_rig provision_local_miner 2>&1)
@@ -199,8 +260,8 @@ echo "== unit: a rig's first boot mines — wizard side and staged-install side 
 # Both boots that ACCEPT a role end mining on that same boot: no second wizard, no reboot to
 # wait for. Every LATER boot skips this unit entirely (its condition now excludes rig.json) and
 # goes through pithead-boot instead.
-RPSB=$(mktemp -d)
-RPESP=$(mktemp -d)
+mk_tmpdir RPSB
+mk_tmpdir RPESP
 mkdir -p "$RPSB/rigforge"
 cat >"$RPSB/rigforge/rigforge.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -234,7 +295,7 @@ echo "== unit: render_local_miner_config — the built-in miner's config is DERI
 # rebuilt on every render like the Caddyfile: the stack's own stratum over loopback, the stratum
 # password when one is set, and the stack's HugePages budget declared as headroom — the hand-off
 # that makes RigForge the pool's single (grow-only) writer.
-LMR=$(mktemp -d)
+mk_tmpdir LMR
 mkdir -p "$LMR/rigforge"
 printf '{"local_miner":{"enabled":true}}' >"$LMR/config.json"
 printf 'STRATUM_PORT=3333\n' >"$LMR/.env"
@@ -285,7 +346,7 @@ echo "== unit: provision_local_miner — the boot leg converges the miner (#796)
 # Driven against a fake rigforge.sh: the real one compiles miners and tunes kernels. What this
 # owns: the invocation contract (appliance flag set, run from the tree on /data, config rendered
 # first) and both convergence directions (enabled -> setup, disabled -> stop).
-LMP=$(mktemp -d)
+mk_tmpdir LMP
 mkdir -p "$LMP/rigforge" "$LMP/bin"
 cat >"$LMP/rigforge/rigforge.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -337,3 +398,69 @@ assert_contains "missing tree is named" "$lmp_out" "no RigForge tree"
 unset RF_LOG PITHEAD_RIGFORGE_DIR
 rm -rf "$LMP"
 unset LMP lmp_out
+
+echo "== unit: the rig's control token and its APIs — minted once, pinned to the coordinator (#1836) =="
+# A rig used to render pools and nothing else, which left XMRig's API open on the LAN and the
+# coordinator's Workers view on "API error". Now: one token minted into rig.json (stable across
+# the rebuild every boot), the read-only sister feed on, and the writable control path pinned to
+# the pool host's IPv4 — or OFF when there is none, because RigForge refuses control unpinned.
+# getent is a PATH stub: the resolver answers deterministically, and what it answers is the case.
+mk_tmpdir RTSB
+mkdir -p "$RTSB/rigforge" "$RTSB/bin"
+cat >"$RTSB/bin/getent" <<'EOF'
+#!/bin/bash
+case "$1 $2" in
+"ahostsv4 coordinator.lan") printf '192.168.7.20    STREAM coordinator.lan\n192.168.7.20    DGRAM\n' ;;
+"ahostsv4 fd00::20") printf '10.9.9.9        STREAM\n' ;;
+*) exit 2 ;;
+esac
+EOF
+chmod +x "$RTSB/bin/getent"
+printf '{"pool":"coordinator.lan:3333","worker":"shed-3","stratum_password":"pw"}' >"$RTSB/rig.json"
+run_rt() { PITHEAD_RIGFORGE_DIR="$RTSB/rigforge" PATH="$RTSB/bin:$PATH" run_sourced "$RTSB" "$@"; }
+rt_tok=$(run_rt eval 'chmod() { :; }; rig_access_token' 2>/dev/null) # chmod stubbed: the umask alone must do it (#1842)
+assert_rc "minting a token -> rc 0" "$?" "0"
+[[ "$rt_tok" =~ ^[0-9a-f]{32}$ ]] && ok "the token is 32 lowercase hex" || bad "the token is not 32 hex: '$rt_tok'"
+assert_eq "the token is kept in rig.json" "$(jq -r '.access_token' "$RTSB/rig.json")" "$rt_tok"
+assert_eq "rig.json is owner-only from its FIRST byte — the temp file's umask, not a chmod after (#1842)" "$(stat -c '%a' "$RTSB/rig.json")" "600"
+assert_eq "the answers beside it are untouched" "$(jq -r '.pool + " " + .worker + " " + .stratum_password' "$RTSB/rig.json")" "coordinator.lan:3333 shed-3 pw"
+assert_eq "a second call returns the SAME token (stable across the per-boot rebuild)" "$(run_rt rig_access_token 2>/dev/null)" "$rt_tok"
+assert_eq "no temp file left beside rig.json" "$(find "$RTSB" -maxdepth 1 -name '.rig.json*' | wc -l | tr -d ' ')" "0"
+jq '.access_token = "short"' "$RTSB/rig.json" >"$RTSB/r.tmp" && mv -f "$RTSB/r.tmp" "$RTSB/rig.json"
+rt_tok2=$(run_rt rig_access_token 2>/dev/null)
+[[ "$rt_tok2" =~ ^[0-9a-f]{32}$ ]] && [ "$rt_tok2" != "$rt_tok" ] && ok "a malformed token is re-minted, never served" || bad "a malformed token survived: '$rt_tok2'"
+assert_eq "the pool host resolves to ONE IPv4 for the pin" "$(run_rt rig_coordinator_ip)" "192.168.7.20"
+rt_out=$(run_rt render_rig_miner_config 2>&1)
+assert_rc "render with a resolvable coordinator -> rc 0" "$?" "0"
+assert_eq "ACCESS_TOKEN in the miner's config is the rig.json token" "$(jq -r '.ACCESS_TOKEN' "$RTSB/rigforge/config.json")" "$rt_tok2"
+assert_eq "the sister API is on" "$(jq -r '.api' "$RTSB/rigforge/config.json")" "enabled"
+assert_eq "control is on, pinned to the coordinator's IPv4" "$(jq -r '.control + " " + .api_allow_from' "$RTSB/rigforge/config.json")" "enabled 192.168.7.20"
+assert_eq "control_upgrade is left at RigForge's default (off) — no key written" "$(jq -r 'has("control_upgrade")' "$RTSB/rigforge/config.json")" "false"
+assert_eq "the pools entry is unchanged: url, user, pass" "$(jq -c '.pools' "$RTSB/rigforge/config.json")" '[{"url":"coordinator.lan:3333","user":"shed-3","pass":"pw"}]'
+assert_eq "the miner's config stays owner-only" "$(stat -c '%a' "$RTSB/rigforge/config.json")" "600"
+assert_not_contains "the token is never logged" "$rt_out" "$rt_tok2"
+# No IPv4 for the pool host (an onion, a name mDNS does not answer): the feed stays on behind the
+# token, control stays OFF and the log says so — RigForge would refuse an unpinned control anyway.
+printf '{"pool":"abcdefghij.onion:3333","worker":"shed-3","access_token":"%s"}' "$rt_tok2" >"$RTSB/rig.json"
+assert_eq "an unresolvable host -> no pin" "$(run_rt rig_coordinator_ip)" ""
+rt_out=$(run_rt render_rig_miner_config 2>&1)
+assert_rc "render with no pin -> still rc 0 (the miner must come up)" "$?" "0"
+assert_eq "no pin -> control key absent, api_allow_from absent, feed still on" "$(jq -r '[(has("control") | tostring), (has("api_allow_from") | tostring), .api, .ACCESS_TOKEN] | join(" ")' "$RTSB/rigforge/config.json")" "false false enabled $rt_tok2"
+assert_contains "no pin is said out loud" "$rt_out" "control API stays off"
+assert_not_contains "the token is never logged (no-pin path)" "$rt_out" "$rt_tok2"
+# A bracketed IPv6 pool host is unwrapped before the lookup: the stub only answers the bare form.
+printf '{"pool":"[fd00::20]:3333","worker":"shed-3"}' >"$RTSB/rig.json"
+assert_eq "a bracketed IPv6 pool host is looked up unwrapped" "$(run_rt rig_coordinator_ip)" "10.9.9.9"
+# rig.json that cannot be rewritten: no token can be kept, so the miner is NOT configured (rc 1).
+# Root ignores directory modes, so the case runs only where the mode can refuse.
+if [ "$(id -u)" != 0 ]; then
+    printf '{"pool":"coordinator.lan:3333","worker":"shed-3"}' >"$RTSB/rig.json"
+    chmod 500 "$RTSB"
+    rt_out=$(run_rt render_rig_miner_config 2>&1)
+    assert_rc "a token that cannot be kept -> rc 1" "$?" "1"
+    chmod 700 "$RTSB"
+    assert_contains "the refusal names the token" "$rt_out" "control token"
+fi
+rm -rf "$RTSB"
+unset RTSB rt_tok rt_tok2 rt_out
+unset -f run_rt

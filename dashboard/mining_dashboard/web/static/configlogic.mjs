@@ -14,6 +14,8 @@
 // preview, and the gate are all untouched by this display-only regroup. A secret left blank keeps
 // its sentinel — the server swaps it for the live value ("unchanged").
 
+import { isHidden } from "./confighidden.mjs";
+
 export const SECRET_HINT = "set — leave blank to keep";
 
 export function isSecretSentinel(v) {
@@ -46,9 +48,10 @@ function isPlainObject(v) {
 
 function walk(node, path, out) {
   for (const [key, value] of Object.entries(node)) {
-    // Underscore-prefixed keys are metadata/docs, not config, at ANY depth — config.reference.json
-    // carries a couple nested ones (xmrig_proxy._docs, dashboard._workers_docs) alongside the
-    // top-level _docs buildSections already skipped; without this they'd render as stray text
+    // Underscore-prefixed keys are metadata/docs, not config, at ANY depth. The two nested ones
+    // this guarded (xmrig_proxy._docs, dashboard._workers_docs) went with the deprecated aliases in
+    // 2.0.0 (#1832); the rule stays because the top-level _docs and any future nested one need it,
+    // and without it they'd render as stray text
     // fields and, worse, fall into the catch-all "Other" logical group (#611) since no group
     // claims a docs blob.
     if (key.startsWith("_")) continue;
@@ -58,7 +61,7 @@ function walk(node, path, out) {
       walk(value, p, out);
       continue;
     }
-    // Array values (dashboard.workers, #172) have no form rendering: skip them so they can't be
+    // Array values (workers.list, #506) have no form rendering: skip them so they can't be
     // mangled into a string by a text field. applyEdits clones the whole config and only folds
     // TOUCHED fields back, so a skipped array survives the round trip verbatim.
     if (Array.isArray(value)) continue;
@@ -86,42 +89,14 @@ function walk(node, path, out) {
 // never overlap across groups and first-match is unambiguous; classifyGroup's own test asserts
 // that invariant directly. Any leaf no group claims renders in the catch-all "Other" group below
 // (never silently dropped) — buildSections' own test suite asserts every config.reference.json
-// path resolves to a REAL group, so a new key can't slip into "Other" unnoticed either.
+// path resolves to a REAL group, so a new key can't slip into "Other" unnoticed either. The one
+// exception is a HIDDEN path (confighidden.mjs, #1850), dropped below before any of this runs —
+// `ssh.*` has no group entry BECAUSE it can never render, not the other way round.
 export const OTHER_GROUP = "Other";
 export const LOGICAL_GROUPS = [
   {
-    name: "Wallets & payout",
-    prefixes: [
-      "monero.wallet_address",
-      "monero.view_key",
-      "monero.payout_scan_height",
-      "tari.wallet_address",
-      "tari.view_key",
-      "tari.spend_public_key",
-      "tari.payout_scan_birthday",
-    ],
-  },
-  {
-    // Node-level knobs for BOTH merge-mined chains — Tari gets only two of these (mode,
-    // clearnet_initial_sync), not a whole second section for two fields.
-    name: "Monero node",
-    prefixes: [
-      "monero.mode",
-      "monero.node_username",
-      "monero.node_password",
-      "monero.prune",
-      "monero.remote",
-      "monero.rpc_lan_access",
-      "monero.zmq_lan_access",
-      "monero.clearnet_initial_sync",
-      "tari.mode",
-      "tari.remote",
-      "tari.grpc_lan_access",
-      "tari.clearnet_initial_sync",
-    ],
-  },
-  {
     name: "Mining",
+    description: "Choose how the pool, proxy, local miner, and XvB route mining work.",
     prefixes: [
       "p2pool.pool",
       "p2pool.stratum_bind",
@@ -136,9 +111,51 @@ export const LOGICAL_GROUPS = [
       "dashboard.fail_closed",
     ],
   },
-  { name: "Workers", prefixes: ["workers"] },
+  {
+    name: "Payouts",
+    description: "Set payout destinations and the read-only wallet data used to confirm payments.",
+    prefixes: [
+      "monero.wallet_address",
+      "monero.view_key",
+      "monero.payout_scan_height",
+      "tari.wallet_address",
+      "tari.view_key",
+      "tari.spend_public_key",
+      "tari.payout_scan_birthday",
+    ],
+  },
+  {
+    name: "Monero node",
+    description: "Choose the Monero node and how Pithead reaches or exposes it.",
+    prefixes: [
+      "monero.mode",
+      "monero.node_username",
+      "monero.node_password",
+      "monero.prune",
+      "monero.remote",
+      "monero.rpc_lan_access",
+      "monero.zmq_lan_access",
+      "monero.clearnet_initial_sync",
+    ],
+  },
+  {
+    // The Tari node's own section (#1887), directly under Monero's. These four lived in "Monero
+    // node" on the reasoning that two chains share one node section; an operator looking for where
+    // their Tari node is configured read the group titles, found no Tari, and concluded it could
+    // not be changed here. Its resource knobs (tari.mem_limit, tari.data_dir) stay in "System /
+    // advanced" beside monero's — the split follows what a field IS, not which chain it names.
+    name: "Tari node",
+    description: "Choose the Tari node and how Pithead reaches or exposes it.",
+    prefixes: ["tari.mode", "tari.remote", "tari.grpc_lan_access", "tari.clearnet_initial_sync"],
+  },
+  {
+    name: "Workers",
+    description: "Control how rigs authenticate and connect to Pithead.",
+    prefixes: ["workers"],
+  },
   {
     name: "Dashboard & access",
+    description: "Control dashboard access, login, address, and remote configuration.",
     prefixes: [
       "dashboard.secure",
       "dashboard.host",
@@ -150,14 +167,24 @@ export const LOGICAL_GROUPS = [
       "dashboard.control",
     ],
   },
-  { name: "Notifications", prefixes: ["telegram", "notifications", "healthchecks"] },
-  { name: "Energy", prefixes: ["dashboard.energy"] },
   {
-    name: "Alerts & thresholds",
+    name: "Notifications",
+    description: "Choose where operational messages and alerts are sent.",
+    prefixes: ["telegram", "notifications", "healthchecks"],
+  },
+  {
+    name: "Energy",
+    description: "Set electricity and price inputs for cost estimates.",
+    prefixes: ["dashboard.energy"],
+  },
+  {
+    name: "Alerts",
+    description: "Set the thresholds that turn mining changes into alerts.",
     prefixes: ["dashboard.hashrate_drop_threshold", "dashboard.hashrate_drop_minutes"],
   },
   {
-    name: "System / advanced",
+    name: "Advanced",
+    description: "Tune storage, memory, networking, Tor, and update behavior.",
     prefixes: [
       "monero.mem_limit",
       "monero.data_dir",
@@ -170,8 +197,6 @@ export const LOGICAL_GROUPS = [
       "dashboard.data_dir",
       "dashboard.check_for_updates",
       "network",
-      "ssh",
-      "xmrig_proxy",
     ],
   },
 ];
@@ -200,10 +225,15 @@ export function buildSections(cfg) {
   const byGroup = new Map();
   for (const g of LOGICAL_GROUPS) byGroup.set(g.name, []);
   byGroup.set(OTHER_GROUP, []);
-  for (const f of fields) byGroup.get(classifyGroup(f.key)).push(f);
+  for (const f of fields) if (!isHidden(f.key)) byGroup.get(classifyGroup(f.key)).push(f);
   const sections = [];
   for (const [name, groupFields] of byGroup)
-    if (groupFields.length) sections.push({ name, fields: groupFields });
+    if (groupFields.length)
+      sections.push({
+        name,
+        description: LOGICAL_GROUPS.find((g) => g.name === name)?.description || "",
+        fields: groupFields,
+      });
   return sections;
 }
 
@@ -226,7 +256,7 @@ export function regroupCore(sections, coreKeys) {
   const coreSet = new Set(coreKeys || []);
   const core = sections.flatMap((s) => s.fields).filter((f) => coreSet.has(f.key));
   const rest = sections
-    .map((s) => ({ name: s.name, fields: s.fields.filter((f) => !coreSet.has(f.key)) }))
+    .map((s) => ({ ...s, fields: s.fields.filter((f) => !coreSet.has(f.key)) }))
     .filter((s) => s.fields.length);
   return { core, sections: rest };
 }
@@ -248,7 +278,7 @@ const SUBGROUPS = {
 
 export function nestSection(section) {
   const defs = SUBGROUPS[section.name];
-  if (!defs) return { name: section.name, fields: section.fields, subgroups: [] };
+  if (!defs) return { ...section, fields: section.fields, subgroups: [] };
   const claimed = new Set();
   const subgroups = defs
     .map((d) => {
@@ -261,6 +291,7 @@ export function nestSection(section) {
     .filter((g) => g.fields.length);
   return {
     name: section.name,
+    description: section.description,
     fields: section.fields.filter((f) => !claimed.has(f.key)),
     subgroups,
   };
@@ -282,14 +313,23 @@ export function nestSection(section) {
 // but only behind a type-to-confirm. They render editable (not greyed) and carry `confirm: true` so
 // the field can show a "confirm to proceed" affordance instead of the "host-only" one. A key on
 // both lists is treated as freely editable (editable wins); the gate is still the authority.
-export function markEditable(sections, editableKeys, confirmKeys) {
+export function markEditable(sections, editableKeys, confirmKeys, approvalKeys, defaultKeys) {
   const editable = new Set(editableKeys || []);
   const confirm = new Set(confirmKeys || []);
+  const approval = new Set(approvalKeys || []);
+  const defaults = new Set(defaultKeys || []);
   return sections.map((s) => ({
-    name: s.name,
+    ...s,
     fields: s.fields.map((f) => {
       const isConfirm = !editable.has(f.key) && confirm.has(f.key);
-      return { ...f, editable: editable.has(f.key) || isConfirm, confirm: isConfirm };
+      const isApproval = !editable.has(f.key) && !isConfirm && approval.has(f.key);
+      return {
+        ...f,
+        editable: editable.has(f.key) || isConfirm || isApproval,
+        confirm: isConfirm,
+        approval: isApproval,
+        defaulted: defaults.has(f.key),
+      };
     }),
   }));
 }

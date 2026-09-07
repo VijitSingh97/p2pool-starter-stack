@@ -193,13 +193,13 @@ def build_worker_detail(name, data, state_mgr, range_arg="all", window=None):
     measured hashrate (worker_history) aggregated over its active window, so an operator can compare config
     versions empirically. ``hashrate_history`` (#1013) is the same rig's hashrate as a chartable time series,
     honoring the same ``range_arg``/``window`` ``/api/state`` already uses.
-    ``editable`` is whether the worker has an operator-set ``host`` in ``dashboard.workers[]`` — the
+    ``editable`` is whether the worker has an operator-set ``host`` in ``workers.list[]`` — the
     precondition for the host-side write path. The rig's token is masked out of this container (#440),
     so the container cannot verify it; the host runner re-checks it and fails closed if it is missing.
     """
     workers = data.get("workers", []) if data else []
     worker = next((w for w in workers if w.get("name") == name), None)
-    descriptor = next((e for e in config.DASHBOARD_WORKERS if e["name"] == name), None)
+    descriptor = next((e for e in config.current_worker_endpoints() if e["name"] == name), None)
     history = state_mgr.get_worker_config_history(name, limit=_HISTORY_LIMIT)
     # None means the read FAILED; [] means the rig genuinely has no recorded changes (#1409). The
     # two are the same object downstream, so the distinction has to be captured HERE or it is gone.
@@ -254,7 +254,9 @@ def build_worker_detail(name, data, state_mgr, range_arg="all", window=None):
         "ip": worker.get("ip") if worker else None,  # OBSERVED only — the adopt-form prefill (#893)
         "status": worker.get("status") if worker else None,
         "hashrate": format_hashrate(worker.get("h60", 0)) if worker else None,
-        "rigforge": _rigforge_display(worker.get("rigforge")) if worker else None,
+        "rigforge": _rigforge_display(worker.get("rigforge"), worker.get("status") == "online")
+        if worker
+        else None,
         # {available, latest, url} | None — this rig runs an older RigForge (#596).
         "rigforge_update": rigforge_update_for(worker, (data or {}).get("rigforge_release")),
         "writable_keys": sorted(WORKER_WRITABLE_KEYS),
@@ -278,6 +280,15 @@ def build_worker_detail(name, data, state_mgr, range_arg="all", window=None):
         # ``[]`` means checked and in agreement; ``None`` means we could not honestly check.
         "config_drift": config_drift(
             last_applied, rig_config, unsettled=_has_unsettled_apply(history)
+        ),
+        # The unrecorded edit #1551 detects, served here while it is still the config the rig is
+        # running (#1564). It is the case BOTH lines above are structurally blind to: a hand-edit
+        # underneath RigForge stamps no new change id for `config_origin` to see, and a key we
+        # never set has no left-hand side for `config_drift` to compare. Without it an operator
+        # reads "Last changed from this dashboard" over a config the Security panel has flagged.
+        # {worker, before, after} or None — never an all-clear; the store gates on currency.
+        "config_revision_drift": state_mgr.get_worker_revision_drift(
+            name, (rig_meta or {}).get("revision")
         ),
         "history": history,
         "hashrate_by_config": hashrate_by_config,

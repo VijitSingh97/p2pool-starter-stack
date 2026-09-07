@@ -5,11 +5,11 @@
 // The view only ever ASKS — every request rides the X-Pithead-Control header (CSRF guard) and
 // the host decides. When the channel is off the routes 404 and this view explains how to enable.
 //
-// ONE editing surface, the wizard's pattern (#785): the form sections on top and the WHOLE
-// candidate config beneath as a collapsed JSON pane — both live, both views of a single
-// `candidate` object. Editing a field rewrites the candidate (typed by the field, via the shared
-// configsync.coerceForType) and the pane re-renders; editing the pane replaces the candidate and
-// the fields refill. What gets previewed and committed is exactly the candidate the pane shows.
+// ONE editing surface, the wizard's pattern (#785): the form sections on top and the candidate
+// config beneath as a collapsed JSON pane — both live, both views of a single `candidate`
+// object. Editing a field rewrites the candidate (typed by the field, via configsync's shared
+// coerceForType) and the pane re-renders; editing the pane replaces it and the fields refill.
+// Hidden paths (#1850) sit outside the candidate: neither surface shows or alters them.
 //
 // The form pins a `core` group — the wizard's own shortlist, `_core_keys` on the fetched config,
 // sourced from config.core-keys.json so the two never drift apart — above LOGICAL sections
@@ -21,6 +21,8 @@
 // sentinels, render blank with a keep-hint, and an untouched or re-blanked secret keeps its
 // sentinel — "blank means keep" survives the model change.
 
+import { applyFailure } from "./applyfailure.mjs";
+import { editableCandidate, restoreHidden } from "./confighidden.mjs";
 import {
   buildSections,
   isSecretSentinel,
@@ -31,8 +33,11 @@ import {
   regroupCore,
   SECRET_HINT,
 } from "./configlogic.mjs";
+import { PreviewModal } from "./configpreview.mjs";
 import { coerceForType, pathGet, pathSet } from "./configsync.mjs";
 import { Component, html } from "./preact.mjs";
+
+export { PreviewModal };
 
 const CONTROL_HEADERS = { "Content-Type": "application/json", "X-Pithead-Control": "1" };
 const POLL_MS = 2000;
@@ -85,6 +90,7 @@ const HOST_ONLY_TITLE = "Host-only — edit config.json and run ./pithead apply"
 // #719: an in-scope confirm-gated field IS editable, but committing it is disruptive — the review
 // modal makes you type APPLY. The tooltip sets that expectation up front.
 const CONFIRM_TITLE = "Editable — this change is disruptive; you'll type APPLY to confirm at Save";
+const APPROVAL_TITLE = "Editable — this sensitive change is recorded under your signed-in identity";
 
 // `full` (#529): the pinned Core card mixes fields from several sections, so its rows need the
 // FULL dotted key ("monero.wallet_address") to stay unambiguous. A natural section keeps the
@@ -93,15 +99,20 @@ const CONFIRM_TITLE = "Editable — this change is disruptive; you'll type APPLY
 // AND tari.*) gets full keys too, or monero.view_key and tari.view_key would both render as a
 // bare "view_key" (and System / advanced would show four identical "data_dir" rows).
 //
-// `field.editable` (#613): a field the control gate would refuse at commit renders disabled, its
-// live value read-only, with a tooltip explaining why — and, critically, no onChange/onInput is
-// wired at all when disabled, so a greyed field can never add itself to `edits` (defense in
-// depth; the gate is still the real authority). Preact skips an event prop entirely when it's
+// `field.editable` (#613): a physical-presence-only field renders disabled, with no
+// onChange/onInput wired, so it cannot enter the form's staged edits. Preact skips an event prop
+// entirely when it is
 // `undefined`, so passing `undefined` rather than a no-op is what actually removes the listener.
 const Field = ({ field, value, onEdit, full }) => {
   const editable = field.editable !== false;
   const label = full ? field.key : field.path.slice(1).join(".") || field.path[0];
-  const title = !editable ? HOST_ONLY_TITLE : field.confirm ? CONFIRM_TITLE : undefined;
+  const title = !editable
+    ? HOST_ONLY_TITLE
+    : field.confirm
+      ? CONFIRM_TITLE
+      : field.approval
+        ? APPROVAL_TITLE
+        : undefined;
   const change = editable ? (e) => onEdit(field, e.target.value) : undefined;
   let input;
   if (field.type === "boolean") {
@@ -121,54 +132,10 @@ const Field = ({ field, value, onEdit, full }) => {
         disabled=${!editable} onInput=${change} />`;
   }
   return html`<label class="config-field" title=${title}>
-      <span class="config-field-name">${label}</span>
+      <span class="config-field-name">${label}${field.defaulted ? " (default)" : ""}</span>
       ${input}
       ${field.warning ? html`<span class="config-field-warning">⚠ ${field.warning}</span>` : null}
   </label>`;
-};
-
-export const PreviewModal = ({
-  preview,
-  confirmText,
-  onConfirmText,
-  onConfirm,
-  onCancel,
-  busy,
-}) => {
-  const changes = preview.changes || [];
-  const armed = !preview.destructive || confirmText === "APPLY";
-  return html`<div class="config-modal-backdrop">
-      <div class="card config-modal">
-          <h3>Review changes</h3>
-          ${
-            changes.length === 0
-              ? html`<p class="text-muted">No configuration changes detected.</p>`
-              : html`<ul class="config-preview-list">
-                  ${changes.map((c) => {
-                    // #719: CONFIRM rows (in-scope disruptive, confirm-gated) get the same warning
-                    // treatment as DEST — both are "disruptive" and both arm the type-APPLY box.
-                    const disruptive = c.flag === "DEST" || c.flag === "CONFIRM";
-                    return html`<li class=${disruptive ? "config-preview-dest" : ""}>
-                        ${disruptive ? "⚠ " : ""}${c.msg}</li>`;
-                  })}
-              </ul>`
-          }
-          ${
-            preview.destructive
-              ? html`<label class="config-confirm-type">Some changes above are disruptive.
-                  Type <code>APPLY</code> to confirm:
-                  <input type="text" value=${confirmText} onInput=${(e) => onConfirmText(e.target.value)} /></label>`
-              : null
-          }
-          <div class="config-modal-actions">
-              <button class="btn-toggle" onClick=${onCancel} disabled=${busy}>Cancel</button>
-              <button class="btn-toggle active" onClick=${onConfirm}
-                      disabled=${busy || changes.length === 0 || !armed}>
-                  ${busy ? "Applying…" : "Confirm & apply"}
-              </button>
-          </div>
-      </div>
-  </div>`;
 };
 
 export class ConfigView extends Component {
@@ -181,12 +148,16 @@ export class ConfigView extends Component {
       coreKeys: [],
       editableKeys: [], // #613: config paths the control gate will actually commit
       confirmKeys: [], // #719: config paths the gate commits behind a type-to-confirm
+      approvalKeys: [],
+      defaultKeys: [],
+      lastApply: null,
       candidate: null, // the ONE config both the fields and the JSON pane edit (#785)
       pristine: "", // candidate's serialization at load — dirtiness is a comparison, not a flag
       editText: "",
       jsonError: null,
       preview: null,
       confirmText: "",
+      payoutSuffixes: {},
       result: null,
       error: null,
     };
@@ -205,10 +176,7 @@ export class ConfigView extends Component {
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const cfg = await res.json();
-      // The candidate is the config MINUS the underscore metadata (_core_keys and friends are
-      // display directives, not configuration) — what the pane shows is what preview receives.
-      const candidate = {};
-      for (const [k, v] of Object.entries(cfg)) if (!k.startsWith("_")) candidate[k] = v;
+      const candidate = editableCandidate(cfg);
       const text = JSON.stringify(candidate, null, 2);
       this.setState({
         phase: "form",
@@ -217,6 +185,9 @@ export class ConfigView extends Component {
         coreKeys: cfg._core_keys || [],
         editableKeys: cfg._editable_keys || [],
         confirmKeys: cfg._confirm_keys || [],
+        approvalKeys: cfg._approval_keys || [],
+        defaultKeys: cfg._default_keys || [],
+        lastApply: cfg._last_apply || null,
         candidate,
         pristine: text,
         editText: text,
@@ -275,12 +246,13 @@ export class ConfigView extends Component {
     return pollResult(id, skip);
   }
 
-  // The candidate IS the proposed config — the pane shows exactly what preview receives, which
-  // is the point of the pattern (#785). A pane mid-typo blocks Save via jsonError instead.
+  // The candidate plus the hidden subtrees the fetched config carried (#1850) IS the proposed
+  // config — the pane shows every key preview receives that this page may change, which is the
+  // point of the pattern (#785). A pane mid-typo blocks Save via jsonError instead.
   buildProposed() {
-    const { candidate, jsonError } = this.state;
+    const { candidate, cfg, jsonError } = this.state;
     if (jsonError) return { error: jsonError };
-    return { config: candidate };
+    return { config: restoreHidden(candidate, cfg) };
   }
 
   async save() {
@@ -307,7 +279,7 @@ export class ConfigView extends Component {
         });
         return;
       }
-      this.setState({ phase: "confirm", preview: out, confirmText: "" });
+      this.setState({ phase: "confirm", preview: out, confirmText: "", payoutSuffixes: {} });
     } catch (e) {
       this.setState({ phase: "form", error: String(e) });
     }
@@ -319,9 +291,12 @@ export class ConfigView extends Component {
     try {
       // #719: an in-scope disruptive change (preview.destructive) rides its typed confirmation to
       // the host gate, which requires it before a CONFIRM row proceeds. Friction, not a secret.
-      const body = this.state.preview.destructive
-        ? { id, confirm: this.state.confirmText }
-        : { id };
+      const body = { id };
+      if (this.state.preview.destructive) body.confirm = this.state.confirmText;
+      if (this.state.preview.approval_required) {
+        body.approve = true;
+        body.payout_suffixes = this.state.payoutSuffixes;
+      }
       const res = await fetch("/api/control/commit", {
         method: "POST",
         headers: CONTROL_HEADERS,
@@ -372,6 +347,7 @@ export class ConfigView extends Component {
           const mixed = new Set(fields.map((f) => f.path[0])).size > 1;
           return html`<details class="card config-section">
               <summary>${s.name}</summary>
+              ${s.description ? html`<p class="text-muted text-xs">${s.description}</p>` : null}
               ${fields.map((f) => field(f, mixed))}
               ${subgroups.map(
                 (g) => html`<details class="config-subsection">
@@ -386,13 +362,13 @@ export class ConfigView extends Component {
 
   // The JSON pane (#785, the wizard's pattern): the whole candidate beneath the form, collapsed
   // by default, two-way live — never a separate mode. Load-from-file fills it (FileReader, no
-  // upload), and what it shows is byte-for-byte what Save previews.
+  // upload); it shows byte-for-byte what Save previews, minus the hidden paths (#1850).
   renderJson(editText, jsonError, busy) {
     return html`<details class="card config-section">
-        <summary><strong>Advanced</strong> — the exact configuration this will apply</summary>
+        <summary><strong>Advanced</strong> — the configuration this page sends</summary>
         <p class="text-muted text-xs">Editing a field above updates it; editing here directly
         wins. Set secrets appear as <code>__secret__</code> markers and stay unchanged unless
-        you replace them. The host's gate remains the authority on what commits.</p>
+        you replace them. A few developer settings are not shown here and are not changed by this page.</p>
         <textarea class="worker-edit" spellcheck="false" rows="20" disabled=${busy}
                   value=${editText} onInput=${(e) => this.onJsonInput(e.target.value)}></textarea>
         ${jsonError ? html`<p class="status-bad text-xs">${jsonError}</p>` : null}
@@ -411,10 +387,14 @@ export class ConfigView extends Component {
       coreKeys,
       editableKeys,
       confirmKeys,
+      approvalKeys,
+      defaultKeys,
+      lastApply,
       editText,
       jsonError,
       preview,
       confirmText,
+      payoutSuffixes,
       result,
       error,
     } = this.state;
@@ -442,9 +422,7 @@ export class ConfigView extends Component {
           ${
             ok
               ? html`<p class="status-ok">Changes applied — only the affected containers were recreated.</p>`
-              : html`<p class="status-bad">Apply failed. The previous config is kept at
-                  <code>${result.backup || "config.json.bak-control"}</code> on the host.</p>
-                  ${result.error ? html`<pre class="config-error-tail">${result.error}</pre>` : null}`
+              : applyFailure(result, this.props.appliance)
           }
           <button class="btn-toggle" onClick=${() => this.load()}>Back to the form</button>
       </div>`;
@@ -453,11 +431,17 @@ export class ConfigView extends Component {
     const dirty = editText !== this.state.pristine;
     const canSave = dirty && !jsonError;
     const { core, sections: groups } = regroupCore(
-      markEditable(sections, editableKeys, confirmKeys),
+      markEditable(sections, editableKeys, confirmKeys, approvalKeys, defaultKeys),
       coreKeys,
     );
     return html`<div class="config-view">
         ${error ? html`<div class="card"><p class="status-bad">${error}</p></div>` : null}
+        ${
+          lastApply?.status === "failed"
+            ? html`<div class="card"><p class="status-bad">The last apply failed. This form shows
+              the desired configuration; services that stayed running may still use the earlier settings.</p></div>`
+            : null
+        }
         ${this.renderForm(core, groups)}
         ${this.renderJson(editText, jsonError, busy)}
         <div class="config-actions">
@@ -470,6 +454,11 @@ export class ConfigView extends Component {
           phase === "confirm" || phase === "committing"
             ? html`<${PreviewModal} preview=${preview} confirmText=${confirmText}
                   onConfirmText=${(t) => this.setState({ confirmText: t })}
+                  payoutSuffixes=${payoutSuffixes}
+                  onPayoutSuffix=${(chain, value) =>
+                    this.setState({
+                      payoutSuffixes: { ...this.state.payoutSuffixes, [chain]: value },
+                    })}
                   onConfirm=${() => this.commit()}
                   onCancel=${() => this.setState({ phase: "form", preview: null })}
                   busy=${phase === "committing"} />`
@@ -582,7 +571,7 @@ export class UpgradeControl extends Component {
           </div>
       </div>`;
     }
-    return html`<button class="badge badge-accent version-badge upgrade-btn ml-2"
+    return html`<button class="badge badge-accent version-badge ml-2"
             title=${"Upgrade the stack to " + version + " from the dashboard"}
             onClick=${() => this.setState({ phase: "confirm", confirmText: "" })}>
             Upgrade to ${version}

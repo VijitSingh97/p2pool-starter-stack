@@ -25,7 +25,7 @@ resolve_worker_target() { # <worker-name> <verb-for-the-host-missing-message, e.
     cport=$(jq -r --arg n "$worker" "$WORKER_LIST_JQ"'worker_list[] | select(.name == $n) | .control_port // 8082' "$CONFIG_FILE" 2>/dev/null | head -1)
     token=$(jq -r --arg n "$worker" "$WORKER_LIST_JQ"'worker_list[] | select(.name == $n) | .token // ""' "$CONFIG_FILE" 2>/dev/null | head -1)
     if [ -z "$host" ]; then
-        RESOLVE_WORKER_ERR="worker '$worker' has no configured host in workers.list[] (or the deprecated dashboard.workers[]) — set host + control_port + token to $verb it."
+        RESOLVE_WORKER_ERR="worker '$worker' has no configured host in workers.list[] — set host + control_port + token to $verb it."
         return 1
     fi
     # host charset guard (#122): no port/path/userinfo can be smuggled into the URL below.
@@ -38,7 +38,7 @@ resolve_worker_target() { # <worker-name> <verb-for-the-host-missing-message, e.
         return 1
     fi
     if [ -z "$token" ]; then
-        RESOLVE_WORKER_ERR="worker '$worker' has no token in workers.list[] (or the deprecated dashboard.workers[]) — the rig's control API is bearer-mandatory."
+        RESOLVE_WORKER_ERR="worker '$worker' has no token in workers.list[] — the rig's control API is bearer-mandatory."
         return 1
     fi
     RESOLVED_HOST="$host" RESOLVED_CPORT="$cport" RESOLVED_TOKEN="$token"
@@ -48,7 +48,7 @@ resolve_worker_target() { # <worker-name> <verb-for-the-host-missing-message, e.
 # Worker config apply (#185): POST an operator's writable-key change to a RigForge rig's control API
 # and record the outcome for the dashboard's config history. The intent carries ONLY the worker NAME
 # and the CHANGES — never a host, port, or token: the runner resolves the rig's real address + bearer
-# from the HOST's own config.json (workers.list[] / the deprecated dashboard.workers[], #506), so a
+# from the HOST's own config.json (workers.list[], #506), so a
 # tampered intent can at most target another ALREADY-configured rig, never an arbitrary host (#122
 # SSRF), and the rig's access token —
 # masked out of the container (#440) — never leaves the host. Changes are re-validated against the
@@ -106,11 +106,11 @@ control_worker_apply() { # <claimed-file> <id> <actor> <control-dir>
     control_write_result "$results" "$id" "$(jq -n --arg w "$worker" '{status:"running",worker:$w,ts:(now|floor)}')"
     # POST the change to the rig's control API. Direct LAN dial (like the read path) — NOT Tor: the rig
     # is an operator-set host on the mining LAN, not clearnet. The token rides one header, never the
-    # URL, the result, or the audit log.
+    # URL, process argv, the result, or the audit log.
     local url="http://$host:$cport/apply" bodyf="$cdir/staged/.$id.body" code
-    if ! code=$(curl -sS -o "$bodyf" -w '%{http_code}' --max-time 15 --max-filesize "$CURL_CAP_SMALL" \
-        -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
-        --data "$changes" "$url" 2>/dev/null); then
+    if ! code=$(printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" |
+        curl -sS -o "$bodyf" -w '%{http_code}' --max-time 15 --max-filesize "$CURL_CAP_SMALL" \
+            --config - -H "Content-Type: application/json" --data "$changes" "$url" 2>/dev/null); then
         rm -f "$bodyf"
         _wa_fail "could not reach worker '$worker' control API at $host:$cport — nothing was applied."
         return 0
@@ -138,8 +138,9 @@ control_worker_apply() { # <claimed-file> <id> <actor> <control-dir>
     while [ "$SECONDS" -lt "$deadline" ]; do
         sleep 2
         sbody="$cdir/staged/.$id.status"
-        if ! scode=$(curl -sS -o "$sbody" -w '%{http_code}' --max-time 10 --max-filesize "$CURL_CAP_SMALL" \
-            -H "Authorization: Bearer $token" "http://$host:$cport/status" 2>/dev/null); then
+        if ! scode=$(printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" |
+            curl -sS -o "$sbody" -w '%{http_code}' --max-time 10 --max-filesize "$CURL_CAP_SMALL" \
+                --config - "http://$host:$cport/status" 2>/dev/null); then
             rm -f "$sbody"
             continue
         fi
@@ -156,8 +157,11 @@ control_worker_apply() { # <claimed-file> <id> <actor> <control-dir>
         case "$status" in
         applied | rejected | rolled_back | failed)
             # reason is rig-supplied (attacker-influenceable); cap it before it is stored/rendered.
-            reason=$(jq -r '.reason // ""' "$sbody" | head -c 500)
-            ckeys=$(jq -c '.changed_keys // []' "$sbody")
+            if ! reason=$(jq -r '(.reason // "") | tostring | .[:500]' "$sbody") ||
+                ! ckeys=$(jq -c '.changed_keys // []' "$sbody"); then
+                rm -f "$sbody"
+                continue
+            fi
             rm -f "$sbody"
             control_write_result "$results" "$id" "$(jq -n --arg s "$status" --arg c "$change_id" --arg w "$worker" --argjson k "$ckeys" --arg r "$reason" \
                 '{status:$s,change_id:$c,worker:$w,changed_keys:$k,reason:(if $r=="" then null else $r end),ts:(now|floor)}')"
@@ -250,11 +254,13 @@ control_worker_upgrade() { # <claimed-file> <id> <actor> <control-dir>
     fi
     control_write_result "$results" "$id" "$(jq -n --arg w "$worker" --arg v "$tag" '{status:"running",worker:$w,version:$v,ts:(now|floor)}')"
     # POST the upgrade to the rig's control API — direct LAN dial like worker-apply, NOT Tor. The
-    # body carries the HOST-derived tag only; the token rides one header, never the URL or result.
+    # body carries the HOST-derived tag only; the token rides one stdin-fed header, never argv,
+    # the URL, or the result.
     local url="http://$host:$cport/upgrade" bodyf="$cdir/staged/.$id.body" code
-    if ! code=$(curl -sS -o "$bodyf" -w '%{http_code}' --max-time 15 --max-filesize "$CURL_CAP_SMALL" \
-        -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
-        --data "$(jq -n --arg v "$tag" '{version:$v}')" "$url" 2>/dev/null); then
+    if ! code=$(printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" |
+        curl -sS -o "$bodyf" -w '%{http_code}' --max-time 15 --max-filesize "$CURL_CAP_SMALL" \
+            --config - -H "Content-Type: application/json" \
+            --data "$(jq -n --arg v "$tag" '{version:$v}')" "$url" 2>/dev/null); then
         rm -f "$bodyf"
         _wu_fail "could not reach worker '$worker' control API at $host:$cport — nothing was changed."
         return 0
@@ -285,8 +291,9 @@ control_worker_upgrade() { # <claimed-file> <id> <actor> <control-dir>
     while [ "$SECONDS" -lt "$deadline" ]; do
         sleep 5
         sbody="$cdir/staged/.$id.status"
-        if ! scode=$(curl -sS -o "$sbody" -w '%{http_code}' --max-time 10 --max-filesize "$CURL_CAP_SMALL" \
-            -H "Authorization: Bearer $token" "http://$host:$cport/status" 2>/dev/null); then
+        if ! scode=$(printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" |
+            curl -sS -o "$sbody" -w '%{http_code}' --max-time 10 --max-filesize "$CURL_CAP_SMALL" \
+                --config - "http://$host:$cport/status" 2>/dev/null); then
             rm -f "$sbody"
             continue
         fi
@@ -304,7 +311,10 @@ control_worker_upgrade() { # <claimed-file> <id> <actor> <control-dir>
         case "$status" in
         applied | noop | throttled | rolled_back | failed)
             # reason is rig-supplied (attacker-influenceable); cap it before it is stored/rendered.
-            reason=$(jq -r '.reason // ""' "$sbody" | head -c 500)
+            if ! reason=$(jq -r '(.reason // "") | tostring | .[:500]' "$sbody"); then
+                rm -f "$sbody"
+                continue
+            fi
             rm -f "$sbody"
             # Legacy remap: a pre-rigforge#320 rig (≤ v1.11.2, the supported floor) collapses its
             # 6h anti-beacon throttle into failed+"throttled — ..." free text, and retry-later

@@ -1,12 +1,12 @@
 # shellcheck shell=bash
-#
-# Worker-config domain (#1105 Phase 1, develop-v2 lane): per-worker token masking and host-side
+: "${STACK_SUITE:?is unset: this file is a tests/stack/run.sh fragment, not a script — run tests/stack/run.sh}"
+# Worker-config domain (#1105 Phase 1, appliance lane): per-worker token masking and host-side
 # restore, across the two config shapes that carry rig credentials. A per-rig token lives in a
 # VARIABLE-LENGTH array, which puts it outside the fixed CONTROL_SECRET_PATHS walk that covers the
 # scalar secrets, so each shape needs its own proof that the property still holds — the masked
 # prefill copy must sentinel every set token rather than the first one, and the staging swap must
 # restore each sentinel from the live token rather than committing the sentinel itself. The legacy
-# dashboard.workers[] shape (#172/#679) and the workers.list[] shape (#506) are tested separately
+# removed 1.x dashboard.workers[] shape (#172/#679) and the workers.list[] shape (#506) separately
 # because they are read by different code paths, not because the property differs.
 # Sourced by tests/stack/run.sh.
 #
@@ -39,15 +39,18 @@ echo "== black-box: per-worker token mask + host-side restore, legacy dashboard.
 # refuses any dashboard.workers change, asserted above) — so this restore is exactly what lets an
 # operator's OTHER edits round-trip: the workers come back as sentinels and must resolve to the
 # live values unchanged, or every dashboard commit on a stack with configured workers would fail.
-# Since #679 `apply` MIGRATES the legacy shape, so a live config carries dashboard.workers only
-# between a hand-edit and the next apply — exactly the state the preview leg (a dry run, never
-# migrates) still serves. Hand-edit to legacy and render the masked copy directly, no apply.
+# 2.0.0 REMOVED the alias (#1832), which does not retire this block — it sharpens it. A live
+# config carries dashboard.workers[] between a hand-edit (or a restored 1.x backup) and the next
+# host apply, and 49-control-request-loop.sh:81 re-renders the prefill before draining precisely to
+# pick up such edits, so this state reaches the masker. The mask therefore STAYS, and the restore
+# must stay with it: they are one mechanism, and a mask whose restore cannot resolve blanks every
+# per-rig token instead of leaking one. Hand-edit to legacy and render the masked copy, no apply.
 jq '.dashboard.workers=[
     {name:"rig1",host:"10.0.0.5",token:"tok_rig1secret"},
     {name:"rig2"},
     {name:"rig3",token:"tok_rig3secret"}] | del(.workers.list)' "$C/config.json" >"$C/config.json.tmp" &&
     mv "$C/config.json.tmp" "$C/config.json"
-run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+PATH="$C/bin:$PATH" run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
 # 1) masked prefill copy: each SET per-worker token is a sentinel, the raw token never appears,
 #    and a token-less worker stays token-less.
 assert_eq "per-worker token masked to the sentinel" "$(jq -c '.dashboard.workers[0].token' "$MASKED" 2>/dev/null)" '{"__secret__":true}'
@@ -70,22 +73,26 @@ case "$(cat "$RESULTS/$UUID6.json")$(cat "$AUDIT")" in
 *tok_rig1secret* | *tok_rig3secret*) bad "results/audit stay free of the restored per-worker token" "a per-worker token leaked" ;;
 *) ok "results/audit stay free of the restored per-worker token" ;;
 esac
-# 3) commit: workers restored to live == live, so the gate passes on the pool-only change; the
-#    commit's `apply -y` then MIGRATES (#679) — the committed config keeps the live per-worker
-#    tokens under workers.list[], the legacy key is gone, and the pre-migration copy sits beside.
+# 3) commit: the sentinels resolve to the live values, so the gate sees only the pool change —
+#    but the staged doc still carries dashboard.workers[], which 2.0.0 dropped from the schema, so
+#    the closed-schema check refuses it as an unknown key like any other typo (#1832). The control
+#    channel never migrates; `pithead apply` on the host is the one path that moves the entries, so
+#    a refused commit must leave the operator's hand-edited config EXACTLY as it was.
 printf '{"id":"%s","action":"commit","actor":"admin"}\n' "$UUID6" >"$REQS/$UUID6.json"
 run_pending >/dev/null
-assert_eq "worker-sentinel commit applies" "$(jq -r '.status' "$RESULTS/$UUID6.json" 2>/dev/null)" "applied"
-assert_eq "committed config keeps the live per-worker token (migrated to workers.list, #679)" "$(jq -r '.workers.list[0].token' "$C/config.json")" "tok_rig1secret"
-assert_eq "commit migrated the legacy key away (#679)" "$(jq -r '.dashboard | has("workers")' "$C/config.json")" "false"
-assert_eq "pre-migration copy kept through the control commit (#679)" "$(jq -r '.dashboard.workers[0].token' "$C/config.json.bak-workers" 2>/dev/null)" "tok_rig1secret"
-assert_eq "committed config carries no sentinel dict" "$(jq -r '[.. | objects | select(.__secret__?)] | length' "$C/config.json")" "0"
+WCERR="$(jq -r '.error // ""' "$RESULTS/$UUID6.json" 2>/dev/null)"
+assert_eq "worker-sentinel commit on a 1.x config is refused (#1832)" "$(jq -r '.status' "$RESULTS/$UUID6.json" 2>/dev/null)" "rejected"
+assert_contains "refused as an unknown schema key, not silently dropped" "$WCERR" "adds config keys not in the schema"
+assert_contains "the refusal names the removed key itself" "$WCERR" "dashboard.workers"
+assert_eq "a refused commit leaves the live per-worker token untouched" "$(jq -r '.dashboard.workers[0].token' "$C/config.json")" "tok_rig1secret"
+assert_eq "the control channel never migrates — only a host apply does" "$(jq -r '.workers.list == null' "$C/config.json")" "true"
+assert_eq "config carries no sentinel dict" "$(jq -r '[.. | objects | select(.__secret__?)] | length' "$C/config.json")" "0"
 # 4) duplicate names resolve first-declared-wins (staging only — a duplicate can't round-trip a
 #    commit, since the second entry's token would flip and trip the gate). Same hand-edited
 #    legacy state as above: masked copy rendered directly, no apply, so no migration yet.
 jq 'del(.workers.list) | .dashboard.workers=[{name:"rig1",host:"10.0.0.5",token:"tok_first"},{name:"rig1",token:"tok_second"}]' "$C/config.json" >"$C/config.json.tmp" &&
     mv "$C/config.json.tmp" "$C/config.json"
-run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+PATH="$C/bin:$PATH" run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
 UUID7="77777777-7777-4777-8777-777777777777"
 jq --arg id "$UUID7" '{id:$id, action:"preview", actor:"admin", config: .}' "$MASKED" >"$REQS/$UUID7.json"
 run_pending >/dev/null
@@ -126,3 +133,61 @@ run_pending >/dev/null
 assert_eq "workers.list-sentinel commit applies" "$(jq -r '.status' "$RESULTS/$UUID8.json" 2>/dev/null)" "applied"
 assert_eq "committed config keeps the live workers.list token" "$(jq -r '.workers.list[0].token' "$C/config.json")" "tok_rig1secret"
 assert_eq "committed config carries no sentinel dict" "$(jq -r '[.. | objects | select(.__secret__?)] | length' "$C/config.json")" "0"
+
+echo "== black-box: per-rig derived read credentials (#1983) =="
+WREAD="$C/data/control/masked/worker-read-tokens.json"
+cp "$C/config.json" "$C/config.before-read-map.json"
+jq '.workers.list[0].port=18081 | .workers.list[0].token="0123456789abcdef0123456789abcdef"' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
+PATH="$C/bin:$PATH" run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+assert_eq "read map uses the fixed HMAC derivation" "$(jq -r '.[] | select(.name=="rig1") | .read_token' "$WREAD")" "79432528d7ae32abcc791e8c3f86e100f01d7d535956b58b876da3c7660749b8"
+assert_eq "read map binds the descriptor's RigForge API port" "$(jq -r '.[] | select(.name=="rig1") | .port' "$WREAD")" "18081"
+assert_eq "read map is owner-only" "$(stat -c '%a' "$WREAD" 2>/dev/null || stat -f '%Lp' "$WREAD")" "600"
+HMAC_FAIL="$C/.hmac-failed"
+jq --arg token "$(printf 'x%.0s' {1..65})" '.workers.list[0].token=$token' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
+(
+    openssl() {
+        if [ "$*" = "dgst -sha256 -binary" ] && [ ! -e "$HMAC_FAIL" ]; then
+            touch "$HMAC_FAIL"
+            return 1
+        fi
+        command openssl "$@"
+    }
+    run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+)
+assert_eq "failed HMAC key normalization fires the control" "$([ -e "$HMAC_FAIL" ] && echo yes)" "yes"
+assert_eq "failed HMAC key normalization removes the read map" "$([ ! -e "$WREAD" ] && echo yes)" "yes"
+OWNBIN="$C/read-owner-bin"
+mkdir -p "$OWNBIN" "$C/read-owner-masked"
+printf '#!/usr/bin/env bash\n[ -e "$OWNER_RETRY" ] || { touch "$OWNER_RETRY"; exit 1; }\n' >"$OWNBIN/chown"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >"$OWNER_LOG"\n"$@"\n' >"$OWNBIN/sudo"
+chmod +x "$OWNBIN/chown" "$OWNBIN/sudo"
+OWNER_LOG="$C/read-owner.log"
+OWNER_RETRY="$C/read-owner-retry"
+export OWNER_LOG OWNER_RETRY
+PATH="$OWNBIN:$PATH" run_sourced "$C" render_worker_read_tokens "$C/read-owner-masked"
+assert_contains "non-root render hands the owner-only map to the dashboard uid" "$(cat "$C/read-owner.log")" "chown 1000:1000"
+OWNER_MAP="$C/read-owner-masked/worker-read-tokens.json"
+assert_eq "successful ownership fallback keeps the read map" "$([ -f "$OWNER_MAP" ] && echo yes)" "yes"
+assert_eq "ownership fallback keeps the map owner-only" "$(stat -c '%a' "$OWNER_MAP" 2>/dev/null || stat -f '%Lp' "$OWNER_MAP")" "600"
+case "$(cat "$MASKED" "$WREAD" 2>/dev/null)" in
+*0123456789abcdef0123456789abcdef* | *tok_rig3secret*) bad "dashboard runtime holds no control token" "a control token leaked" ;;
+*) ok "dashboard runtime holds no control token" ;;
+esac
+jq --arg token '0123456789abcdef\0123456789abcdef' '.workers.list[0].token=$token' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
+PATH="$C/bin:$PATH" run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+assert_eq "JSON row transport preserves a literal backslash in the HMAC key" "$(jq -r '.[0].read_token' "$WREAD")" "cce295e5a24453987365f2392bea539dd26e25d404c8742569b4f7b7a015c00e"
+jq --arg token "$(printf 'é%.0s' {1..32})" '.workers.list[0].token=$token' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
+PATH="$C/bin:$PATH" run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+assert_eq "non-ASCII text gets no derived read capability" "$(jq -r 'length' "$WREAD")" "0"
+jq '.workers.list[0].token="short-token"' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
+PATH="$C/bin:$PATH" run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+assert_eq "weak control tokens get no derived read capability" "$(jq -r 'length' "$WREAD")" "0"
+mv "$C/config.before-read-map.json" "$C/config.json"
+PATH="$C/bin:$PATH" run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+assert_eq "switching away from 8081 removes stale read credentials" "$(jq -r 'length' "$WREAD")" "0"
+cp "$C/config.json" "$C/config.before-invalid-render.json"
+printf '{invalid\n' >"$C/config.json"
+PATH="$C/bin:$PATH" run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+assert_eq "an invalid masked-config render removes the credential map" "$([ ! -e "$WREAD" ] && echo yes)" "yes"
+mv "$C/config.before-invalid-render.json" "$C/config.json"
+PATH="$C/bin:$PATH" run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1

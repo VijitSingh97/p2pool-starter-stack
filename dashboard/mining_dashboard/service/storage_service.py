@@ -417,14 +417,14 @@ class StateManager(TelemetryStoreMixin, WorkerConfigStoreMixin):
             "(id TEXT PRIMARY KEY, ts TEXT, source TEXT, actor TEXT, action TEXT, status TEXT, "
             "keys TEXT)"
         )
-        # The config revision each rig was last OBSERVED serving (#1551), one row per worker.
-        # Additive, mirroring events / share_stats: no _migrate_db change, and the PRIMARY KEY is
-        # the only index it wants. Holding the rig's opaque `revision` NEXT TO the `last_change_id`
-        # beside it is the point: a later poll tells a recorded change (both moved) from an edit
-        # underneath RigForge (only the revision moved) — the door #1542 leaves open.
+        # The config revision each rig was last OBSERVED serving (#1551), one row per worker, plus
+        # the revision it drifted FROM while that drift is still current (#1564, migrated below).
+        # The PRIMARY KEY is the only index it wants. Holding the rig's opaque `revision` NEXT TO
+        # the `last_change_id` beside it is the point: a later poll tells a recorded change (both
+        # moved) from an edit underneath RigForge (only the revision moved) — #1542's open door.
         self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS worker_config_revision "
-            "(worker TEXT PRIMARY KEY, revision TEXT, last_change_id TEXT, ts REAL)"
+            "CREATE TABLE IF NOT EXISTS worker_config_revision (worker TEXT PRIMARY KEY, "
+            "revision TEXT, last_change_id TEXT, ts REAL, drift_from TEXT)"
         )
 
     def _create_indexes(self):
@@ -488,6 +488,7 @@ class StateManager(TelemetryStoreMixin, WorkerConfigStoreMixin):
         if "type" not in {info[1] for info in cursor.fetchall()}:
             self.logger.info("Migrating DB: Adding type column to worker_config")
             self._conn.execute("ALTER TABLE worker_config ADD COLUMN type TEXT DEFAULT 'apply'")
+        self._migrate_worker_config_revision(cursor)
 
     def load(self) -> None:
         """
@@ -871,18 +872,18 @@ class StateManager(TelemetryStoreMixin, WorkerConfigStoreMixin):
     def add_audit_event(
         self, id: str, ts: str, source: str, actor: str, action: str, status: str, keys: str
     ) -> None:
-        """Record one audit-trail row (#530, #1551) — mirrored from the #33 control.log
-        (``source`` = "control", the log's own ``id`` reused as the primary key) or detected
-        out-of-band ("host-edit" / "rig-edit" / "rig-drift"). ``INSERT OR IGNORE`` makes every kind
-        idempotent: a re-mirrored control.log row and a re-detected out-of-band event are no-ops. ``keys`` is names only —
-        the caller is responsible for the same no-values contract the log itself holds to."""
+        """Store an audit row; a terminal control result replaces its same-id preview (#530).
+        Deterministic host/rig edit ids stay first-write idempotent. Values never enter ``keys``."""
         try:
             with self._db_lock:
                 if not self._conn:
                     return
                 self._conn.execute(
-                    "INSERT OR IGNORE INTO audit_events "
-                    "(id, ts, source, actor, action, status, keys) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO audit_events "
+                    "(id, ts, source, actor, action, status, keys) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET ts=excluded.ts, source=excluded.source, "
+                    "actor=excluded.actor, action=excluded.action, status=excluded.status, keys=excluded.keys "
+                    "WHERE excluded.source='control' AND audit_events.source='control'",
                     (id, ts, source, actor, action, status, keys),
                 )
                 self._conn.commit()
