@@ -34,6 +34,7 @@ from aiohttp import web
 
 from mining_dashboard.wizard_config import NEW_MACHINE_ANSWERS, prepare_config
 from mining_dashboard.wizard_form import build_config
+from mining_dashboard.wizard_install import validate_install_request
 from mining_dashboard.wizard_node_probe import first_failure, probe_remote_nodes, saved_probe
 from mining_dashboard.wizard_recovery import recovery_state, remember_changes, retry_handler
 
@@ -311,27 +312,10 @@ def _spool_write_config(cfg: dict) -> None:
     _spool_write_text("config.json", json.dumps(cfg, indent=2))
 
 
-def _gate_install_request(form: dict) -> str | None:
-    """Three independent gates before anything is written, because this leads to erasing a
-    disk — identical for every role: the target must be one the HOST offered (never a name the
-    browser invented), the operator must retype it exactly, and the wipe mode must be from the
-    fixed set — with anything other than "keep" allowed only on a disk that actually carries
-    data to wipe. Writes the install request and returns None, or returns the error text."""
-    disk = str(form.get("disk", "")).strip()
-    confirm = str(form.get("confirm", "")).strip()
-    wipe = str(form.get("wipe", "keep")).strip() or "keep"
-    by_name = {d["name"]: d for d in _disks()}
-    if disk not in by_name:
-        return "choose a disk from the list"
-    if confirm != disk:
-        return f"type {disk} exactly to confirm"
-    if wipe not in ("keep", "data", "all"):
-        return "unknown wipe mode"
-    if wipe != "keep" and by_name[disk]["state"] != "pithead-with-data":
-        wipe = "keep"  # nothing on the disk to keep or wipe — normalize silently
-    _spool_write_text("install-request", f"{disk}\t{wipe}")
-    _spool_write_text("install-attempt.json", json.dumps({"disk": disk, "wipe": wipe}))
-    return None
+def _publish_install_request(request: dict) -> None:
+    """Publish the host's trigger last, after every input it consumes is complete."""
+    _spool_write_text("install-attempt.json", json.dumps(request))
+    _spool_write_text("install-request", f"{request['disk']}\t{request['wipe']}")
 
 
 def _submit_rig(form: dict) -> web.Response:
@@ -347,10 +331,12 @@ def _submit_rig(form: dict) -> web.Response:
             status=400,
         )
     stick = installer_mode() and str(form.get("disk", "")).strip() == "usb"
+    install = None
     if installer_mode() and not stick:
-        err = _gate_install_request(form)
-        if err:
-            return web.json_response({"error": err}, status=400)
+        try:
+            install = validate_install_request(form, _disks())
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
     rig = {"pool": pool}
     worker = str(form.get("rig_worker", "")).strip()
     if worker:
@@ -362,6 +348,8 @@ def _submit_rig(form: dict) -> web.Response:
     # The role rides beside the request so /status can narrate honestly after it is consumed.
     _spool_write_text("role", "rig")
     _spool_write_text("rig-request.json", json.dumps(rig))
+    if install:
+        _publish_install_request(install)
     return web.json_response({"status": "accepted"})
 
 
@@ -393,8 +381,7 @@ async def submit(request: web.Request) -> web.Response:
             if confirm != disk:
                 return web.json_response({"error": f"type {disk} exactly to confirm"}, status=400)
             _spool_clear_host_verdict()
-            _spool_write_text("install-request", f"{disk}\tkeep")
-            _spool_write_text("install-attempt.json", json.dumps({"disk": disk, "wipe": "keep"}))
+            _publish_install_request({"disk": disk, "wipe": "keep"})
             return web.json_response({"status": "accepted"})
         # A blank disk with wipe=keep (the client's default) is just a fresh install — fall
         # through unconditionally. The no-JS path submits individual form FIELDS, not a config
@@ -423,11 +410,13 @@ async def submit(request: web.Request) -> web.Response:
     if mode in ("auto", "set", "none"):
         _spool_write_text("auth-mode", mode)
     # On the installation medium, config and disk arrive TOGETHER — one page, one submission,
-    # gated before anything is written (see _gate_install_request).
+    # validated without side effects; the trigger is published only after the candidate.
+    install = None
     if installer_mode():
-        err = _gate_install_request(dict(form))
-        if err:
-            return web.json_response({"error": err}, status=400)
+        try:
+            install = validate_install_request(dict(form), _disks())
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
     report = await probe_remote_nodes(cfg)
     if report["configured"]:
         _spool_write_text("node-probe.json", json.dumps(report))
@@ -440,6 +429,8 @@ async def submit(request: web.Request) -> web.Response:
     remember_changes(spool_dir(), changes, _spool_json, _spool_write_text)
     _spool_write_text("last-attempt.json", json.dumps(cfg))
     _spool_write_config(strip_defaults(cfg, ref) if ref else cfg)
+    if install:
+        _publish_install_request(install)
     return web.json_response({"status": "accepted", "config_changes": changes})
 
 
@@ -470,13 +461,17 @@ async def submit_restore(request: web.Request) -> web.Response:
             status=400,
         )
     # On the installation medium, disk + wipe ride beside the archive — the SAME gate a typed
-    # submission takes (see _gate_install_request), so a restore can install too.
+    # submission takes, so a restore can install too. Validation writes no trigger.
+    install = None
     if installer_mode():
-        err = _gate_install_request(dict(form))
-        if err:
-            return web.json_response({"error": err}, status=400)
+        try:
+            install = validate_install_request(dict(form), _disks())
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
     _spool_write_bytes("restore-archive", data)
     _spool_write_text("restore-passphrase", str(form.get("passphrase", "")))
+    if install:
+        _publish_install_request(install)
     return web.json_response({"status": "accepted"})
 
 

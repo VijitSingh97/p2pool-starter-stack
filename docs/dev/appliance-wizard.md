@@ -114,7 +114,8 @@ A Tari base node must answer `GetTipInfo` over gRPC. The browser names those che
 Failure keeps the operator's complete form in `last-attempt.json`, removes any install request,
 and returns the report as `node_probe`; nothing writes a `config.json` candidate.
 
-The server resolves a name once and dials that vetted address. Loopback, unspecified, link-local,
+The server resolves a name once, dials that vetted address and stores its numeric form in the
+accepted candidate. Loopback, unspecified, link-local,
 multicast and reserved addresses are refused, including names that resolve to one (#1946). With
 the Tor egress firewall on, every answer must also be in the private LAN or VPN IPv4 ranges the
 mining container can dial. Credentials are used only for the RPC request and never enter the
@@ -125,7 +126,7 @@ report.
 | `ok` | the verdict, and the ONLY gate — true when every configured endpoint was probed and every probe passed |
 | `configured` | endpoints the config asked for: a remote Monero node contributes 2 (RPC and ZMQ), a remote Tari node 1 |
 | `probed` | rows actually produced; a skipped endpoint emits no row, so `probed < configured` is how the page names one |
-| `probes[]` | `{target, host, port, ok, checked, reason, detail, elapsed_ms}` per endpoint |
+| `probes[]` | `{target, host, resolved_host, port, ok, checked, reason, detail, elapsed_ms}` per endpoint |
 
 `reason` is one of `ok`, `protocol`, `timeout`, `refused`, `auth`, `address`, `dns`, `unusable`,
 `missing-tool` or `unknown`. Two do not mean the node is unreachable: `auth` means a node answered
@@ -143,16 +144,16 @@ file, so `node_probe` is `null` there and on any host older than the report; the
 verdict only when `ok` arrives as a real boolean, and a malformed file falls through to `null` the
 way every other spool reader fails open.
 
-`nodeprobe.mjs` renders it, and owns the operator's words for all seven reasons in one place: the
+`nodeprobe.mjs` renders it, and owns the operator's words for all nine reasons in one place: the
 setup screen shows the report today, and the Configuration view's preview will show the same one
 once the control channel carries a probe of its own, so a reason worded twice cannot come to mean
 two things. Three rules in it are load-bearing rather than stylistic. A reason the module does not
-recognise reads as "the check did not complete" and never as "not reached", because the probe's
-vocabulary is expected to grow and an invented reachability claim is the defect that growth would
-otherwise reintroduce. A `missing-tool` row drops the host's own `detail`, which is the generic
+recognise reads as "the check did not complete" and never as "not reached"; an invented
+reachability claim would reintroduce the defect this fallback prevents. A `missing-tool` row drops
+the host's own `detail`, which is the generic
 reach sentence naming the operator's host, port and LAN switch — none of them at fault when the
-check could not run at all. And the module renders no control: the gate is the host's, so a failed
-probe leaves the form editable and the submit button live, which is the only way out of it.
+check could not run at all. And the module renders no control: the gate is the wizard server's, so
+a failed probe leaves the form editable and the submit button live, which is the only way out.
 
 ### The machine-role contract
 
@@ -208,7 +209,7 @@ A third spool channel, beside the config candidate and the rig request: an uploa
 backup (`pithead backup`'s own archive format) plus its passphrase, as an alternative to the
 config form. `POST /submit-restore` writes `restore-archive` (binary) and `restore-passphrase`
 (plain, read once) — on the installation medium the disk/wipe fields ride beside them through
-the SAME `_gate_install_request` a typed submission takes.
+the same side-effect-free disk validation a typed submission takes.
 
 `firstboot_consume_restore` (host-side) does the whole job in one call, staged through a COPY —
 the same "validate before mutating real state" idiom `consume_preseed_config` already uses:

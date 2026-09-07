@@ -21,6 +21,7 @@ _DIRECT_NETWORKS = tuple(
     for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")
 )
 _ZMTP_GREETING = b"\xff" + (b"\x00" * 8) + b"\x7f\x03\x01NULL" + (b"\x00" * 48)
+_ZMTP_READY = b"\x04\x19\x05READY\x0bSocket-Type\x00\x00\x00\x03SUB"
 
 
 def saved_probe(read_json: Callable[[str], dict]) -> dict | None:
@@ -144,7 +145,22 @@ def _monero_rpc(cfg: dict, host: str, port: int) -> tuple[bool, str, str]:
         body = response.json()
     except ValueError:
         return False, "protocol", "The endpoint did not return a JSON monerod get_info response."
-    if not isinstance(body, dict) or body.get("status") != "OK":
+    valid_ints = (
+        all(
+            isinstance(body.get(name), int)
+            and not isinstance(body.get(name), bool)
+            and body[name] >= 0
+            for name in ("height", "target_height")
+        )
+        if isinstance(body, dict)
+        else False
+    )
+    if (
+        not isinstance(body, dict)
+        or body.get("status") != "OK"
+        or body.get("nettype") not in ("mainnet", "testnet", "stagenet")
+        or not valid_ints
+    ):
         return False, "protocol", "The endpoint did not return a usable monerod get_info response."
     return True, "ok", "The node answered monerod get_info with the configured RPC login."
 
@@ -156,21 +172,41 @@ async def _monero_zmq(host: str, port: int) -> tuple[bool, str, str]:
             reader, writer = await asyncio.open_connection(host, port)
             writer.write(_ZMTP_GREETING)
             await writer.drain()
-            greeting = await reader.readexactly(12)
+            greeting = await reader.readexactly(64)
+            if (
+                greeting[0] != 0xFF
+                or greeting[9] != 0x7F
+                or greeting[10] < 3
+                or greeting[12:32].rstrip(b"\x00") != b"NULL"
+                or greeting[32] != 0
+            ):
+                return (
+                    False,
+                    "protocol",
+                    "The endpoint answered, but sent an invalid ZMTP greeting.",
+                )
+            writer.write(_ZMTP_READY)
+            await writer.drain()
+            header = await reader.readexactly(2)
+            if header[0] & 0x06 != 0x04 or header[1] > 64:
+                return False, "protocol", "The endpoint did not complete the ZMTP READY exchange."
+            command = await reader.readexactly(header[1])
     except TimeoutError:
         return False, "timeout", "The Monero ZMQ handshake timed out."
     except ConnectionRefusedError:
         return False, "refused", "No connection was made to the Monero ZMQ endpoint."
-    except (OSError, asyncio.IncompleteReadError):
+    except asyncio.IncompleteReadError:
+        return False, "protocol", "The endpoint closed before the ZMTP handshake completed."
+    except OSError:
         return False, "unusable", "The endpoint did not complete a ZMQ handshake."
     finally:
         if writer is not None:
             writer.close()
             with suppress(OSError):
                 await writer.wait_closed()
-    if greeting[0] != 0xFF or greeting[9] != 0x7F or greeting[10] < 3:
-        return False, "protocol", "The endpoint answered, but did not speak ZMTP 3 or newer."
-    return True, "ok", "The endpoint completed a live ZMQ protocol handshake."
+    if not command.startswith(b"\x05READY"):
+        return False, "protocol", "The endpoint did not complete the ZMTP READY exchange."
+    return True, "ok", "The endpoint completed a live ZMTP greeting and READY exchange."
 
 
 async def _tari_grpc(host: str, port: int) -> tuple[bool, str, str]:
@@ -199,6 +235,7 @@ async def _probe(
     call: Callable[[str], Awaitable[tuple[bool, str, str]]],
 ) -> dict:
     started = time.monotonic()
+    resolved = ""
     if port is None:
         ok, reason, detail = False, "address", "The node port must be an integer from 1 to 65535."
         shown_port = 0
@@ -212,6 +249,7 @@ async def _probe(
     return {
         "target": target,
         "host": host,
+        "resolved_host": resolved if isinstance(resolved, str) else "",
         "port": shown_port,
         "ok": ok,
         "checked": checked,
@@ -254,8 +292,14 @@ async def probe_remote_nodes(cfg: dict) -> dict:
             _probe("tari", host, port, "grpc", firewall, lambda address: _tari_grpc(address, port))
         )
     rows = await asyncio.gather(*checks)
+    ok = all(row["ok"] is True for row in rows)
+    if ok:
+        for target in ("monero", "tari"):
+            row = next((item for item in rows if item["target"] == target), None)
+            if row:
+                cfg[target]["remote"]["host"] = row["resolved_host"]
     return {
-        "ok": all(row["ok"] is True for row in rows),
+        "ok": ok,
         "configured": len(checks),
         "probed": len(rows),
         "probes": rows,

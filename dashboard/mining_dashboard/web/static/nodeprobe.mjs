@@ -27,8 +27,7 @@ const ENDPOINTS = {
 //   - `auth` is a node that ANSWERED but rejected the configured login.
 //   - `missing-tool` is curl missing on THIS machine. Nothing about the operator's node is known.
 // An unlisted reason falls to "did not complete" and never to "not reached": inventing a
-// reachability claim for a value this page does not recognise is the defect #1913 names, and the
-// probe's vocabulary is expected to grow a name-resolution reason.
+// reachability claim for a value this page does not recognise is the defect #1913 names.
 const REASONS = {
   protocol: "The port is open, and what is listening there is not the node this expects.",
   timeout: "Nothing answered within the time the check allows.",

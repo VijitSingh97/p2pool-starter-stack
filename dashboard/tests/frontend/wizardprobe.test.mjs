@@ -3,7 +3,7 @@
 // why. Kept DOM-free — every branch here is a boot state nobody can reach by hand.
 //
 // The fixtures are the producer's shape, taken from node_probe_one in 10-installer-preseed.sh: the
-// row keys, the seven reasons, and the host's own `detail` sentence for each.
+// row keys, the nine reasons, and the host's own `detail` sentence for each.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";

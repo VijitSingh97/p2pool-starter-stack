@@ -27,7 +27,13 @@ class _MonerodHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         type(self).saw_digest = auth.startswith("Digest ")
-        body = b'{"status":"OK"}' if self.mode == "ok" else b"not monerod"
+        body = (
+            b'{"status":"OK","height":42,"target_height":43,"nettype":"mainnet"}'
+            if self.mode == "ok"
+            else b'{"status":"OK"}'
+            if self.mode == "thin"
+            else b"not monerod"
+        )
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -56,6 +62,11 @@ async def _zmq_server(reply):
         await reader.readexactly(64)
         writer.write(reply)
         await writer.drain()
+        if len(reply) == 64:
+            await reader.readexactly(len(wizard_node_probe._ZMTP_READY))
+            ready = b"\x05READY\x0bSocket-Type\x00\x00\x00\x03PUB"
+            writer.write(bytes((0x04, len(ready))) + ready)
+            await writer.drain()
         writer.close()
         await writer.wait_closed()
 
@@ -107,7 +118,7 @@ async def test_all_local_is_a_complete_zero_of_zero_report():
 
 @pytest.mark.usefixtures("allow_test_loopback")
 async def test_monero_probe_uses_configured_digest_login_and_live_rpc_and_zmq():
-    greeting = b"\xff" + (b"\x00" * 8) + b"\x7f\x03" + (b"\x00" * 53)
+    greeting = wizard_node_probe._ZMTP_GREETING
     zmq = await _zmq_server(greeting)
     zmq_port = zmq.sockets[0].getsockname()[1]
     try:
@@ -127,7 +138,7 @@ async def test_monero_probe_uses_configured_digest_login_and_live_rpc_and_zmq():
 @pytest.mark.usefixtures("allow_test_loopback")
 @pytest.mark.parametrize(
     ("mode", "reason"),
-    [("wrong-protocol", "protocol"), ("auth", "auth")],
+    [("wrong-protocol", "protocol"), ("thin", "protocol"), ("auth", "auth")],
 )
 async def test_wrong_monero_protocol_and_auth_fail_instead_of_passing(mode, reason):
     with _monerod(mode) as (rpc_port, _handler):
@@ -151,6 +162,35 @@ async def test_wrong_zmq_protocol_fails_a_live_open_port():
         await server.wait_closed()
     assert ok is False
     assert reason == "protocol"
+
+
+@pytest.mark.usefixtures("allow_test_loopback")
+async def test_zmtp_prefix_without_a_complete_greeting_never_passes():
+    server = await _zmq_server(wizard_node_probe._ZMTP_GREETING[:12])
+    port = server.sockets[0].getsockname()[1]
+    try:
+        ok, reason, _detail = await wizard_node_probe._monero_zmq("127.0.0.1", port)
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert (ok, reason) == (False, "protocol")
+
+
+async def test_success_binds_the_candidate_to_the_address_that_was_probed(monkeypatch):
+    async def resolved(_host, _port, _firewall):
+        return "10.20.30.40"
+
+    monkeypatch.setattr(wizard_node_probe, "_resolved_address", resolved)
+    monkeypatch.setattr(wizard_node_probe, "_monero_rpc", lambda *_args: (True, "ok", "rpc"))
+
+    async def zmq(*_args):
+        return True, "ok", "zmq"
+
+    monkeypatch.setattr(wizard_node_probe, "_monero_zmq", zmq)
+    cfg = _candidate()
+    cfg["monero"]["remote"]["host"] = "node.example"
+    assert (await wizard_node_probe.probe_remote_nodes(cfg))["ok"] is True
+    assert cfg["monero"]["remote"]["host"] == "10.20.30.40"
 
 
 @pytest.mark.usefixtures("allow_test_loopback")
@@ -284,3 +324,28 @@ async def test_new_submission_clears_a_stale_probe_even_when_its_json_is_invalid
     response = await client.post("/submit", data={"config": "not json"})
     assert response.status == 400
     assert not spool.joinpath("node-probe.json").exists()
+
+
+async def test_install_trigger_is_absent_until_the_probe_accepts(client, spool, monkeypatch):
+    spool.joinpath("disks.tsv").write_text("sda\t1T\tDisk\tSERIAL\tempty\n")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked(_cfg):
+        entered.set()
+        await release.wait()
+        return {"ok": False, "configured": 1, "probed": 0, "probes": []}
+
+    monkeypatch.setattr(wizard, "probe_remote_nodes", blocked)
+    cfg = _candidate(monero={"mode": "remote", "remote": {"host": "node.example"}})
+    pending = asyncio.create_task(
+        client.post(
+            "/submit",
+            data={"config": json.dumps(cfg), "disk": "sda", "confirm": "sda", "wipe": "all"},
+        )
+    )
+    await entered.wait()
+    assert not spool.joinpath("install-request").exists()
+    assert not spool.joinpath("config.json").exists()
+    release.set()
+    assert (await pending).status == 400
+    assert not spool.joinpath("install-request").exists()
