@@ -34,9 +34,7 @@ backup_diagnose_items() { # <tar -C dir> <item>...
     done
 }
 
-# Restore a stack that backup found running. stack_up's failure path calls error(), so isolate each
-# attempt in a subshell: backup must retain control long enough to report whether the archive also
-# failed, and to make one bounded retry through the ordinary startup path.
+# Isolate stack_up's exit-based failures so backup can retry and report both outcomes.
 backup_restart_stack() {
     local attempt
     for attempt in 1 2; do
@@ -50,6 +48,19 @@ backup_restart_stack() {
             warn "The stack did not restart after the backup — retrying the normal startup path once."
     done
     return 1
+}
+restore_require_stack_stopped() {
+    command -v docker >/dev/null 2>&1 ||
+        error "Restore could not verify that the stack is stopped because docker is unavailable — nothing was restored."
+    local status active="" ids
+    for status in running restarting paused; do
+        if ! ids=$(docker compose ps --status "$status" -q 2>/dev/null); then
+            error "Restore could not verify that the stack is stopped — nothing was restored. Fix Docker access, run '$0 down', and retry."
+        fi
+        active+="$ids"
+    done
+    [ -z "$active" ] ||
+        error "Restore refused because stack services are still active — nothing was restored. Run '$0 down', then retry the restore."
 }
 
 stack_backup() {
@@ -256,10 +267,13 @@ stack_backup() {
         chmod 600 "$archive" || finalize_error="could not set the archive to owner-only permissions"
     fi
     if [ -n "$finalize_error" ]; then
-        if [ "$was_running" -eq 1 ] && ! backup_restart_stack; then
-            error "The archive was created at $archive, but $finalize_error; two attempts to restart the previously running stack also failed. Treat the archive as sensitive and inspect its ownership before moving it."
+        if [ "$was_running" -eq 1 ]; then
+            if ! backup_restart_stack; then
+                error "The archive was created at $archive, but $finalize_error; two attempts to restart the previously running stack also failed. Treat the archive as sensitive and inspect its ownership before moving it."
+            fi
+            error "The archive was created at $archive, but $finalize_error. The previously running stack was recovered; treat the archive as sensitive and inspect its ownership before moving it."
         fi
-        error "The archive was created at $archive, but $finalize_error. The previously running stack was recovered; treat the archive as sensitive and inspect its ownership before moving it."
+        error "The archive was created at $archive, but $finalize_error. The stack was already stopped; treat the archive as sensitive and inspect its ownership before moving it."
     fi
 
     log "Backup written to: $archive"
@@ -294,9 +308,7 @@ stack_restore() {
     # Resolve to an absolute path now, since we extract from "/" below.
     archive=$(cd "$(dirname "$archive")" && printf '%s/%s' "$PWD" "$(basename "$archive")")
 
-    # Detect the format by magic bytes, not by flag or filename: `Salted__` is an openssl-encrypted
-    # archive (the default since #374), gzip magic is a plaintext archive from any earlier release —
-    # both keep restoring with the same command. Anything else is refused before the confirm prompt.
+    # Detect encrypted and plaintext archives by magic bytes, not a flag or filename.
     local magic encrypted=0
     magic=$(head -c 8 "$archive" | od -An -tx1 | tr -d ' \n')
     case "$magic" in
@@ -305,19 +317,10 @@ stack_restore() {
     *) error "Not a pithead backup archive (neither openssl-encrypted nor gzip): $archive" ;;
     esac
 
-    # Restoring a live database or onion-key directory can corrupt both the running process and the
-    # only pre-restore copy. Refuse unless Compose can positively show that every service is stopped.
-    local running
-    command -v docker >/dev/null 2>&1 ||
-        error "Restore could not verify that the stack is stopped because docker is unavailable — nothing was restored."
-    if ! running=$(docker compose ps --status running -q 2>/dev/null); then
-        error "Restore could not verify that the stack is stopped — nothing was restored. Fix Docker access, run '$0 down', and retry."
-    fi
-    [ -z "$running" ] ||
-        error "Restore refused because stack services are still running — nothing was restored. Run '$0 down', then retry the restore."
+    # Early UX check; the authoritative check runs under the mutation lock before extraction.
+    restore_require_stack_stopped
 
-    # Note: we do NOT require/parse the current config here — restore must work even when the
-    # on-disk config.json is lost or corrupt. The config comes back out of the archive.
+    # Do not parse current config: restore must recover a lost or corrupt config.json.
 
     warn "Restore will OVERWRITE config.json, .env, Caddyfile, the Tor data dir, and the dashboard's database from the archive."
     warn "The stack is stopped; keep it stopped until this restore finishes."
@@ -366,13 +369,11 @@ stack_restore() {
             error "Archive fails integrity verification (tampered or truncated) — nothing was restored."
     fi
 
-    # After the confirm and the passphrase prompt, and after the integrity verify (read-only):
-    # the extraction below is the mutating window.
+    # The extraction below is the mutating window; recheck after prompts and verification.
     mutation_lock_acquire restore
+    restore_require_stack_stopped
     log "Restoring from $archive ..."
-    # The archive stores paths relative to / (leading slash stripped), so extracting at / puts
-    # every file back exactly where it came from. sudo so we can write into the 100:101-owned
-    # Tor data dir. The encrypted path streams openssl into tar — no plaintext archive on disk.
+    # Extract relative paths at /; stream encrypted input so plaintext never lands on disk.
     if [ "$encrypted" -eq 1 ]; then
         openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
             -pass fd:3 -in "$archive" 3< <(printf '%s' "$pass") |
