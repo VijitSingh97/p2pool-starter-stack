@@ -257,10 +257,8 @@ wizard_mint_cert() { # <spool-dir>  -> prints the fingerprint
     d=$(appliance_tls_dir)
     fp=$(appliance_mint_cert) || return 1
     # The container reads its copy from the spool; the canonical pair stays on /data.
-    cp "$d/wizard.crt" "$spool/wizard.crt" 2>/dev/null || return 1
-    cp "$d/wizard.key" "$spool/wizard.key" 2>/dev/null || return 1
-    chown 1000:1000 "$spool/wizard.key" "$spool/wizard.crt" 2>/dev/null || true
-    chmod 640 "$spool/wizard.key" 2>/dev/null || true
+    wizard_spool_publish "$spool" wizard.crt cat "$d/wizard.crt" || return 1
+    wizard_spool_publish "$spool" wizard.key cat "$d/wizard.key" || return 1
     printf '%s' "$fp"
 }
 
@@ -276,7 +274,7 @@ ensure_appliance_dashboard_password() { # [spool-dir]
     [ -z "$(jq -r '.dashboard.auth.password // ""' "$CONFIG_FILE")" ] || return 0
     # The operator's explicit "no login" is honoured — an empty password is also what "not
     # chosen" looks like, so the choice cannot live in the config and rides beside it.
-    if [ -n "${1:-}" ] && [ "$(cat "$1/auth-mode" 2>/dev/null)" = "none" ]; then
+    if [ -n "${1:-}" ] && [ "$(wizard_spool_read "$1" auth-mode 2>/dev/null)" = "none" ]; then
         warn "Dashboard login disabled at the operator's request — anyone on this network can open it."
         return 0
     fi

@@ -186,7 +186,7 @@ RUN chmod +x /usr/local/bin/docker-compose /usr/local/bin/cosign \
 # The built-in miner (#796): a pinned RigForge tree plus everything it needs, baked at image
 # build because nothing can be installed later — apt cannot run on the read-only root, and even
 # a rw-remount install leaves its /etc state (alternatives, ld.so.cache) on the volatile overlay
-# where the first reboot breaks the compiler. RIGFORGE_REF pins rigforge's v1.17.0 release
+# where the first reboot breaks the compiler. RIGFORGE_REF pins rigforge's v1.17.1 release
 # (by commit, not tag name, so a moved tag cannot change the bake); bump it release by release.
 # v1.16.0 is the floor for the HugePages pool ceiling: hugepages_pool_ceiling_mb (rigforge#398,
 # filed from #1103) is absent from v1.15.1's tree entirely, and declaring it into one fails OPEN —
@@ -204,7 +204,7 @@ RUN chmod +x /usr/local/bin/docker-compose /usr/local/bin/cosign \
 RUN apt-get install -y --no-install-recommends \
         git build-essential cmake libuv1-dev libssl-dev libhwloc-dev gettext-base python3 \
         linux-cpupower msr-tools
-ARG RIGFORGE_REF=efd23e440ce8a160a9251f59f0ebcc5faa7ad4f1
+ARG RIGFORGE_REF=538d0b125cc8af37333ded698cf30c89ac99ca1d
 RUN curl -fsSL -o /tmp/rigforge.tar.gz \
         "https://github.com/p2pool-starter-stack/rigforge/archive/${RIGFORGE_REF}.tar.gz" \
     && mkdir -p /opt/rigforge \
@@ -293,7 +293,7 @@ COPY os/overlay/pithead-sync /usr/local/sbin/pithead-sync
 COPY os/overlay/pithead-mount-generator /usr/lib/systemd/system-generators/pithead-mount-generator
 COPY os/overlay/pithead-boot.service /etc/systemd/system/pithead-boot.service
 COPY os/overlay/pithead-setup-again.service /etc/systemd/system/pithead-setup-again.service
-COPY os/overlay/pithead-boot /usr/local/sbin/pithead-boot
+COPY os/overlay/pithead-boot os/overlay/pithead-boot-version /usr/local/sbin/
 # Physical-presence configuration channel (#786 sub-issue D): pithead-boot's one stage before render; no unit of its own.
 COPY os/overlay/pithead-media-config /usr/local/sbin/pithead-media-config
 # Hugepages sizing (#977): the sysctl.d reservation above is sized for the supported 16 GB machine;
@@ -339,7 +339,7 @@ RUN mkdir -p /etc/ssh/sshd_config.d \
 RUN mkdir -p /etc/systemd/system-preset \
     && printf 'disable *\n' > /etc/systemd/system-preset/00-pithead.preset \
     && systemctl mask systemd-firstboot.service
-RUN chmod +x /usr/local/sbin/pithead-sync /usr/local/sbin/pithead-boot /usr/local/sbin/pithead-media-config /usr/local/sbin/pithead-hugepages /usr/local/sbin/pithead-data-reset /usr/local/sbin/pithead-ssh-host-keys /usr/local/sbin/pithead-machine-id /usr/local/sbin/pithead-journal-persist /usr/lib/systemd/system-generators/pithead-mount-generator
+RUN chmod +x /usr/local/sbin/pithead-sync /usr/local/sbin/pithead-boot /usr/local/sbin/pithead-boot-version /usr/local/sbin/pithead-media-config /usr/local/sbin/pithead-hugepages /usr/local/sbin/pithead-data-reset /usr/local/sbin/pithead-ssh-host-keys /usr/local/sbin/pithead-machine-id /usr/local/sbin/pithead-journal-persist /usr/lib/systemd/system-generators/pithead-mount-generator
 # The updater is chosen per image. RAUC is a Debian package, so it is installed here when
 # selected; leaving PITHEAD_UPDATER empty builds the same rootfs with no updater at all.
 ARG PITHEAD_UPDATER=""

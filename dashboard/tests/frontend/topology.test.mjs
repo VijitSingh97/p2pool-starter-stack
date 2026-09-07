@@ -20,7 +20,7 @@ import {
 // two drift, the server can emit an edge whose endpoint POS can't place and it vanishes from the
 // SVG silently (StackTopology._edge returns null when POS[id] is missing).
 const NODE_IDS = [
-    'rigs', 'browser', 'xmrig-proxy', 'caddy', 'dashboard',
+    'rigs', 'browser', 'xmrig-proxy', 'local-miner', 'caddy', 'dashboard',
     'p2pool', 'monerod', 'tari', 'docker', 'tor', 'internet',
 ];
 

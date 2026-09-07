@@ -80,23 +80,22 @@ def _xvb_winners_gate_sec(avg_1h, avg_24h, tiers, last_win_ts, now):
     return _XVB_WINNERS_SYNC_SEC
 
 
-def _parse_proxy_list_worker(w):
+def _parse_proxy_list_worker(w, now=None):
     """Parse one xmrig-proxy 6.x positional row into a worker dict.
 
-    Online/offline is derived from the active connection count, not mere presence —
-    xmrig-proxy keeps a worker in /workers with a decaying hashrate after it disconnects,
-    so a stopped miner would otherwise stay green and inflate the total. The proxy lacks a
-    10s window, so the 1-minute rate backs both h10 and h60; the 10-minute rate is h15.
+    Online/offline comes from a live connection or a recent accepted share; mere presence is not
+    enough because the proxy keeps disconnected workers. Its 1-minute rate backs h10 and h60.
     """
-    # Uptime starts at 0 here: WorkerLifecycle fills it with the real connection uptime
-    # (now - connected_since) for online workers, and the direct miner API overrides it when
-    # reachable. The old "seconds since last share" fallback was misleading both ways — it climbed
-    # forever for a disconnected worker (read like uptime, was downtime) and read near-zero for a
-    # healthy rig whose direct API was just unreachable (#169).
+    # WorkerLifecycle or the direct miner API supplies uptime; last-share age is not uptime (#169).
+    now = datetime.now(UTC).timestamp() if now is None else now
+    share_age = now - (w[_PX_LAST_SHARE_MS] or 0) / 1000
     return {
         "name": w[_PX_NAME],
         "ip": w[_PX_IP],
-        "status": "online" if w[_PX_CONNECTIONS] > 0 else "offline",
+        "status": "online"
+        if w[_PX_CONNECTIONS] > 0
+        or (w[_PX_ACCEPTED] > 0 and 0 <= share_age <= config.WORKER_OFFLINE_AFTER_SEC)
+        else "offline",
         "h10": w[_PX_HR_1M] * _KHS_TO_HS,
         "h60": w[_PX_HR_1M] * _KHS_TO_HS,
         "h15": w[_PX_HR_10M] * _KHS_TO_HS,
@@ -136,7 +135,7 @@ def _parse_legacy_dict_worker(w):
     }
 
 
-def _normalize_proxy_workers(proxy_data):
+def _normalize_proxy_workers(proxy_data, now=None):
     """Normalize an xmrig-proxy ``/workers`` payload into a uniform worker list.
 
     Dispatches each entry to the right parser for the two shapes the proxy emits — the 6.x
@@ -149,7 +148,7 @@ def _normalize_proxy_workers(proxy_data):
     workers = []
     for w in proxy_data["workers"]:
         if isinstance(w, list) and len(w) >= _PX_MIN_FIELDS:
-            workers.append(_parse_proxy_list_worker(w))
+            workers.append(_parse_proxy_list_worker(w, now=now))
         elif isinstance(w, dict):
             workers.append(_parse_legacy_dict_worker(w))
     return workers

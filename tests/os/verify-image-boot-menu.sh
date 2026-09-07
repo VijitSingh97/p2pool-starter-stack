@@ -7,11 +7,11 @@ echo "==> boot menu (titles for a person, #1838; the way back to setup, #1318)"
 # shellcheck disable=SC2034  # read inside chk's eval'd conditions
 GRUBCFG="$ESP/grub/grub.cfg"
 chk "the menu waits 5 s — long enough to choose an entry" 'grep -q "^timeout=5$" "$GRUBCFG"'
-chk "entries name what they boot: slot A, slot B" 'grep -q "^menuentry \"Pithead OS - slot A\"" "$GRUBCFG" && grep -q "^menuentry \"Pithead OS - slot B\"" "$GRUBCFG"'
-# Index 0 boots slot A byte for byte as entry 1 does; it recovers nothing and its TITLE must not say so
-# (grub.cfg's comment records the old name, so the sweep reads entries, not the file).
-chk "the fallback entry says fallback, and no entry says Recovery" 'grep -q "^menuentry \"Pithead OS - slot A (fallback)\"" "$GRUBCFG" && ! grep "^menuentry" "$GRUBCFG" | grep -qi "recovery"'
+chk "entries name their version, slot and current/previous state" 'grep -q "^menuentry \"\$CURRENT_NAME (slot \$CURRENT_SLOT, current)\"" "$GRUBCFG" && grep -q "^menuentry \"\$A_TITLE\"" "$GRUBCFG" && grep -q "^menuentry \"\$B_TITLE\"" "$GRUBCFG"'
+chk "legacy-unknown and verified-empty slots stay distinct" 'grep -q "Pithead version unknown" "$GRUBCFG" && grep -q "empty (slot B)" "$GRUBCFG"'
 chk "no bootloader counters in any title" '! grep "^menuentry" "$GRUBCFG" | grep -qE "OK=|TRY="'
+chk "the menu is visible on the serial console" 'grep -q "^terminal_output console serial$" "$GRUBCFG"'
+chk "the slot-version metadata writer ships executable" '[ -x "$ROOT/usr/local/sbin/pithead-boot-version" ]'
 chk "a Set up again entry, carrying the flag on its kernel line" 'grep -q "^menuentry \"Set up again (opens the setup wizard; keeps the saved settings)\"" "$GRUBCFG" && [ "$(grep -c "^ *linux .*pithead.setup=1" "$GRUBCFG")" -eq 1 ]'
 # The entry is the default boot plus one flag: it must follow the slot counting, never pin a slot.
 chk "the setup entry boots the slot the counting chose" 'grep -q "rauc.slot=\$SETUP_SLOT pithead.setup=1" "$GRUBCFG" && grep -q "^set SETUP_SLOT=A$" "$GRUBCFG" && grep -q "SETUP_SLOT=B" "$GRUBCFG"'

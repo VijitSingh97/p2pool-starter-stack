@@ -248,11 +248,10 @@ the time zone (detected from the machine unless set). They are still there to ch
 
 The dashboard login is also the machine's **console login**: sit at the machine, log in as
 `root` with the dashboard password. It is set fresh at every boot and never stored on disk.
-Two more switches live only in the **Advanced** view, deliberately out of the quick form:
-`ssh.enabled` with `ssh.authorized_key` turns on key-only SSH (never passwords) for remote
-debugging. Neither can be changed from the dashboard later, and its Configuration view does not
-list them at all — anyone who could flip them from a browser session would own the machine,
-wallets and all.
+Two more switches live only in the setup page's **Advanced** view, deliberately out of the quick
+form: `ssh.enabled` with `ssh.authorized_key` turns on key-only SSH (never passwords) for remote
+debugging. The day-two Configuration view does not list them and cannot approve them remotely;
+changing SSH still requires a configuration stick.
 
 **Already know exactly what you want?** Open **Advanced** at the bottom. It shows the complete
 configuration — every key, with its default filled in — and it *is* what the machine will run:
@@ -394,12 +393,11 @@ Every start shows a short menu for five seconds, then boots by itself. You never
 touch it: the machine keeps two copies of the system and boots the last one that worked,
 so an update that fails to come up is undone on the next start without you.
 
-- **Pithead OS - slot A** and **slot B** are those two copies. The one selected when the
-  menu appears is the one the machine chose; the other holds the previous version after an
-  update. Pick it only if support asks you to.
-- **Pithead OS - slot A (fallback)** is what boots when neither copy is marked good: the
-  same system as slot A, offered so a machine with nobody at it boots something rather
-  than waiting at a prompt.
+- The first entry names the Pithead version the machine chose, its slot, and **current**.
+  The other populated slot names its version and says **previous**. Two slots may hold the
+  same version; **slot A** and **slot B** still tell them apart.
+- A slot the installer verified as unused says **empty**. An older installation with no saved
+  version says **Pithead version unknown** until that slot boots and repairs its label.
 - **Set up again** opens the setup page, keeping everything the machine already has. Use it
   when a machine's answers need changing and there is no other way in. A RigForge rig has no
   dashboard and no login, so this entry is its only way back to the setup page from the

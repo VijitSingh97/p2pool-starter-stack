@@ -283,19 +283,19 @@ provision_local_miner() {
 
 # --- the rig role's boot leg (one stick, three machines) -------------------------------------
 # A rig has no config.json, no containers, no dashboard and no chains: its entire product is the
-# miner. So it rides the SAME leg the Both role rides, sourced from rig.json instead of
-# config.json — one invocation contract, one prebuilt, one appliance mode.
+# miner. It shares the Both provisioning leg, with rig.json as its input.
 
 # The rig's control token (#1836): 32 hex, minted once and kept in rig.json beside the answers
 # it belongs to, so the config rebuilt at every boot carries the token the operator pasted into
 # the coordinator's adopt form. The token is this function's ONLY stdout — callers capture it.
 rig_access_token() {
-    local tok tmp="$PWD/.rig.json.tmp"
+    local tok tmp
     tok=$(jq -r '.access_token // ""' "$PWD/rig.json" 2>/dev/null)
     if ! [[ "$tok" =~ ^[0-9a-f]{32}$ ]]; then
         tok=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
         [[ "$tok" =~ ^[0-9a-f]{32}$ ]] || return 1
-        if ! { jq --arg t "$tok" '. + {access_token: $t}' "$PWD/rig.json" >"$tmp" 2>/dev/null &&
+        tmp=$(mktemp "$PWD/.rig.json.XXXXXXXXXX") || return 1
+        if ! { (umask 077 && jq --arg t "$tok" '. + {access_token: $t}' "$PWD/rig.json" >"$tmp" 2>/dev/null) &&
             chmod 600 "$tmp" && mv -f "$tmp" "$PWD/rig.json"; }; then
             rm -f "$tmp"
             return 1

@@ -10,15 +10,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/stack/lib.sh
 source "$HERE/lib.sh"
 
-# ---------------------------------------------------------------------------
 # shellcheck source=tests/stack/test-harness-tooling.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-harness-tooling.sh" && domain_ran test-harness-tooling.sh "$_d0" "$?" || domain_ran test-harness-tooling.sh "$_d0" "$?"
 
-# ---------------------------------------------------------------------------
 # shellcheck source=tests/stack/test-doctor.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-doctor.sh" && domain_ran test-doctor.sh "$_d0" "$?" || domain_ran test-doctor.sh "$_d0" "$?"
 
-# ---------------------------------------------------------------------------
 # shellcheck source=tests/stack/test-control-upgrade.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-control-upgrade.sh" && domain_ran test-control-upgrade.sh "$_d0" "$?" || domain_ran test-control-upgrade.sh "$_d0" "$?"
 
@@ -221,6 +218,9 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-install.sh" && domain_ran t
 # shellcheck source=tests/stack/test-appliance-rig-miner.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-rig-miner.sh" && domain_ran test-appliance-rig-miner.sh "$_d0" "$?" || domain_ran test-appliance-rig-miner.sh "$_d0" "$?"
 
+# shellcheck source=tests/stack/test-appliance-wizard-spool.sh disable=SC2015
+_d0=$((PASS + FAIL)) && source "$HERE/test-appliance-wizard-spool.sh" && domain_ran test-appliance-wizard-spool.sh "$_d0" "$?" || domain_ran test-appliance-wizard-spool.sh "$_d0" "$?"
+
 # shellcheck source=tests/stack/test-appliance-setup-again.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-setup-again.sh" && domain_ran test-appliance-setup-again.sh "$_d0" "$?" || domain_ran test-appliance-setup-again.sh "$_d0" "$?"
 
@@ -238,7 +238,7 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-boot-release.sh" && domain_
 
 # shellcheck source=tests/stack/test-appliance-os-update.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-os-update.sh" && domain_ran test-appliance-os-update.sh "$_d0" "$?" || domain_ran test-appliance-os-update.sh "$_d0" "$?"
-
+source "$HERE/test-appliance-boot-labels.sh"
 # shellcheck source=tests/stack/test-appliance-os-update-verbs.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-os-update-verbs.sh" && domain_ran test-appliance-os-update-verbs.sh "$_d0" "$?" || domain_ran test-appliance-os-update-verbs.sh "$_d0" "$?"
 

@@ -339,6 +339,13 @@ chips for that rig (see [Dashboard › Workers Alive](dashboard.md#workers-alive
 on `8080` sends no `rigforge` block and reads exactly as before — no chips, no error. Auth is
 unchanged: send the rig's `token` only if it sets an `ACCESS_TOKEN` (the read API is open otherwise).
 
+Current RigForge feeds stamp each response with UTC `generated_at`. Pithead ages that producer stamp,
+not the HTTP fetch: cached bytes can still arrive successfully after the refresh job freezes. Reports
+over a minute old show only their age; reports from older RigForge versions without the stamp show
+**agent freshness unknown**. In either case Pithead hides the report's miner state, version, health,
+power and temperature until a current stamped payload arrives. The proxy's connection and accepted
+shares remain the source for whether the worker is online and for worker-offline alerts.
+
 If the block also carries a `control` object — `{change_id, status, reason}`, mirroring the rig's
 own control-API `/status` response read-only — the dashboard reconciles it against the [Worker
 Inspect](dashboard.md#worker-inspect) change history (#579): a still-`accepted` row whose

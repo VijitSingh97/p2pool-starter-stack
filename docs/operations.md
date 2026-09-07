@@ -36,6 +36,14 @@ Service names for `logs` match the containers: `p2pool`, `xmrig-proxy`, `tor`, `
 `tari` only with `tari.mode: local`, and `wallet-rpc` / `tari-wallet` only when the matching
 `view_key` turns payout confirmation on. A service that isn't running has no logs to follow.
 
+On the appliance dashboard, **Advanced → Service diagnostics → Run health check** runs the same
+read-only `doctor` report once and groups its existing checks under each service and the machine.
+Open **Recent log** under a service to fetch its last 200 redacted lines on demand. A dashboard
+wait limit means the request may still be queued or running on the host; it does not by itself
+show that the control runner is stuck. The `wallet-rpc` and `tari-wallet` checks still appear,
+but their logs stay in the owner-only support bundle because their ordinary output can carry
+wallet material the browser log redactor cannot safely recognize.
+
 ### Appliance-only commands
 
 These exist on every install but only do something on [the appliance image](appliance.md), where the

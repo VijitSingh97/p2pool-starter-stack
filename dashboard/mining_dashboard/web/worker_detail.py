@@ -254,7 +254,9 @@ def build_worker_detail(name, data, state_mgr, range_arg="all", window=None):
         "ip": worker.get("ip") if worker else None,  # OBSERVED only — the adopt-form prefill (#893)
         "status": worker.get("status") if worker else None,
         "hashrate": format_hashrate(worker.get("h60", 0)) if worker else None,
-        "rigforge": _rigforge_display(worker.get("rigforge")) if worker else None,
+        "rigforge": _rigforge_display(worker.get("rigforge"), worker.get("status") == "online")
+        if worker
+        else None,
         # {available, latest, url} | None — this rig runs an older RigForge (#596).
         "rigforge_update": rigforge_update_for(worker, (data or {}).get("rigforge_release")),
         "writable_keys": sorted(WORKER_WRITABLE_KEYS),

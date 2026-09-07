@@ -23,4 +23,6 @@ regexes = [
   # asserts is RENDERED, so it can't be replaced with an env var. CI scans every pushed ref,
   # so this must be allowlisted even while the branch that carries it is still in flight.
   '''rX6d2A4sGBHFEcQT4TVQQJRQg7xtbDMg''',
+  # Fixed all-digit control-token fixture used by the worker adoption and derived-read tests.
+  '''0123456789abcdef0123456789abcdef''',
 ]
