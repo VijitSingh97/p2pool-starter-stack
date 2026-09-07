@@ -288,7 +288,7 @@ stack_backup() {
 }
 
 stack_restore() {
-    local assume_yes=0 archive="" arg
+    local assume_yes=0 archive="" archive_source="" arg
     for arg in "$@"; do
         case "$arg" in
         -y | --yes) assume_yes=1 ;;
@@ -301,7 +301,18 @@ stack_restore() {
     [ -f "$archive" ] || error "Archive not found: $archive"
     # Resolve to an absolute path now, since we extract from "/" below.
     archive=$(cd "$(dirname "$archive")" && printf '%s/%s' "$PWD" "$(basename "$archive")")
+    archive_source="$archive"
 
+    # Snapshot once so every audit and the extraction read the same bytes. Clear inherited state
+    # before arming cleanup: only a directory created by this invocation may be removed.
+    RESTORE_STAGE_DIR=""
+    trap restore_discard_stage EXIT
+    RESTORE_STAGE_DIR=$(mktemp -d) || error "Could not create a private restore staging directory."
+    if ! (umask 077 && cp -- "$archive" "$RESTORE_STAGE_DIR/.archive" && chmod 600 "$RESTORE_STAGE_DIR/.archive"); then
+        restore_discard_stage
+        error "Could not copy $archive_source into private restore staging — nothing was restored."
+    fi
+    archive="$RESTORE_STAGE_DIR/.archive"
     # Detect the format by magic bytes, not by flag or filename: `Salted__` is an openssl-encrypted
     # archive (the default since #374), gzip magic is a plaintext archive from any earlier release —
     # both keep restoring with the same command. Anything else is refused before the confirm prompt.
@@ -310,14 +321,12 @@ stack_restore() {
     case "$magic" in
     53616c7465645f5f) encrypted=1 ;; # "Salted__"
     1f8b*) ;;                        # gzip
-    *) error "Not a pithead backup archive (neither openssl-encrypted nor gzip): $archive" ;;
+    *) error "Not a pithead backup archive (neither openssl-encrypted nor gzip): $archive_source" ;;
     esac
 
     # Early UX check; the authoritative check runs under the mutation lock before extraction.
     restore_require_stack_stopped
-
     # Do not parse current config: restore must recover a lost or corrupt config.json.
-
     warn "Restore will OVERWRITE config.json, .env, Caddyfile, the Tor data dir, and the dashboard's database from the archive."
     warn "The stack is stopped; keep it stopped until this restore finishes."
     if [ "$assume_yes" -eq 0 ]; then
@@ -365,14 +374,12 @@ stack_restore() {
             error "Archive fails integrity verification (tampered or truncated) — nothing was restored."
     fi
 
-    # Stage and validate all destinations before the mutating window. The EXIT trap also removes
-    # the private copy after an interruption or any error() path.
-    trap restore_discard_stage EXIT
+    # Stage and validate all destinations before the mutating window.
     restore_stage_archive "$archive" "$encrypted" "$pass"
     mutation_lock_acquire restore
     restore_require_stack_stopped
     restore_recheck_destinations
-    log "Restoring from $archive ..."
+    log "Restoring from $archive_source ..."
     restore_commit_stage
 
     # Now that config.json is back, resolve the Tor data dir from it and fix ownership so the

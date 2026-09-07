@@ -48,6 +48,19 @@ out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead restore -y "$CR/outside.tar.gz
 assert_rc "restore rejects a regular member outside its destination set" "$?" 1
 assert_contains "outside-member refusal names the boundary" "$out" "outside this appliance"
 
+mkdir "$CR/swap-bin"
+cat >"$CR/swap-bin/cp" <<'EOF'
+#!/usr/bin/env bash
+/bin/cp "$@" || exit
+[ "${1:-}" != -- ] || shift
+[ "$1" != "$SNAPSHOT_SOURCE" ] || { /bin/cp "$SWAP_ARCHIVE" "$SNAPSHOT_SOURCE"; : >"$SWAP_MARKER"; }
+EOF
+chmod +x "$CR/swap-bin/cp"
+out="$(cd "$BK" && SNAPSHOT_SOURCE="$CR_ARCHIVE" SWAP_ARCHIVE="$CR/outside.tar.gz" SWAP_MARKER="$CR/swapped" PATH="$CR/swap-bin:$BK/bin:$PATH" ./pithead restore -y "$CR_ARCHIVE" 2>&1)"
+assert_rc "restore validates and extracts one private archive snapshot" "$?" 0
+assert_eq "snapshot regression actually swaps the source archive" "$(test -f "$CR/swapped" && echo yes)" yes
+cr_archive "$CR_ARCHIVE"
+
 mkdir -p "$CR/wrong/${BK#/}"
 cp "$BK/config.json" "$BK/.env" "$CR/wrong/${BK#/}/"
 mkdir "$CR/wrong/${BK#/}/Caddyfile"
@@ -65,18 +78,24 @@ rm -f "$BK/data/tor/hs_ed25519_secret_key"
 
 printf '{bad json' >"$ROOTS/${BK#/}/config.json"
 cr_archive "$CR/bad-config.tar.gz"
-out="$(cd "$BK" && TMPDIR="$CR/tmp" PATH="$BK/bin:$PATH" ./pithead restore -y "$CR/bad-config.tar.gz" 2>&1)"
+mkdir "$CR/inherited-stage"
+printf KEEP >"$CR/inherited-stage/victim"
+out="$(cd "$BK" && TMPDIR="$CR/tmp" RESTORE_STAGE_DIR="$CR/inherited-stage" PATH="$BK/bin:$PATH" ./pithead restore -y "$CR/bad-config.tar.gz" 2>&1)"
 assert_rc "invalid staged config is refused" "$?" 1
 assert_eq "failed restore removes its private stage" "$(find "$CR/tmp" -mindepth 1 -print -quit)" ""
+assert_eq "restore never removes an inherited stage path" "$(cat "$CR/inherited-stage/victim")" KEEP
 
 cp "$BK/config.json" "$ROOTS/${BK#/}/config.json"
 chmod 644 "$ROOTS/${BK#/}/config.json"
 cr_archive "$CR_ARCHIVE"
-out="$(cd "$BK" && PATH="$BK/bin:$PATH" ./pithead restore -y "$CR_ARCHIVE" 2>&1)"
+rm -f "$CR/sudo.log"
+out="$(cd "$BK" && SUDO_LOG="$CR/sudo.log" PATH="$BK/bin:$PATH" ./pithead restore -y "$CR_ARCHIVE" 2>&1)"
 assert_rc "validated administrative restore succeeds" "$?" 0
+assert_contains "fixed-file install retains the invoking uid" "$(cat "$CR/sudo.log")" "install -o $(id -u) -g $(id -g) -m 600"
 assert_eq "restored config is owner-only" "$(file_mode "$BK/config.json")" 600
 assert_eq "restored env is owner-only" "$(file_mode "$BK/.env")" 600
 assert_eq "restored Caddyfile is owner-only" "$(file_mode "$BK/Caddyfile")" 600
+assert_eq "restored config belongs to the invoking operator" "$(file_uid "$BK/config.json")" "$(id -u)"
 assert_eq "restored onion key is owner-only" "$(file_mode "$BK/data/tor/hs_ed25519_secret_key")" 600
 assert_eq "restored database is owner-only" "$(file_mode "$BK/data/dashboard/dashboard.db")" 600
 unset -f cr_archive

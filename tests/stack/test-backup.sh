@@ -183,6 +183,7 @@ cat >"$BK/bin/sudo" <<'EOF'
 #!/usr/bin/env bash
 # Run backup/restore's privileged commands as the test user, except chown (can't set 100:101
 # unprivileged) which is accepted as a no-op so restore doesn't abort.
+printf '%s\n' "$*" >>"${SUDO_LOG:-/dev/null}"
 [ "$1" = "chown" ] && exit 0
 if [ "$1" = cp ] && [ "$3" = --remove-destination ]; then cmd="$1" arg="$2"; shift 3; exec "$cmd" "$arg" "$@"; fi
 exec "$@"

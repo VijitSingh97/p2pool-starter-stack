@@ -98,7 +98,6 @@ restore_stage_archive() { # <archive> <encrypted:0|1> <passphrase>
         error "Archive contains unsafe paths, links, or special files — nothing was restored."
     fi
 
-    RESTORE_STAGE_DIR=$(mktemp -d) || error "Could not create a private restore staging directory."
     if ! (umask 077 && restore_archive_stream "$archive" "$encrypted" "$pass" |
         tar --no-same-owner --no-same-permissions -xzf - -C "$RESTORE_STAGE_DIR"); then
         restore_discard_stage
@@ -173,10 +172,14 @@ restore_recheck_destinations() {
 }
 
 restore_commit_stage() {
-    local path rel
+    local path rel owner_uid owner_gid
+    if ! owner_uid=$(id -u "$REAL_USER") || ! owner_gid=$(id -g "$REAL_USER"); then
+        restore_discard_stage
+        error "Restore could not resolve the invoking operator's ownership — nothing was restored."
+    fi
     for path in "${RESTORE_FIXED_PATHS[@]}"; do
         rel="${path#/}"
-        [ ! -e "$RESTORE_STAGE_DIR/$rel" ] || sudo install -m 600 "$RESTORE_STAGE_DIR/$rel" "$path" || {
+        [ ! -e "$RESTORE_STAGE_DIR/$rel" ] || sudo install -o "$owner_uid" -g "$owner_gid" -m 600 "$RESTORE_STAGE_DIR/$rel" "$path" || {
             restore_discard_stage
             error "Restore failed while committing $path; inspect the destination before retrying."
         }
