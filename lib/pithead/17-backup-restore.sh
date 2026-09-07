@@ -288,7 +288,7 @@ stack_backup() {
 }
 
 stack_restore() {
-    local assume_yes=0 archive="" arg
+    local assume_yes=0 archive="" archive_source="" arg
     for arg in "$@"; do
         case "$arg" in
         -y | --yes) assume_yes=1 ;;
@@ -301,7 +301,18 @@ stack_restore() {
     [ -f "$archive" ] || error "Archive not found: $archive"
     # Resolve to an absolute path now, since we extract from "/" below.
     archive=$(cd "$(dirname "$archive")" && printf '%s/%s' "$PWD" "$(basename "$archive")")
+    archive_source="$archive"
 
+    # Snapshot once so every audit and the extraction read the same bytes. Clear inherited state
+    # before arming cleanup: only a directory created by this invocation may be removed.
+    RESTORE_STAGE_DIR=""
+    trap restore_discard_stage EXIT
+    RESTORE_STAGE_DIR=$(mktemp -d) || error "Could not create a private restore staging directory."
+    if ! (umask 077 && cp -- "$archive" "$RESTORE_STAGE_DIR/.archive" && chmod 600 "$RESTORE_STAGE_DIR/.archive"); then
+        restore_discard_stage
+        error "Could not copy $archive_source into private restore staging — nothing was restored."
+    fi
+    archive="$RESTORE_STAGE_DIR/.archive"
     # Detect the format by magic bytes, not by flag or filename: `Salted__` is an openssl-encrypted
     # archive (the default since #374), gzip magic is a plaintext archive from any earlier release —
     # both keep restoring with the same command. Anything else is refused before the confirm prompt.
@@ -310,14 +321,14 @@ stack_restore() {
     case "$magic" in
     53616c7465645f5f) encrypted=1 ;; # "Salted__"
     1f8b*) ;;                        # gzip
-    *) error "Not a pithead backup archive (neither openssl-encrypted nor gzip): $archive" ;;
+    *) error "Not a pithead backup archive (neither openssl-encrypted nor gzip): $archive_source" ;;
     esac
 
-    # Note: we do NOT require/parse the current config here — restore must work even when the
-    # on-disk config.json is lost or corrupt. The config comes back out of the archive.
-
+    # Early UX check; the authoritative check runs under the mutation lock before extraction.
+    restore_require_stack_stopped
+    # Do not parse current config: restore must recover a lost or corrupt config.json.
     warn "Restore will OVERWRITE config.json, .env, Caddyfile, the Tor data dir, and the dashboard's database from the archive."
-    warn "Stop the stack first with '$0 down' so files are restored in a consistent state."
+    warn "The stack is stopped; keep it stopped until this restore finishes."
     if [ "$assume_yes" -eq 0 ]; then
         read -r -p "Continue and overwrite these files? (y/N): " CONFIRM || true
         if [[ ! "$CONFIRM" =~ ^[Yy] ]]; then
@@ -363,20 +374,13 @@ stack_restore() {
             error "Archive fails integrity verification (tampered or truncated) — nothing was restored."
     fi
 
-    # After the confirm and the passphrase prompt, and after the integrity verify (read-only):
-    # the extraction below is the mutating window.
+    # Stage and validate all destinations before the mutating window.
+    restore_stage_archive "$archive" "$encrypted" "$pass"
     mutation_lock_acquire restore
-    log "Restoring from $archive ..."
-    # The archive stores paths relative to / (leading slash stripped), so extracting at / puts
-    # every file back exactly where it came from. sudo so we can write into the 100:101-owned
-    # Tor data dir. The encrypted path streams openssl into tar — no plaintext archive on disk.
-    if [ "$encrypted" -eq 1 ]; then
-        openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
-            -pass fd:3 -in "$archive" 3< <(printf '%s' "$pass") |
-            sudo tar -xzf - -C "/"
-    else
-        sudo tar -xzf "$archive" -C "/"
-    fi
+    restore_require_stack_stopped
+    restore_recheck_destinations
+    log "Restoring from $archive_source ..."
+    restore_commit_stage
 
     # Now that config.json is back, resolve the Tor data dir from it and fix ownership so the
     # onion keys load (matching prepare_directories).

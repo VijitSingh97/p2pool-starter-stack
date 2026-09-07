@@ -1,8 +1,7 @@
 # shellcheck shell=bash
 : "${STACK_SUITE:?is unset: this file is a tests/stack/run.sh fragment, not a script — run tests/stack/run.sh}"
 # Backup domain (#1105 Phase 1, appliance lane): the archive/restore round-trip and the
-# reset-dashboard verb — stack_backup's bounded retry on a tar race (#970), the
-# backup_require_items/backup_diagnose_items preflight that names a missing or dangling item
+# reset-dashboard verb, backup retry (#970), and required-item preflight
 # before anything is touched and diagnoses a tar failure by its real cwd/item state (#1244), an
 # absolute PITHEAD_CONFIG_FILE override archived at its real path rather than a doubled
 # $PWD-prefixed one (#1244), the plaintext backup/restore round-trip including the archive-layout
@@ -15,12 +14,9 @@
 # call being if!-guarded like every other call site so a real compose failure surfaces the #180
 # subnet-collision explanation instead of tripping the raw ERR trap (#139/#557/#180).
 # Sourced by tests/stack/run.sh.
-#
-# This file merges TWO clusters that sat apart in run.sh, on either side of the installer tests and
-# the secrets domain (both stay in run.sh / move to test-secrets.sh respectively): the stack_backup
+# This file merges clusters that sat apart in run.sh; the stack_backup
 # unit tests used to run first, and the backup/restore + reset-dashboard black-box tests used to run
-# roughly 500 lines later, after test-rig-worker.sh's and test-monero-tari.sh's source lines. Sourcing
-# this file in one place moves the second cluster earlier in execution order. Confirmed safe: every
+# later cluster moved earlier safely because every
 # fixture below builds its own throwaway dir under $SANDBOX ($RB/$CJ/$BK/$FB/$R/$RD557) — nothing
 # here reads or writes $V, $C, or any state a section between the two original positions left behind,
 # and nothing between those two original positions reads anything this file's fixtures produce.
@@ -187,7 +183,9 @@ cat >"$BK/bin/sudo" <<'EOF'
 #!/usr/bin/env bash
 # Run backup/restore's privileged commands as the test user, except chown (can't set 100:101
 # unprivileged) which is accepted as a no-op so restore doesn't abort.
+printf '%s\n' "$*" >>"${SUDO_LOG:-/dev/null}"
 [ "$1" = "chown" ] && exit 0
+if [ "$1" = cp ] && [ "$3" = --remove-destination ]; then cmd="$1" arg="$2"; shift 3; exec "$cmd" "$arg" "$@"; fi
 exec "$@"
 EOF
 chmod +x "$BK/bin/docker" "$BK/bin/sudo"
