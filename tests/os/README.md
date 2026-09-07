@@ -9,10 +9,15 @@ the rig role, and the update → commit → rollback cycle that is the phase-2 e
 It needs a Linux host with KVM, libvirt and qemu, and root (the bench, not CI):
 
 ```bash
-os/build-image.sh --ssh                       # rootfs tarball -> os/build/pithead-root.tar
+sudo cp /root/.ssh/pithead-os-test.pub /tmp/pithead-os-test.pub
+os/build-image.sh --ssh /tmp/pithead-os-test.pub # battery runs as root and uses root's key
 os/rauc/mkimage.sh --dev                      # bootable image -> os/rauc/build/system.img
 sudo tests/os/run.sh --image os/rauc/build/system.img
 ```
+
+Do not override `HOME` under `sudo`: the runner intentionally reads
+`/root/.ssh/pithead-os-test`. An image built with the invoking user's key looks like an SSH
+timeout to the root-run battery even when the guest is healthy.
 
 Every guest boot is preceded by a host pre-flight (`tests/os/kvm-preflight.sh`): under 20 GiB of
 `MemAvailable` the battery refuses to boot the 16 GiB guest rather than risk hanging the host that
@@ -42,11 +47,17 @@ runbook in [`docs/dev/release-server.md`](../../docs/dev/release-server.md).
   then boot the target and prove the copied system is COMPLETE — the `/var` overlay made an
   incomplete copy easy to produce and invisible to every other phase. Then the reinstall leg:
   `/data` must survive a second install over the same disk, and the three-way wipe choice
-  (`keep`/`data`/`all`) is asserted on the raw partition.
+  (`keep`/`data`/`all`) is asserted on the raw partition. A previous 1.x `xmrig_proxy` setting
+  must appear under `xvb` in the reinstall pre-fill, never survive under its removed name. The
+  restore leg moves a real encrypted archive to a fresh disk and requires the running stack to
+  carry the original payout wallet and Tor onion identity.
 - **provision** — submit a config through the wizard's real HTTP flow and require the STACK to
   come up: wizard accepted, setup ran, images pulled and verified, containers running, dashboard
-  served, Tor-only egress actually enforced, built-in miner up. This is the phase that catches an
-  appliance whose engine cannot run the product. Then the stack must return from a reboot with no
+  served, Tor-only egress actually enforced, built-in miner up. Before the successful attempt, an
+  unreachable remote node must produce a recoverable failed page whose retained values can be
+  corrected. After provisioning, the dashboard drives a benign apply, a typed approval and its
+  missing-token refusal, doctor, log tail, and an encrypted backup; the stack and dashboard must
+  answer again after the backup. Then the stack must return from a reboot with no
   hands on it, and the real commit gate — `pithead doctor --json` — must pass on that healthy
   stack yet refuse once a revenue service is down. The closing leg installs a `data_migration`
   bundle through `pithead os-update` and proves the migration hold: the chain services stay down
@@ -68,20 +79,21 @@ runbook in [`docs/dev/release-server.md`](../../docs/dev/release-server.md).
   reboots. Asserts the exact diff appears on the console (the changed wallet address in full, a
   changed secret only named, never shown), the countdown applies the change, the changed setting
   takes effect, and the stick is consumed so it cannot re-apply. A second reboot proves pulling
-  the stick mid-countdown cancels the change instead. Opt-in, like `fault`.
+  the stick mid-countdown cancels the change instead.
 - **fault** — power cuts mid-write and mid-commit, plus a corrupt bundle. A brick is
-  disqualifying. Opt-in: `all` runs the five phases above, not this one.
+  disqualifying.
 - **reset** — the shell-less box's last resort, never before run against a real disk: a
   provisioned machine runs the real `pithead factory-reset -y`, which arms the `pithead-reset`
   marker on the ESP and reboots; assert it comes back to the wizard with the provisioned config
   and old container images gone, the seeded dirs back, and a FRESH host identity (SSH host-key
   fingerprint, machine-id) — the reset tier keeps nothing of the old owner's. A second leg
   corrupts the data partition's ext4 magic and asserts the wedged-`/data` recovery reformats it
-  rather than bricking. Opt-in, destructive: not in `all`.
+  rather than bricking.
 
 `--keep` leaves the VM and disks for inspection; `--phase boot|update|install|provision|rig|media|fault|reset|all`
 scopes the run. A failed assertion is recorded and the run carries on, so one bench boot collects
-the whole battery; the run exits non-zero if anything failed.
+the whole battery; the run exits non-zero if anything failed. `all` means all eight phases,
+including fault and reset, and the full run is required once for every RC candidate.
 
 ## Static verification
 
