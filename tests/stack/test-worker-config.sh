@@ -146,6 +146,12 @@ case "$(cat "$MASKED" "$WREAD")" in
 *0123456789abcdef0123456789abcdef* | *tok_rig3secret*) bad "dashboard runtime holds no control token" "a control token leaked" ;;
 *) ok "dashboard runtime holds no control token" ;;
 esac
+jq --arg token '0123456789abcdef\0123456789abcdef' '.workers.list[0].token=$token' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
+run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+assert_eq "JSON row transport preserves a literal backslash in the HMAC key" "$(jq -r '.[0].read_token' "$WREAD")" "cce295e5a24453987365f2392bea539dd26e25d404c8742569b4f7b7a015c00e"
+jq --arg token "$(printf 'é%.0s' {1..32})" '.workers.list[0].token=$token' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
+run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+assert_eq "non-ASCII text gets no derived read capability" "$(jq -r 'length' "$WREAD")" "0"
 jq '.workers.list[0].token="short-token"' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
 run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
 assert_eq "weak control tokens get no derived read capability" "$(jq -r 'length' "$WREAD")" "0"

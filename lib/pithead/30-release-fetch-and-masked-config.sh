@@ -113,7 +113,7 @@ gh_release_fetch() { # <owner/repo>; sets GH_RELEASE_JSON on success, GH_RELEASE
 }
 
 render_worker_read_tokens() { # <masked-dir>; dashboard-only RigForge credentials, never browser config
-    local mdir="$1" final rows tmp
+    local LC_ALL=C mdir="$1" final rows tmp
     final="$mdir/worker-read-tokens.json"
     rows=$(mktemp "$mdir/.worker-read-rows.XXXXXX") || {
         rm -f "$final"
@@ -127,13 +127,18 @@ render_worker_read_tokens() { # <masked-dir>; dashboard-only RigForge credential
         rm -f "$rows" "$tmp" "$final"
         return 1
     }
-    if ! jq -r '(.workers.api_port // 8080) as $default
+    if ! jq -c '(.workers.api_port // 8080) as $default
         | (.workers.list // [])[]
-        | [(.name // empty), (.host // empty), (.token | strings), (.port // $default)] | @tsv' "$CONFIG_FILE" |
-        while IFS=$'\t' read -r name host token port; do
+        | {name: (.name // ""), host: (.host // ""), token: (.token | strings),
+           port: (.port // $default)}' "$CONFIG_FILE" |
+        while IFS= read -r row; do
+            name=$(printf '%s' "$row" | jq -r '.name')
+            host=$(printf '%s' "$row" | jq -r '.host')
+            token=$(printf '%s' "$row" | jq -r '.token')
+            port=$(printf '%s' "$row" | jq -r '.port')
             [ -n "$name" ] && [ -n "$host" ] && [ -n "$token" ] || continue
             [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || continue
-            [ "${#token}" -ge 32 ] || continue
+            [ "${#token}" -ge 32 ] && [[ "$token" != *[![:graph:]]* ]] || continue
             read=$(hmac_sha256_hex "$token" 'rigforge:api-read:v1') || exit 1
             printf '%s\n%s\n%s\n%s\n' "$name" "$host" "$port" "$read" |
                 jq -Rn '{name: input, host: input, port: (input | tonumber), read_token: input}' >>"$rows" || exit 1
