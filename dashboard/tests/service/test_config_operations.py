@@ -30,7 +30,7 @@ def config_paths(tmp_path, monkeypatch):
 def test_editor_metadata_is_not_a_schema_leaf():
     assert list(
         config_operations.leaf_paths(
-            {"_approval_keys": ["monero.wallet_address"], "p2pool": {"pool": "mini"}}
+            {"_last_apply": {"status": "applied", "id": "abc"}, "p2pool": {"pool": "mini"}}
         )
     ) == ["p2pool.pool"]
 
