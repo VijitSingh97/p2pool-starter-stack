@@ -1,7 +1,6 @@
 """Coordinator hostname mapping and validation at the real wizard submit boundary."""
 
 import json
-from pathlib import Path
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -12,8 +11,11 @@ from mining_dashboard.wizard_form import build_config
 
 @pytest.fixture
 async def hostname_client(tmp_path, monkeypatch):
-    ref = Path(__file__).resolve().parents[3] / "config.reference.json"
-    tmp_path.joinpath("config.reference.json").write_text(ref.read_text())
+    # The Docker test stage contains only dashboard/. Seed the relevant host
+    # reference value as the other wizard fixtures do; the wizard must override it.
+    tmp_path.joinpath("config.reference.json").write_text(
+        json.dumps({"dashboard": {"host": "auto"}})
+    )
     monkeypatch.setenv("WIZARD_SPOOL", str(tmp_path))
     monkeypatch.setenv("WIZARD_TOKEN", "pit-NAME01")
     async with TestClient(TestServer(wizard.make_app(exit_fn=lambda code: None))) as client:

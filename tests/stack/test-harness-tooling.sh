@@ -314,6 +314,8 @@ vd_expected="$(
     cat <<'VDEXP'
 lib.sh|1
 test-appliance-boot.sh|ph
+test-appliance-hostname.sh|mode
+test-appliance-hostname.sh|op
 test-appliance-identity-boot.sh|cli_pages
 test-appliance-identity-boot.sh|u
 test-appliance-identity.sh|1
