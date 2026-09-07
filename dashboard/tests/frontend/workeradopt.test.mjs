@@ -51,9 +51,10 @@ function withFetchSequence(responses, fn) {
 
 // --- Prefill -----------------------------------------------------------------------------------
 
-test("AdoptRigForm: prefills host from the observed ip and the default control port", () => {
+test("AdoptRigForm: prefills host and the RigForge API ports", () => {
   const inst = adoptForm();
   assert.equal(inst.state.host, "10.0.0.9");
+  assert.equal(inst.state.apiPort, "8081");
   assert.equal(inst.state.controlPort, "8082");
   assert.equal(inst.state.token, ""); // never prefilled — the operator must type it
   assert.match(renderToString(inst.render()), /value="10\.0\.0\.9"/);
@@ -95,6 +96,7 @@ test("AdoptRigForm: a host resolving inside the stack's own network is refused a
 
 test("AdoptRigForm: a well-formed submission previews then commits through the control path", async () => {
   const inst = adoptForm();
+  inst.state.apiPort = "18081";
   inst.state.token = TOKEN;
   const liveConfig = { workers: { list: [] } };
   await withFetchSequence(
@@ -108,7 +110,7 @@ test("AdoptRigForm: a well-formed submission previews then commits through the c
       assert.equal(calls[0].url, "/api/config");
       assert.equal(calls[1].url, "/api/control/preview");
       assert.deepEqual(calls[1].body.config.workers.list, [
-        { name: "rig1", host: "10.0.0.9", control_port: 8082, token: TOKEN },
+        { name: "rig1", host: "10.0.0.9", port: 18081, control_port: 8082, token: TOKEN },
       ]);
       assert.equal(calls[2].url, "/api/control/commit");
       assert.equal(calls[2].body.id, "req-1");
@@ -116,6 +118,7 @@ test("AdoptRigForm: a well-formed submission previews then commits through the c
   );
   assert.equal(inst.state.result.status, "applied");
   assert.equal(inst.state.busy, false);
+  assert.match(renderToString(inst.render()), /next worker poll/);
 });
 
 test("AdoptRigForm: a rejected preview surfaces the host's reason and never commits", async () => {

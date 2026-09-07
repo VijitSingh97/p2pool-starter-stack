@@ -10,7 +10,8 @@
 const HOST_RE = /^[A-Za-z0-9._-]{1,253}$/;
 const TOKEN_RE = /^[!-~]{1,128}$/;
 
-/** The rig's control-API default port (RigForge's own default) — the form's port prefill. */
+/** RigForge's read and control API defaults — the form's port prefills. */
+export const DEFAULT_API_PORT = "8081";
 export const DEFAULT_CONTROL_PORT = "8082";
 
 /**
@@ -20,14 +21,18 @@ export const DEFAULT_CONTROL_PORT = "8082";
  * no port, path, or userinfo can ride into a probe URL. Returns an error string, or "" when every
  * field is well-formed.
  */
-export function validateAdoptFields(host, controlPort, token) {
+export function validateAdoptFields(host, apiPort, controlPort, token) {
   const h = (host || "").trim();
   if (!h) return "Enter the rig's control address (a hostname or IP).";
   if (!HOST_RE.test(h)) {
     return "Host must be a hostname or IPv4 address — letters, digits, and . _ - only (no port or path).";
   }
-  const port = Number(controlPort);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  const readPort = Number(apiPort);
+  if (!Number.isInteger(readPort) || readPort < 1 || readPort > 65535) {
+    return "API port must be an integer between 1 and 65535.";
+  }
+  const control = Number(controlPort);
+  if (!Number.isInteger(control) || control < 1 || control > 65535) {
     return "Control port must be an integer between 1 and 65535.";
   }
   const t = (token || "").trim();
@@ -112,13 +117,14 @@ export function hostIsInternal(host, subnet) {
  * — the host's add-only gate requires every already-live entry to reappear byte-for-byte, so this
  * never touches an existing element, only pushes a new one onto the end.
  */
-export function buildAdoptedConfig(liveConfig, workerName, host, controlPort, token) {
+export function buildAdoptedConfig(liveConfig, workerName, host, apiPort, controlPort, token) {
   const cfg = JSON.parse(JSON.stringify(liveConfig || {}));
   const workers = cfg.workers && typeof cfg.workers === "object" ? cfg.workers : {};
   const list = Array.isArray(workers.list) ? workers.list.slice() : [];
   list.push({
     name: workerName,
     host: host.trim(),
+    port: Number(apiPort),
     control_port: Number(controlPort),
     token: token.trim(),
   });

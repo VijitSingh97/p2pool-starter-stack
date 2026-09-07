@@ -13,6 +13,7 @@ import { test } from "node:test";
 
 import {
   buildAdoptedConfig,
+  DEFAULT_API_PORT,
   DEFAULT_CONTROL_PORT,
   hostIsInternal,
   validateAdoptFields,
@@ -22,51 +23,56 @@ import {
 
 test("validateAdoptFields: a well-formed host/port/token is accepted", () => {
   const token = "0123456789abcdef0123456789abcdef";
-  assert.equal(validateAdoptFields("10.0.0.9", "8082", token), "");
-  assert.equal(validateAdoptFields("rig1.lan", DEFAULT_CONTROL_PORT, token), "");
+  assert.equal(validateAdoptFields("10.0.0.9", "8081", "8082", token), "");
+  assert.equal(validateAdoptFields("rig1.lan", DEFAULT_API_PORT, DEFAULT_CONTROL_PORT, token), "");
+});
+
+test("validateAdoptFields: api_port must be an integer in range", () => {
+  assert.notEqual(validateAdoptFields("10.0.0.9", "0", "8082", "tok"), "");
+  assert.notEqual(validateAdoptFields("10.0.0.9", "nope", "8082", "tok"), "");
 });
 
 test("validateAdoptFields: an empty host is refused", () => {
-  assert.notEqual(validateAdoptFields("", "8082", "tok"), "");
-  assert.notEqual(validateAdoptFields("   ", "8082", "tok"), "");
+  assert.notEqual(validateAdoptFields("", "8081", "8082", "tok"), "");
+  assert.notEqual(validateAdoptFields("   ", "8081", "8082", "tok"), "");
 });
 
 test("validateAdoptFields: a host carrying a port is refused (#122 charset guard)", () => {
-  assert.notEqual(validateAdoptFields("10.0.0.9:8082", "8082", "tok"), "");
+  assert.notEqual(validateAdoptFields("10.0.0.9:8082", "8081", "8082", "tok"), "");
 });
 
 test("validateAdoptFields: a host carrying a path is refused", () => {
-  assert.notEqual(validateAdoptFields("10.0.0.9/../etc", "8082", "tok"), "");
+  assert.notEqual(validateAdoptFields("10.0.0.9/../etc", "8081", "8082", "tok"), "");
 });
 
 test("validateAdoptFields: a host carrying userinfo is refused", () => {
-  assert.notEqual(validateAdoptFields("user@10.0.0.9", "8082", "tok"), "");
+  assert.notEqual(validateAdoptFields("user@10.0.0.9", "8081", "8082", "tok"), "");
 });
 
 test("validateAdoptFields: a scheme-prefixed host is refused", () => {
-  assert.notEqual(validateAdoptFields("http://10.0.0.9", "8082", "tok"), "");
+  assert.notEqual(validateAdoptFields("http://10.0.0.9", "8081", "8082", "tok"), "");
 });
 
 test("validateAdoptFields: control_port out of range is refused", () => {
-  assert.notEqual(validateAdoptFields("10.0.0.9", "0", "tok"), "");
-  assert.notEqual(validateAdoptFields("10.0.0.9", "65536", "tok"), "");
+  assert.notEqual(validateAdoptFields("10.0.0.9", "8081", "0", "tok"), "");
+  assert.notEqual(validateAdoptFields("10.0.0.9", "8081", "65536", "tok"), "");
 });
 
 test("validateAdoptFields: a non-numeric control_port is refused", () => {
-  assert.notEqual(validateAdoptFields("10.0.0.9", "abc", "tok"), "");
+  assert.notEqual(validateAdoptFields("10.0.0.9", "8081", "abc", "tok"), "");
 });
 
 test("validateAdoptFields: a blank token is refused (bearer-mandatory)", () => {
-  assert.notEqual(validateAdoptFields("10.0.0.9", "8082", ""), "");
-  assert.notEqual(validateAdoptFields("10.0.0.9", "8082", "   "), "");
+  assert.notEqual(validateAdoptFields("10.0.0.9", "8081", "8082", ""), "");
+  assert.notEqual(validateAdoptFields("10.0.0.9", "8081", "8082", "   "), "");
 });
 
 test("validateAdoptFields: a token with a space is refused", () => {
-  assert.notEqual(validateAdoptFields("10.0.0.9", "8082", "has space"), "");
+  assert.notEqual(validateAdoptFields("10.0.0.9", "8081", "8082", "has space"), "");
 });
 
 test("validateAdoptFields: a weak token gets actionable generation guidance", () => {
-  const error = validateAdoptFields("10.0.0.9", "8082", "short-token");
+  const error = validateAdoptFields("10.0.0.9", "8081", "8082", "short-token");
   assert.match(error, /cryptographically random/);
   assert.match(error, /openssl rand -hex 16/);
 });
@@ -158,16 +164,18 @@ test("hostIsInternal: a hostname that would resolve elsewhere is not caught here
 // --- buildAdoptedConfig ----------------------------------------------------------------------
 
 test("buildAdoptedConfig: appends the new descriptor to an empty workers.list[]", () => {
-  const cfg = buildAdoptedConfig({ p2pool: { pool: "mini" } }, "rig1", "10.0.0.9", "8082", "tok");
+  const cfg = buildAdoptedConfig({ p2pool: { pool: "mini" } }, "rig1", "10.0.0.9", "8081", "8082", "tok");
   assert.deepEqual(cfg.workers.list, [
-    { name: "rig1", host: "10.0.0.9", control_port: 8082, token: "tok" },
+    { name: "rig1", host: "10.0.0.9", port: 8081, control_port: 8082, token: "tok" },
   ]);
   assert.equal(cfg.p2pool.pool, "mini"); // every other key rides through untouched
 });
 
-test("buildAdoptedConfig: control_port is coerced to a number", () => {
-  const cfg = buildAdoptedConfig({}, "rig1", "10.0.0.9", "8082", "tok");
-  assert.equal(cfg.workers.list[0].control_port, 8082);
+test("buildAdoptedConfig: both ports are coerced to numbers", () => {
+  const cfg = buildAdoptedConfig({}, "rig1", "10.0.0.9", "18081", "18082", "tok");
+  assert.equal(cfg.workers.list[0].port, 18081);
+  assert.equal(cfg.workers.list[0].control_port, 18082);
+  assert.equal(typeof cfg.workers.list[0].port, "number");
   assert.equal(typeof cfg.workers.list[0].control_port, "number");
 });
 
@@ -177,7 +185,7 @@ test("buildAdoptedConfig: an existing entry reappears byte-for-byte, unchanged",
   const live = {
     workers: { list: [{ name: "rig1", host: "10.0.0.9", control_port: 8082, token: "tok1" }] },
   };
-  const cfg = buildAdoptedConfig(live, "rig2", "10.0.0.10", "8082", "tok2");
+  const cfg = buildAdoptedConfig(live, "rig2", "10.0.0.10", "8081", "8082", "tok2");
   assert.deepEqual(cfg.workers.list[0], live.workers.list[0]);
   assert.equal(cfg.workers.list.length, 2);
   assert.equal(cfg.workers.list[1].name, "rig2");
@@ -186,12 +194,12 @@ test("buildAdoptedConfig: an existing entry reappears byte-for-byte, unchanged",
 test("buildAdoptedConfig: never mutates the live config object it was handed", () => {
   const live = { workers: { list: [{ name: "rig1", host: "a", token: "t" }] } };
   const before = JSON.stringify(live);
-  buildAdoptedConfig(live, "rig2", "10.0.0.10", "8082", "tok2");
+  buildAdoptedConfig(live, "rig2", "10.0.0.10", "8081", "8082", "tok2");
   assert.equal(JSON.stringify(live), before);
 });
 
 test("buildAdoptedConfig: trims stray whitespace off host and token", () => {
-  const cfg = buildAdoptedConfig({}, "rig1", " 10.0.0.9 ", "8082", " tok \n");
+  const cfg = buildAdoptedConfig({}, "rig1", " 10.0.0.9 ", "8081", "8082", " tok \n");
   assert.equal(cfg.workers.list[0].host, "10.0.0.9");
   assert.equal(cfg.workers.list[0].token, "tok");
 });
