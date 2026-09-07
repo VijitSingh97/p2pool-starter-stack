@@ -7,14 +7,11 @@
 APPROVAL_FIXTURE_ARMED=0
 APPROVAL_RESTORE_SNAPSHOT=""
 approval_fixture_arm() {
+    APPROVAL_FIXTURE_OWNER="os1966-$(date +%s)-$$-$RANDOM"
+    [[ "$APPROVAL_FIXTURE_OWNER" =~ ^os1966-[0-9]+-[0-9]+-[0-9]+$ ]] || return 1
+    APPROVAL_FIXTURE_ARMED=2
+    _ssh "set -eu; test ! -e /data/pithead/data/control/.os1966-active-owner; umask 077; printf '%s' '$APPROVAL_FIXTURE_OWNER' > /data/pithead/data/control/.os1966-active-owner" || return
     APPROVAL_FIXTURE_ARMED=1
-    _ssh 'set -eu
-test ! -e /data/pithead/data/control/.os1966-active-id
-test -z "$(find /data/pithead/data/control/requests -maxdepth 1 -type f -name '"'"'*.json'"'"' -print -quit)"
-test -z "$(find /data/pithead/data/control -maxdepth 1 -type f -name '"'"'.claim.*'"'"' -print -quit)"
-test -z "$(find /data/pithead/data/control/staged -maxdepth 1 -type f -name '"'"'*.json*'"'"' -print -quit)"
-umask 077
-printf PENDING > /data/pithead/data/control/.os1966-active-id' || return
     _ssh 'set -eu
 rm -rf /data/pithead/.os-approval-fixture
 mkdir -p /data/pithead/.os-approval-fixture/bin /etc/systemd/system/pithead-control.service.d
@@ -63,53 +60,61 @@ test ! -e /data/pithead/.os-approval-fixture/unexpected-url' || return
 approval_fixture_bind() {
     local id="$1"
     [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || return 1
-    _ssh "set -eu; grep -qxF PENDING /data/pithead/data/control/.os1966-active-id; umask 077; printf '%s' '$id' > /data/pithead/data/control/.os1966-active-id"
-}
-
-approval_fixture_preview() {
-    local body="$1"
-    approval_fixture_arm || return 1
-    APPROVAL_PREVIEW=$(dashboard_control_request preview "$body") || return 1
-    APPROVAL_REQUEST_ID=$(printf '%s' "$APPROVAL_PREVIEW" | jq -r '.id // ""')
-    approval_fixture_bind "$APPROVAL_REQUEST_ID"
+    _ssh "set -eu; test ! -e /data/pithead/data/control/.os1966-active-id; umask 077; printf '%s' '$id' > /data/pithead/data/control/.os1966-active-id"
 }
 
 approval_fixture_quiesce() {
-    [ "${APPROVAL_FIXTURE_ARMED:-0}" -eq 1 ] || return 0
+    [ "${APPROVAL_FIXTURE_ARMED:-0}" -ne 0 ] || return 0
     [ -n "${ip:-}" ] || return 1
+    local marker
+    marker=$(_ssh 'if test -f /data/pithead/data/control/.os1966-active-owner; then cat /data/pithead/data/control/.os1966-active-owner; else printf absent; fi') || return 1
+    [ "$marker" != absent ] || return 0
+    [ "$marker" = "$APPROVAL_FIXTURE_OWNER" ] || return 1
     _ssh 'set -eu
 systemctl stop pithead-control.path
 systemctl stop pithead-control.service
 ! systemctl is-active --quiet pithead-control.service
 mkdir -p /data/pithead/.os-approval-fixture/cancelled
-id=$(cat /data/pithead/data/control/.os1966-active-id)
-case "$id" in
-PENDING) staged_names='"'"'*.json*'"'"' ;;
-*) printf "%s" "$id" | grep -qE '"'"'^[0-9a-f-]{36}$'"'"'; staged_names="$id.json*" ;;
-esac
-find /data/pithead/data/control/requests -maxdepth 1 -type f -name '"'"'*.json'"'"' -exec mv -t /data/pithead/.os-approval-fixture/cancelled -- {} +
-find /data/pithead/data/control -maxdepth 1 -type f -name '"'"'.claim.*'"'"' -exec mv -t /data/pithead/.os-approval-fixture/cancelled -- {} +
-find /data/pithead/data/control/staged -maxdepth 1 -type f \( -name '"'"'.*.approval-*'"'"' -o -name '"'"'.*.telegram-*'"'"' -o -name '"'"'*.json.approved'"'"' \) -exec mv -t /data/pithead/.os-approval-fixture/cancelled -- {} +
-find /data/pithead/data/control/staged -maxdepth 1 -type f \( -name "$staged_names" -o -name ".$id.*" \) -exec mv -t /data/pithead/.os-approval-fixture/cancelled -- {} +
-test -z "$(find /data/pithead/data/control/requests -maxdepth 1 -type f -name '"'"'*.json'"'"' -print -quit)"
-test -z "$(find /data/pithead/data/control -maxdepth 1 -type f -name '"'"'.claim.*'"'"' -print -quit)"
-test -z "$(find /data/pithead/data/control/staged -maxdepth 1 -type f \( -name '"'"'.*.approval-*'"'"' -o -name '"'"'.*.telegram-*'"'"' -o -name '"'"'*.json.approved'"'"' \) -print -quit)"
-test -z "$(find /data/pithead/data/control/staged -maxdepth 1 -type f \( -name "$staged_names" -o -name ".$id.*" \) -print -quit)"'
+owner=$(cat /data/pithead/data/control/.os1966-active-owner)
+printf "%s" "$owner" | grep -qE '"'"'^os1966-[0-9]+-[0-9]+-[0-9]+$'"'"'
+ids=/data/pithead/.os-approval-fixture/owned.ids
+: >"$ids"
+for f in /data/pithead/data/control/requests/*.json /data/pithead/data/control/.claim.*; do
+    [ -f "$f" ] || continue
+    jq -er --arg owner "$owner" '"'"'select(.actor == $owner) | .id | select(test("^[0-9a-f-]{36}$"))'"'"' "$f" >>"$ids" 2>/dev/null || true
+done
+[ ! -f /data/pithead/data/control/.os1966-active-id ] || cat /data/pithead/data/control/.os1966-active-id >>"$ids"
+[ ! -f /data/pithead/data/control/audit/control.log ] || jq -r --arg owner "$owner" '"'"'select(.actor == $owner) | .id // empty'"'"' /data/pithead/data/control/audit/control.log >>"$ids"
+sort -u "$ids" -o "$ids"
+while IFS= read -r id; do
+    printf "%s" "$id" | grep -qE '"'"'^[0-9a-f-]{36}$'"'"' || continue
+    for f in /data/pithead/data/control/requests/$id.json /data/pithead/data/control/staged/$id.json* /data/pithead/data/control/staged/.$id.approval-* /data/pithead/data/control/staged/.$id.telegram-*; do
+        [ -f "$f" ] && mv -- "$f" /data/pithead/.os-approval-fixture/cancelled/
+    done
+done <"$ids"
+for f in /data/pithead/data/control/.claim.*; do
+    [ -f "$f" ] || continue
+    jq -e --arg owner "$owner" '"'"'.actor == $owner'"'"' "$f" >/dev/null 2>&1 && mv -- "$f" /data/pithead/.os-approval-fixture/cancelled/
+done'
 }
 
 approval_fixture_disarm() {
-    approval_fixture_quiesce || return 1
-    [ "${APPROVAL_FIXTURE_ARMED:-0}" -eq 1 ] || return 0
-    _ssh 'set -eu
+    local rc=0
+    approval_fixture_quiesce || rc=1
+    [ "${APPROVAL_FIXTURE_ARMED:-0}" -ne 0 ] || return "$rc"
+    _ssh "set -eu
+if test -f /data/pithead/data/control/.os1966-active-owner; then grep -qxF '$APPROVAL_FIXTURE_OWNER' /data/pithead/data/control/.os1966-active-owner; fi
+"'
 rm -rf /data/pithead/.os-approval-fixture /etc/systemd/system/pithead-control.service.d/90-os-approval-fixture.conf
-rm -f /data/pithead/data/control/.os1966-active-id
+rm -f /data/pithead/data/control/.os1966-active-id /data/pithead/data/control/.os1966-active-owner
     systemctl daemon-reload
     systemctl start pithead-control.path
     systemctl is-active --quiet pithead-control.path
     test ! -e /data/pithead/.os-approval-fixture
     test ! -e /etc/systemd/system/pithead-control.service.d/90-os-approval-fixture.conf
-    ! systemctl cat pithead-control.service | grep -q /data/pithead/.os-approval-fixture' >/dev/null 2>&1 || return
-    APPROVAL_FIXTURE_ARMED=0
+    ! systemctl cat pithead-control.service | grep -q /data/pithead/.os-approval-fixture' >/dev/null 2>&1 || rc=1
+    [ "$rc" -eq 0 ] && APPROVAL_FIXTURE_ARMED=0
+    return "$rc"
 }
 
 approval_fixture_require_disarm() {
@@ -373,6 +378,7 @@ _approval_self_test() {
     tari_endpoint_roundtrip_verdict 'MergeMiningClientTari tari://old.fixture:18142 uses chain_id 0123456789abcdef' 'node.fixture:18142' && f=$((f + 1))
     _control_request_transport_self_test || f=$((f + 1))
     _approval_fixture_failure_self_test || f=$((f + 1))
+    _approval_owner_selector_self_test || f=$((f + 1))
     _approval_preview_lifecycle_self_test || f=$((f + 1))
     _runtime_epoch_self_test || f=$((f + 1))
     [ "$f" -eq 0 ] || {
