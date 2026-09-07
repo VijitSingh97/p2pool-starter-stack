@@ -18,6 +18,7 @@ import { WorkerInspect } from "../../mining_dashboard/web/static/workerview.mjs"
 import { render, renderToString } from "./helpers/render.mjs";
 
 const FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/state.json", import.meta.url)));
+const TOKEN = "0123456789abcdef0123456789abcdef";
 
 function stubSetState(inst) {
   inst.setState = (patch) => {
@@ -80,7 +81,7 @@ test("AdoptRigForm: a host resolving inside the stack's own network is refused a
   // needs the live config (network.subnet) to classify, hence the check runs post-fetch.
   const inst = adoptForm();
   inst.state.host = "127.0.0.1";
-  inst.state.token = "tok-123";
+  inst.state.token = TOKEN;
   await withFetchSequence([{ body: { network: { subnet: "172.28.0.0/24" } } }], async (calls) => {
     await inst.adopt();
     assert.equal(calls.length, 1); // only the /api/config read — never reached preview
@@ -94,7 +95,7 @@ test("AdoptRigForm: a host resolving inside the stack's own network is refused a
 
 test("AdoptRigForm: a well-formed submission previews then commits through the control path", async () => {
   const inst = adoptForm();
-  inst.state.token = "tok-123";
+  inst.state.token = TOKEN;
   const liveConfig = { workers: { list: [] } };
   await withFetchSequence(
     [
@@ -107,7 +108,7 @@ test("AdoptRigForm: a well-formed submission previews then commits through the c
       assert.equal(calls[0].url, "/api/config");
       assert.equal(calls[1].url, "/api/control/preview");
       assert.deepEqual(calls[1].body.config.workers.list, [
-        { name: "rig1", host: "10.0.0.9", control_port: 8082, token: "tok-123" },
+        { name: "rig1", host: "10.0.0.9", control_port: 8082, token: TOKEN },
       ]);
       assert.equal(calls[2].url, "/api/control/commit");
       assert.equal(calls[2].body.id, "req-1");
@@ -119,7 +120,7 @@ test("AdoptRigForm: a well-formed submission previews then commits through the c
 
 test("AdoptRigForm: a rejected preview surfaces the host's reason and never commits", async () => {
   const inst = adoptForm();
-  inst.state.token = "tok-123";
+  inst.state.token = TOKEN;
   await withFetchSequence(
     [
       { body: {} },
@@ -138,7 +139,7 @@ test("AdoptRigForm: an unexpected destructive preview is refused, not blindly co
   // A pure add should never come back destructive; if it somehow does, adopt() must refuse rather
   // than auto-confirming a change no one reviewed.
   const inst = adoptForm();
-  inst.state.token = "tok-123";
+  inst.state.token = TOKEN;
   await withFetchSequence(
     [{ body: {} }, { body: { id: "req-1", status: "previewed", destructive: true } }],
     async (calls) => {
@@ -151,7 +152,7 @@ test("AdoptRigForm: an unexpected destructive preview is refused, not blindly co
 
 test("AdoptRigForm: calls onAdopted only once the commit actually applied", async () => {
   const inst = adoptForm();
-  inst.state.token = "tok-123";
+  inst.state.token = TOKEN;
   let notified = 0;
   inst.props.onAdopted = () => notified++;
   await withFetchSequence(

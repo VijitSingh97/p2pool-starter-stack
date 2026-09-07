@@ -21,8 +21,9 @@ import {
 // --- validateAdoptFields --------------------------------------------------------------------
 
 test("validateAdoptFields: a well-formed host/port/token is accepted", () => {
-  assert.equal(validateAdoptFields("10.0.0.9", "8082", "tok-123"), "");
-  assert.equal(validateAdoptFields("rig1.lan", DEFAULT_CONTROL_PORT, "tok-123"), "");
+  const token = "0123456789abcdef0123456789abcdef";
+  assert.equal(validateAdoptFields("10.0.0.9", "8082", token), "");
+  assert.equal(validateAdoptFields("rig1.lan", DEFAULT_CONTROL_PORT, token), "");
 });
 
 test("validateAdoptFields: an empty host is refused", () => {
@@ -62,6 +63,12 @@ test("validateAdoptFields: a blank token is refused (bearer-mandatory)", () => {
 
 test("validateAdoptFields: a token with a space is refused", () => {
   assert.notEqual(validateAdoptFields("10.0.0.9", "8082", "has space"), "");
+});
+
+test("validateAdoptFields: a weak token gets actionable generation guidance", () => {
+  const error = validateAdoptFields("10.0.0.9", "8082", "short-token");
+  assert.match(error, /cryptographically random/);
+  assert.match(error, /openssl rand -hex 16/);
 });
 
 // --- hostIsInternal (the #122 SSRF floor on a NEW entry) --------------------------------------

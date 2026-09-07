@@ -283,7 +283,10 @@ alongside `host` and `token` to make a rig editable — either by hand in `confi
 Worker Inspect's own **adopt form** on a rig that doesn't have an entry yet; leave the whole
 feature off by not enabling the dashboard control channel. The token is the rig's `ACCESS_TOKEN`.
 Pithead keeps it on the host for writes and gives the dashboard only a lowercase hex HMAC-SHA256
-read bearer (token as key, `rigforge:api-read:v1` as the message).
+read bearer (token as key, `rigforge:api-read:v1` as the message). This split requires a
+cryptographically random token of at least 32 ASCII characters; generate one with
+`openssl rand -hex 16`. A shorter legacy token still works for raw host control but gets no derived
+read bearer, because the bearer would make guessing that token offline practical.
 
 ! The control token is **write-capable** and travels in **cleartext HTTP** over the LAN (like the
 stratum password): a change can alter a rig's pools or its thermal `watchdog`/`max_temp_c`, so anyone
@@ -314,8 +317,8 @@ updating its entry** here.
 be set by you in `config.json` and is never taken from anything a miner advertises: the dashboard
 will not send a configured token to a host a miner could control (the same [SSRF guard](#authentication)
 as the worker-name rule). Pinning `host` alongside `token` is the recommended pair. The derived
-read bearer is bound to that name and host, so a stale credential map fails closed during a host
-change instead of forwarding the old rig's read capability to the new address.
+read bearer is bound to that name, host, and API port, so a stale credential map fails closed during
+an endpoint change instead of forwarding the old rig's read capability to a new address or service.
 
 The standard fleet — everyone on `8080`, token = rig name or open — needs no `workers.list`
 at all.
@@ -340,8 +343,9 @@ the same response. The dashboard then shows a RigForge version badge and health/
 chips for that rig (see [Dashboard › Workers Alive](dashboard.md#workers-alive)). A plain-xmrig rig
 on `8080` sends no `rigforge` block and reads exactly as before — no chips, no error. The feed is
 open when the rig has no `ACCESS_TOKEN`. For an adopted token-protected rig, RigForge 1.17.2 or
-newer accepts the read-only bearer Pithead derives; an older release needs a local RigForge upgrade
-before it can enrich. The raw control token never enters the dashboard container.
+newer accepts the read-only bearer Pithead derives; an older release needs a RigForge upgrade before
+it can enrich (through Worker Inspect where remote upgrades are enabled, or locally otherwise). The
+raw control token never enters the dashboard container.
 
 Current RigForge feeds stamp each response with UTC `generated_at`. Pithead ages that producer stamp,
 not the HTTP fetch: cached bytes can still arrive successfully after the refresh job freezes. Reports

@@ -34,6 +34,9 @@ export function validateAdoptFields(host, controlPort, token) {
   if (!t || !TOKEN_RE.test(t)) {
     return "Enter the rig's control token — its control API is bearer-mandatory.";
   }
+  if (t.length < 32) {
+    return "Use a cryptographically random token of at least 32 ASCII characters (run: openssl rand -hex 16).";
+  }
   return "";
 }
 

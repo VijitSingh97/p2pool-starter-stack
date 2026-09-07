@@ -71,11 +71,14 @@ def load_worker_endpoints(path, read_tokens_path=None) -> list[dict]:
                         and _WORKER_NAME_RE.fullmatch(row["name"])
                         and isinstance(row.get("host"), str)
                         and _WORKER_HOST_RE.fullmatch(row["host"])
+                        and isinstance(row.get("port"), int)
+                        and not isinstance(row["port"], bool)
+                        and 1 <= row["port"] <= 65535
                         and isinstance(row.get("read_token"), str)
                         and _READ_TOKEN_RE.fullmatch(row["read_token"])
                         and row["name"] not in read_tokens
                     ):
-                        read_tokens[row["name"]] = (row["host"], row["read_token"])
+                        read_tokens[row["name"]] = (row["host"], row["port"], row["read_token"])
         except (OSError, ValueError, AttributeError):
             pass
     out, seen = [], set()
@@ -123,8 +126,9 @@ def load_worker_endpoints(path, read_tokens_path=None) -> list[dict]:
             entry["watts"] = watts
         if "host" in entry and isinstance(entry.get("token"), dict):
             read_token = read_tokens.get(name)
-            if read_token and read_token[0] == entry["host"]:
-                entry["read_token"] = read_token[1]
+            default_port = workers_block.get("api_port", 8080)
+            if read_token and read_token[:2] == (entry["host"], entry.get("port", default_port)):
+                entry["read_token"] = read_token[2]
         seen.add(name)
         out.append(entry)
     return out

@@ -112,41 +112,42 @@ gh_release_fetch() { # <owner/repo>; sets GH_RELEASE_JSON on success, GH_RELEASE
     return 1
 }
 
-render_worker_read_tokens() { # <masked-dir>; dashboard-only :8081 credentials, never browser config
-    local mdir="$1" rows tmp count i name host token port read
-    rows=$(mktemp "$mdir/.worker-read-rows.XXXXXX") || return 1
+render_worker_read_tokens() { # <masked-dir>; dashboard-only RigForge credentials, never browser config
+    local mdir="$1" final rows tmp
+    final="$mdir/worker-read-tokens.json"
+    rows=$(mktemp "$mdir/.worker-read-rows.XXXXXX") || {
+        rm -f "$final"
+        return 1
+    }
     tmp=$(mktemp "$mdir/.worker-read-tokens.XXXXXX") || {
-        rm -f "$rows"
+        rm -f "$rows" "$final"
         return 1
     }
     chmod 600 "$rows" "$tmp" || {
-        rm -f "$rows" "$tmp"
+        rm -f "$rows" "$tmp" "$final"
         return 1
     }
-    count=$(jq -r '(.workers.list // []) | if type == "array" then length else 0 end' "$CONFIG_FILE") || count=0
-    for ((i = 0; i < count; i++)); do
-        name=$(jq -r --argjson i "$i" '.workers.list[$i].name // empty' "$CONFIG_FILE")
-        host=$(jq -r --argjson i "$i" '.workers.list[$i].host // empty' "$CONFIG_FILE")
-        token=$(jq -r --argjson i "$i" '.workers.list[$i].token | strings' "$CONFIG_FILE")
-        port=$(jq -r --argjson i "$i" '.workers.list[$i].port // .workers.api_port // 8080' "$CONFIG_FILE")
-        [ -n "$name" ] && [ -n "$host" ] && [ -n "$token" ] && [ "$port" = 8081 ] || continue
-        read=$(hmac_sha256_hex "$token" 'rigforge:api-read:v1') || {
-            rm -f "$rows" "$tmp" "$mdir/worker-read-tokens.json"
-            return 1
-        }
-        printf '%s\n%s\n%s\n' "$name" "$host" "$read" |
-            jq -Rn '{name: input, host: input, read_token: input}' >>"$rows" || {
-            rm -f "$rows" "$tmp" "$mdir/worker-read-tokens.json"
-            return 1
-        }
-    done
-    jq -s . "$rows" >"$tmp" && chmod 600 "$tmp" && mv "$tmp" "$mdir/worker-read-tokens.json"
+    if ! jq -r '(.workers.api_port // 8080) as $default
+        | (.workers.list // [])[]
+        | [(.name // empty), (.host // empty), (.token | strings), (.port // $default)] | @tsv' "$CONFIG_FILE" |
+        while IFS=$'\t' read -r name host token port; do
+            [ -n "$name" ] && [ -n "$host" ] && [ -n "$token" ] || continue
+            [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || continue
+            [ "${#token}" -ge 32 ] || continue
+            read=$(hmac_sha256_hex "$token" 'rigforge:api-read:v1') || exit 1
+            printf '%s\n%s\n%s\n%s\n' "$name" "$host" "$port" "$read" |
+                jq -Rn '{name: input, host: input, port: (input | tonumber), read_token: input}' >>"$rows" || exit 1
+        done; then
+        rm -f "$rows" "$tmp" "$final"
+        return 1
+    fi
+    jq -s . "$rows" >"$tmp" && chmod 600 "$tmp" && mv "$tmp" "$final"
     local rc=$?
     rm -f "$rows" "$tmp"
     if [ "$rc" -eq 0 ] && [ "$(id -u)" -eq 0 ]; then
-        chown "${APP_UID:-1000}:${APP_GID:-1000}" "$mdir/worker-read-tokens.json" || rc=1
+        chown "${APP_UID:-1000}:${APP_GID:-1000}" "$final" || rc=1
     fi
-    [ "$rc" -eq 0 ] || rm -f "$mdir/worker-read-tokens.json"
+    [ "$rc" -eq 0 ] || rm -f "$final"
     return "$rc"
 }
 

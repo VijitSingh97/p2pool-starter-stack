@@ -13,12 +13,17 @@ def _write(path, value):
     path.write_text(json.dumps(value))
 
 
-def _descriptor(host="10.0.0.5"):
-    return {"workers": {"list": [{"name": "rig1", "host": host, "token": {"__secret__": True}}]}}
+def _descriptor(host="10.0.0.5", port=8081):
+    return {
+        "workers": {
+            "api_port": port,
+            "list": [{"name": "rig1", "host": host, "token": {"__secret__": True}}],
+        }
+    }
 
 
-def _read_map(host="10.0.0.5"):
-    return [{"name": "rig1", "host": host, "read_token": "a" * 64}]
+def _read_map(host="10.0.0.5", port=8081):
+    return [{"name": "rig1", "host": host, "port": port, "read_token": "a" * 64}]
 
 
 def test_read_map_joins_only_valid_pinned_masked_descriptor(tmp_path):
@@ -38,16 +43,21 @@ def test_stale_read_map_is_not_attached_to_replaced_host(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_stale_read_map_never_sends_credential_to_replaced_host(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("descriptor_host", "descriptor_port"), [("10.0.0.6", 8081), ("10.0.0.5", 18081)]
+)
+async def test_stale_read_map_never_sends_credential(
+    tmp_path, monkeypatch, descriptor_host, descriptor_port
+):
     config_path, read_path = tmp_path / "config.json", tmp_path / "worker-read-tokens.json"
-    _write(config_path, _descriptor("10.0.0.6"))
+    _write(config_path, _descriptor(descriptor_host, descriptor_port))
     _write(read_path, _read_map())
     monkeypatch.setattr(cfg, "HOST_CONFIG_PATH", str(config_path))
     monkeypatch.setattr(cfg, "WORKER_READ_TOKENS_PATH", str(read_path))
     monkeypatch.setattr(cfg, "DASHBOARD_WORKERS", None)
     monkeypatch.setattr(xc, "WORKER_ENDPOINTS", None)
     session = FakeSession(response=FakeResponse(200, {"ok": True}))
-    assert (await XMRigWorkerClient(session).get_stats("10.0.0.6", "rig1"))["api_ok"] is False
+    assert (await XMRigWorkerClient(session).get_stats(descriptor_host, "rig1"))["api_ok"] is False
     assert session.calls == []
 
 

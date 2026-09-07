@@ -137,14 +137,18 @@ assert_eq "committed config carries no sentinel dict" "$(jq -r '[.. | objects | 
 echo "== black-box: per-rig derived read credentials (#1983) =="
 WREAD="$C/data/control/masked/worker-read-tokens.json"
 cp "$C/config.json" "$C/config.before-read-map.json"
-jq '.workers.api_port=8081' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
+jq '.workers.api_port=18081 | .workers.list[0].token="0123456789abcdef0123456789abcdef"' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
 run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
-assert_eq "read map uses the fixed HMAC derivation" "$(jq -r '.[] | select(.name=="rig1") | .read_token' "$WREAD")" "beca82ec69f635764da70e8d28f85fdbddca07eee76c8bf2d57d66cb5ad5d9d3"
+assert_eq "read map uses the fixed HMAC derivation" "$(jq -r '.[] | select(.name=="rig1") | .read_token' "$WREAD")" "79432528d7ae32abcc791e8c3f86e100f01d7d535956b58b876da3c7660749b8"
+assert_eq "read map binds the configured RigForge API port" "$(jq -r '.[] | select(.name=="rig1") | .port' "$WREAD")" "18081"
 assert_eq "read map is owner-only" "$(stat -c '%a' "$WREAD" 2>/dev/null || stat -f '%Lp' "$WREAD")" "600"
 case "$(cat "$MASKED" "$WREAD")" in
-*tok_rig1secret* | *tok_rig3secret*) bad "dashboard runtime holds no control token" "a control token leaked" ;;
+*0123456789abcdef0123456789abcdef* | *tok_rig3secret*) bad "dashboard runtime holds no control token" "a control token leaked" ;;
 *) ok "dashboard runtime holds no control token" ;;
 esac
+jq '.workers.list[0].token="short-token"' "$C/config.json" >"$C/config.json.tmp" && mv "$C/config.json.tmp" "$C/config.json"
+run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
+assert_eq "weak control tokens get no derived read capability" "$(jq -r 'length' "$WREAD")" "0"
 mv "$C/config.before-read-map.json" "$C/config.json"
 run_sourced "$C" render_masked_config "$C/data/control" >/dev/null 2>&1
 assert_eq "switching away from 8081 removes stale read credentials" "$(jq -r 'length' "$WREAD")" "0"
