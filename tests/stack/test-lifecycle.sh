@@ -723,7 +723,7 @@ ENVEOF
     printf 'DBDATA-ORIG\n' >"$1/data/dashboard/dashboard.db"
 }
 lock_wiring_fixture "$LKW"
-tar -czf "$LKW/wiring-archive.tar.gz" -C "$LKW" config.json
+tar -czf "$LKW/wiring-archive.tar.gz" -C "$LKW" config.json .env
 LKWHELD="$LKW/held.lock"
 LKWFREE="$LKW/free.lock"
 # Which directory a pair runs in. `setup` needs an UNPROVISIONED one: the fixture above carries a
