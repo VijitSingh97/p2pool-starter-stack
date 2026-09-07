@@ -69,7 +69,6 @@ echo "== black-box: dashboard control channel (#33) =="
 # and dashboard.control.enabled, docker/sudo stubbed. The runner is exercised end-to-end against
 # real spool files; `apply` inside it runs this same sandboxed pithead.
 build_control_sandbox
-
 # Fail-closed: enabling the control channel without a dashboard password must not validate.
 seed_control_env
 printf '{ "monero":{"mode":"local","wallet_address":"%s","node_username":"u","node_password":"p"},
@@ -79,11 +78,13 @@ out="$(cd "$C" && DOCKER_LOG="$CTRL_LOG" PATH="$C/bin:$PATH" ./pithead apply -y 
 rc=$?
 assert_rc "control.enabled without a password is rejected" "$rc" "1"
 assert_contains "control-without-password message names the flag" "$out" "dashboard.control.enabled"
-
 # Baseline: control enabled + password, pool main → a rendered .env with the control keys.
 seed_control_env
 control_config main
-out="$(umask 000; cd "$C" && DOCKER_LOG="$CTRL_LOG" PATH="$C/bin:$PATH" ./pithead apply -y 2>&1)"
+out="$(
+    umask 000
+    cd "$C" && DOCKER_LOG="$CTRL_LOG" PATH="$C/bin:$PATH" ./pithead apply -y 2>&1
+)"
 assert_rc "baseline apply with control enabled succeeds" "$?" "0"
 assert_contains "control toggle rendered to .env" "$(cat "$C/.env")" "DASHBOARD_CONTROL_ENABLED=true"
 assert_contains "control spool dir rendered to .env" "$(cat "$C/.env")" "CONTROL_DIR=$C/data/control"
@@ -94,7 +95,6 @@ assert_eq "dashboard-writable requests dir is owner-only under umask 000" "$(fil
 assert_eq "host-only control parent protects claimed requests" "$(file_mode "$C/data/control")" "700"
 assert_contains "caddy access-log dir rendered to .env (#349)" "$(cat "$C/.env")" "CADDY_LOG_DIR=$C/data/caddy-logs"
 [ -d "$C/data/caddy-logs" ] && ok "caddy access-log dir created (#349)" || bad "caddy access-log dir created (#349)" "missing"
-
 echo "== black-box: apply --dry-run [--porcelain] (#33) =="
 control_config mini # candidate change: pool main -> mini
 cp "$C/.env" "$C/env.before"
