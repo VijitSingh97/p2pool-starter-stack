@@ -109,7 +109,7 @@ provision_failed_install_recovery() { # <ip> <authenticated-cookie-jar>
 # restart. Preview's `previewed` is terminal; commit's is the old result waiting to be replaced.
 dashboard_control_request() { # <route> <json-body> [deadline-seconds]
     local route="$1" body="$2" deadline=$(($(date +%s) + ${3:-240})) out rid status
-    out=$(curl -sSk -u "$DASH_USER:$DASH_PASS" -H 'Content-Type: application/json' \
+    out=$(curl -sSk -m 8 -u "$DASH_USER:$DASH_PASS" -H 'Content-Type: application/json' \
         -H 'X-Pithead-Control: 1' --data "$body" "https://$ip/api/control/$route" 2>/dev/null)
     rid=$(printf '%s' "$out" | jq -r '.id // ""' 2>/dev/null)
     [ -n "$rid" ] || return 1
@@ -127,14 +127,14 @@ dashboard_control_request() { # <route> <json-body> [deadline-seconds]
             ;;
         esac
         sleep 3
-        out=$(curl -sSk -u "$DASH_USER:$DASH_PASS" "https://$ip/api/control/result?id=$rid" 2>/dev/null)
+        out=$(curl -sSk -m 8 -u "$DASH_USER:$DASH_PASS" "https://$ip/api/control/result?id=$rid" 2>/dev/null)
     done
     return 1
 }
 
 phase_provision_control_regressions() { # <dashboard-user> <dashboard-password>
     local DASH_USER="$1" DASH_PASS="$2" live proposed preview result rid old peers code names archive
-    live=$(curl -fsSk -u "$DASH_USER:$DASH_PASS" "https://$ip/api/config" 2>/dev/null) || {
+    live=$(curl -fsSk -m 8 -u "$DASH_USER:$DASH_PASS" "https://$ip/api/config" 2>/dev/null) || {
         bad "post-provision control: live config could not be read"
         return
     }
@@ -150,7 +150,7 @@ phase_provision_control_regressions() { # <dashboard-user> <dashboard-password>
     rid=$(printf '%s' "$preview" | jq -r '.id')
     result=$(dashboard_control_request commit "$(jq -nc --arg id "$rid" '{id:$id}')")
     if printf '%s' "$result" | jq -e '.status == "applied"' >/dev/null &&
-        curl -fsSk -u "$DASH_USER:$DASH_PASS" "https://$ip/api/config" 2>/dev/null |
+        curl -fsSk -m 8 -u "$DASH_USER:$DASH_PASS" "https://$ip/api/config" 2>/dev/null |
         jq -e '.dashboard.energy.cost_per_kwh == 0.17' >/dev/null; then
         ok "post-provision benign setting applies through the dashboard control runner"
     else
@@ -158,7 +158,7 @@ phase_provision_control_regressions() { # <dashboard-user> <dashboard-password>
         return
     fi
 
-    live=$(curl -fsSk -u "$DASH_USER:$DASH_PASS" "https://$ip/api/config" 2>/dev/null) || return
+    live=$(curl -fsSk -m 8 -u "$DASH_USER:$DASH_PASS" "https://$ip/api/config" 2>/dev/null) || return
     old=$(printf '%s' "$live" | jq -r '.monero.out_peers // 48')
     [ "$old" -lt 1024 ] && peers=$((old + 1)) || peers=$((old - 1))
     proposed=$(printf '%s' "$live" | jq -c --argjson peers "$peers" '.monero.out_peers = $peers')
@@ -181,7 +181,7 @@ phase_provision_control_regressions() { # <dashboard-user> <dashboard-password>
     rid=$(printf '%s' "$preview" | jq -r '.id')
     result=$(dashboard_control_request commit "$(jq -nc --arg id "$rid" '{id:$id,confirm:"APPLY"}')")
     if printf '%s' "$result" | jq -e '.status == "applied"' >/dev/null &&
-        curl -fsSk -u "$DASH_USER:$DASH_PASS" "https://$ip/api/config" 2>/dev/null |
+        curl -fsSk -m 8 -u "$DASH_USER:$DASH_PASS" "https://$ip/api/config" 2>/dev/null |
         jq -e --argjson peers "$peers" '.monero.out_peers == $peers' >/dev/null; then
         ok "post-provision disruptive setting applies with typed approval"
     else
@@ -189,7 +189,7 @@ phase_provision_control_regressions() { # <dashboard-user> <dashboard-password>
         return
     fi
 
-    proposed=$(curl -fsSk -u "$DASH_USER:$DASH_PASS" "https://$ip/api/config" 2>/dev/null |
+    proposed=$(curl -fsSk -m 8 -u "$DASH_USER:$DASH_PASS" "https://$ip/api/config" 2>/dev/null |
         jq -c --argjson old "$old" '.monero.out_peers = $old')
     preview=$(dashboard_control_request preview "$(jq -nc --argjson config "$proposed" '{config:$config}')")
     rid=$(printf '%s' "$preview" | jq -r '.id')
@@ -212,7 +212,7 @@ phase_provision_control_regressions() { # <dashboard-user> <dashboard-password>
     result=$(dashboard_control_request backup '{}' 360)
     rid=$(printf '%s' "$result" | jq -r '.id // ""')
     archive=$(mktemp)
-    code=$(curl -sSk -u "$DASH_USER:$DASH_PASS" -o "$archive" -w '%{http_code}' \
+    code=$(curl -sSk -m 30 -u "$DASH_USER:$DASH_PASS" -o "$archive" -w '%{http_code}' \
         "https://$ip/api/control/backup-download?id=$rid" 2>/dev/null)
     if printf '%s' "$result" | jq -e '.status == "applied" and (.passphrase | length > 0) and (.archive | length > 0)' >/dev/null &&
         [ "$code" = "200" ] && [ -s "$archive" ]; then
