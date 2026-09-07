@@ -2149,7 +2149,10 @@ _worker_apply() { # <worker> <changes-json>  -> echoes the dashboard result JSON
 }
 
 _restore_rig_control_baseline() {
-    push_config "$BASELINE_CONFIG"
+    if ! push_config "$BASELINE_CONFIG"; then
+        it_fail "write baseline after RigForge control" "could not restore config.json"
+        return 1
+    fi
     if ! pithead apply -y >"$OUT_DIR/rigforge-control.restore.log" 2>&1; then
         it_fail "restore baseline after RigForge control" "see $OUT_DIR/rigforge-control.restore.log"
         return 1
@@ -2309,9 +2312,6 @@ run_rigforge_control() {
 
     run_rigforge_rollback "$rig"
 
-    # ---- #1002a/#1237: the one-click upgrade path, real when the rig is behind latest ----
-    # No longer opt-in. The flag it used to sit behind was set by no caller, so the gate's only
-    # upgrade coverage never ran; the leg now runs every time and says which branch it took.
     [ -n "$RIGFORGE_BOOTSTRAP_VERSION" ] || run_rigforge_upgrade "$rig"
 
     [ "$IT_FAIL" -gt "$fails_before" ] && capture_artifacts "rigforge-control" "$OUT_DIR"

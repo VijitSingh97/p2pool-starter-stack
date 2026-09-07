@@ -22,11 +22,14 @@ RUN_RIGFORGE=1
 api_state() { printf '%s' '{"workers":[{"name":"rig1","rigforge":{"version":"1.17.2"}}]}'; }
 env_on_box() { case "$1" in COMPOSE_PROFILES) echo local_node ;; DASHBOARD_AUTH_HASH_B64) echo present ;; esac }
 has_compose_profile() { return 0; }
-push_config() { :; }
+PUSHES=0
+push_config() {
+    PUSHES=$((PUSHES + 1))
+    [ "$PUSHES" -eq 1 ]
+}
 APPLIES=0
 pithead() {
     APPLIES=$((APPLIES + 1))
-    [ "$APPLIES" -eq 1 ]
 }
 wait_status_ok() { return 0; }
 wait_for() { return 0; }
@@ -38,11 +41,11 @@ run_rigforge_control >/dev/null 2>&1
 rc=$?
 assert_eq "failed nested read returns nonzero to main" "$rc" "1"
 assert_eq "failed nested read performs no later rig write" "$([ -e "$TMP/write-called" ] && echo yes || echo no)" "no"
-assert_eq "control setup and baseline unwind each attempted apply" "$APPLIES" "2"
+assert_eq "a failed baseline write prevents apply from validating stale config" "$APPLIES" "1"
 assert_eq "nested read and failed cleanup are both visible" "$IT_FAIL" "2"
 
 MAIN_SRC="$(sed -n '/^main() {$/,/^}$/p' "$HERE/run.sh")"
 assert_contains "main gates later fault injection on successful RigForge control" "$MAIN_SRC" '[ "$rig_control_ok" = 1 ] && [ "$RUN_FAULTS" = "1" ]'
 printf '\nselftest-rigforge-control-barrier: PASS\n'
 # Two failures above are the deliberate product-counter stimulus, not selftest failures.
-[ "$rc" -eq 1 ] && [ ! -e "$TMP/write-called" ] && [ "$APPLIES" -eq 2 ] && [ "$IT_FAIL" -eq 2 ]
+[ "$rc" -eq 1 ] && [ ! -e "$TMP/write-called" ] && [ "$APPLIES" -eq 1 ] && [ "$IT_FAIL" -eq 2 ]
