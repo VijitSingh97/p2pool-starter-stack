@@ -30,6 +30,7 @@ rejected_before_ssh() { # <label> <env-name> <bad-value>
 echo "== e2e rejects launcher injection before SSH =="
 rejected_before_ssh "control port metacharacters never reach SSH" RIG_CONTROL_PORT '8082;touch'
 rejected_before_ssh "pre-supplied rig NAME metacharacters never reach SSH, even without a token" RIG_NAME 'rig;touch'
+rejected_before_ssh "a valid first line cannot hide a second rig NAME line" RIG_NAME $'rig\ninvalid;value'
 rejected_before_ssh "bootstrap target metacharacters never reach SSH" RIGFORGE_BOOTSTRAP_VERSION 'v1.17.2;touch'
 
 printf '\npassed: %s, failed: %s\n' "$IT_PASS" "$IT_FAIL"

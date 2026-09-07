@@ -157,10 +157,10 @@ done
 }
 case "$MODE" in check | targeted | matrix) ;; *) die "--mode must be check|targeted|matrix (got '$MODE')." ;; esac
 [ -z "$SCENARIO" ] || [ "$MODE" = matrix ] || die "--scenario is only supported with --mode matrix."
-[ -z "$SCENARIO" ] || printf '%s' "$SCENARIO" | grep -qE '^[a-z0-9-]+$' || die "--scenario contains unsupported characters: $SCENARIO"
-[ -z "$RIGFORGE_BOOTSTRAP_VERSION" ] || printf '%s' "$RIGFORGE_BOOTSTRAP_VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' || die "RIGFORGE_BOOTSTRAP_VERSION must be a vX.Y.Z tag."
-[ -z "$RIG_NAME" ] || printf '%s' "$RIG_NAME" | grep -qE '^[A-Za-z0-9._-]+$' || die "RIG_NAME contains unsupported characters."
-printf '%s' "$RIG_CONTROL_PORT" | grep -qE '^[0-9]{1,5}$' && [ "$RIG_CONTROL_PORT" -ge 1 ] && [ "$RIG_CONTROL_PORT" -le 65535 ] || die "RIG_CONTROL_PORT must be a TCP port 1-65535."
+[[ -z "$SCENARIO" || "$SCENARIO" =~ ^[a-z0-9-]+$ ]] || die "--scenario contains unsupported characters: $SCENARIO"
+[[ -z "$RIGFORGE_BOOTSTRAP_VERSION" || "$RIGFORGE_BOOTSTRAP_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "RIGFORGE_BOOTSTRAP_VERSION must be a vX.Y.Z tag."
+[[ -z "$RIG_NAME" || "$RIG_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "RIG_NAME contains unsupported characters."
+[[ "$RIG_CONTROL_PORT" =~ ^[0-9]{1,5}$ ]] && [ "$RIG_CONTROL_PORT" -ge 1 ] && [ "$RIG_CONTROL_PORT" -le 65535 ] || die "RIG_CONTROL_PORT must be a TCP port 1-65535."
 
 # --- SSH helpers ------------------------------------------------------------
 # Keepalives so a quiet (but live) connection isn't dropped; BatchMode so we never hang on a prompt.

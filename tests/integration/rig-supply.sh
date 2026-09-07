@@ -96,7 +96,7 @@ rig_supply() {
         warn "write phase UNDER-SUPPLIED (#1378): no rig host — set MINER_HOST or RIG_HOST."
         return 0
     fi
-    if ! printf '%s' "$RIG_NAME" | grep -qE '^[A-Za-z0-9._-]+$'; then
+    if [[ ! "$RIG_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
         warn "write phase UNDER-SUPPLIED: $RIGFORGE_CONFIG did not provide a safe non-empty NAME for the borrowed rig."
         RIG_NAME=""
         return 0

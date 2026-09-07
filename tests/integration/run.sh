@@ -335,11 +335,11 @@ parse_args() {
         it_err "Provide --host <user@host> or --local. See --help."
         exit 2
     fi
-    [ -z "$RIG_NAME" ] || printf '%s' "$RIG_NAME" | grep -qE '^[A-Za-z0-9._-]+$' || {
+    [[ -z "$RIG_NAME" || "$RIG_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || {
         it_err "--rig-name contains unsupported characters: $RIG_NAME"
         exit 2
     }
-    [ -z "$RIGFORGE_BOOTSTRAP_VERSION" ] || printf '%s' "$RIGFORGE_BOOTSTRAP_VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
+    [[ -z "$RIGFORGE_BOOTSTRAP_VERSION" || "$RIGFORGE_BOOTSTRAP_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
         it_err "--rigforge-bootstrap-version must be a vX.Y.Z tag."
         exit 2
     }
@@ -2141,15 +2141,23 @@ run_subnet_scenario() {
 }
 
 # --- RigForge control phase (--rigforge-control) ----------------------------
-# POST a Worker Inspect config change to the LIVE dashboard's worker-apply route and echo the terminal
-# result JSON. Drives the full loop the tier-2 fake can't: dashboard -> host runner -> rig control API
-# -> back. The route needs the X-Pithead-Control CSRF header; the rig token stays host-side (#440), so
-# nothing secret rides this call. max-time exceeds the runner's own dial + status-poll budget so the
-# handler always returns a terminal-ish result rather than a 202 pending.
+# Drive Worker Inspect through the live dashboard-to-rig control path.
 _worker_apply() { # <worker> <changes-json>  -> echoes the dashboard result JSON
     local body
     body="$(jq -nc --arg w "$1" --argjson c "$2" '{worker:$w,changes:$c}')"
     rx "curl -fsS --max-time 60 -X POST -H 'Content-Type: application/json' -H 'X-Pithead-Control: 1' --data $(quote_arg "$body") http://127.0.0.1:8000/api/control/worker-apply" 2>/dev/null
+}
+
+_restore_rig_control_baseline() {
+    push_config "$BASELINE_CONFIG"
+    if ! pithead apply -y >"$OUT_DIR/rigforge-control.restore.log" 2>&1; then
+        it_fail "restore baseline after RigForge control" "see $OUT_DIR/rigforge-control.restore.log"
+        return 1
+    fi
+    if ! wait_status_ok 240; then
+        it_fail "baseline healthy after RigForge control restore" "status did not recover"
+        return 1
+    fi
 }
 
 # Real RigForge write coverage (#513/#514/#516/#517), destructive then restored. The only descriptor
@@ -2193,13 +2201,11 @@ run_rigforge_control() {
             else
                 it_skip_phase "rigforge-control" "rig '$rig' has no workers.list[] descriptor and no --rig-host + IT_RIG_TOKEN to inject one (#513/#514/#516/#517)"
             fi
-            return 0
+            return "$supplied"
         fi
     fi
 
-    # Build the control-on config: enable the channel and ensure a login (control refuses without
-    # one). Only mint a login when the box has none — an existing password hash is preserved across
-    # apply, so we never clobber a real one. The token reaches jq through its process environment.
+    # Enable control while preserving any existing login.
     local ctrl_config
     ctrl_config="$(printf '%s' "$BASELINE_CONFIG" | jq '.dashboard.control.enabled = true')"
     if [ -z "$(env_on_box DASHBOARD_AUTH_HASH_B64)" ]; then
@@ -2222,16 +2228,14 @@ run_rigforge_control() {
     it_step "apply with dashboard.control on + the rig pinned in workers.list[]…"
     if ! pithead apply -y >"$OUT_DIR/rigforge-control.apply.log" 2>&1; then
         it_fail "apply (control on + rig descriptor) succeeded" "see $OUT_DIR/rigforge-control.apply.log"
-        push_config "$BASELINE_CONFIG"
-        pithead apply -y >/dev/null 2>&1 || true
-        return 0
+        _restore_rig_control_baseline || true
+        return 1
     fi
     wait_status_ok 240 || true
     if [ -n "$RIGFORGE_BOOTSTRAP_VERSION" ]; then
         if ! rigforge_bootstrap "$rig" "$RIGFORGE_BOOTSTRAP_VERSION"; then
-            push_config "$BASELINE_CONFIG"
-            pithead apply -y >/dev/null 2>&1 || true
-            return 0
+            _restore_rig_control_baseline || true
+            return 1
         fi
     fi
     if ! wait_for 120 5 "dashboard to re-read the selected rig after control setup" _pred_rig_present "$rig"; then
@@ -2240,28 +2244,28 @@ run_rigforge_control() {
         else
             it_skip_phase "rigforge-control" "worker '$rig' no longer exposes an enriched feed"
         fi
-        push_config "$BASELINE_CONFIG"
-        pithead apply -y >/dev/null 2>&1 || true
-        return 0
+        _restore_rig_control_baseline || true
+        return 1
     fi
 
     if [ "$RUN_RIGFORGE" = 1 ]; then
+        local read_fails="$IT_FAIL"
         run_rigforge_integration "$rig"
         # shellcheck disable=SC2034  # read by lib.sh:it_fail after the nested phase changes it
         IT_CURRENT_SCENARIO="rigforge-control"
+        if [ "$IT_FAIL" -gt "$read_fails" ]; then
+            _restore_rig_control_baseline || true
+            return 1
+        fi
     fi
 
-    # ---- #514: the enriched READ path survives a populated (masked) descriptor ----
-    # With a token in workers.list[], the container reads it ONLY as {"__secret__":true}. The
-    # v1.5.2 regression stringified that sentinel into `Authorization: Bearer {'__secret__': True}`
-    # and every :8081 probe 401'd -> api_ok=false, feed gone. Assert both still resolve.
+    # A populated masked descriptor must preserve the enriched read path (#514).
     st="$(api_state)"
     assert_eq "rig api_ok true with a populated masked descriptor (#514, v1.5.2 regression)" \
         "$(printf '%s' "$st" | jq -r --arg n "$rig" 'first(.workers[]? | select(.name==$n) | .api_ok) // empty' 2>/dev/null)" "true"
     assert_ne "rigforge feed still resolves with the token masked (#514)" \
         "$(printf '%s' "$st" | jq -r --arg n "$rig" 'first(.workers[]? | select(.name==$n) | .rigforge.version) // empty' 2>/dev/null)" ""
 
-    # ---- #513: the rig is editable, and a reversible Worker Inspect edit lands on the rig ----
     local detail
     detail="$(_worker_detail "$rig" || true)"
     assert_eq "Worker Inspect reports the rig editable with a descriptor (#508/#513)" \
@@ -2295,17 +2299,14 @@ run_rigforge_control() {
         [ "$status" = "applied" ] && rig_key_clear dash "$rig" max_temp_c # (#1379)
     fi
 
-    # ---- #1236/#1002b: the other writable keys, and the ones we deliberately refuse ----
     # Lives in rigforge-writable-keys.sh: the legs read each original from the rig's OWN reported
     # config (.rig_config, #1235/rigforge#253) rather than from a record of what we last pushed, and
     # the three keys not driven there carry their reasons with them.
     run_rigforge_writable_keys "$rig"
     run_rigforge_pools "$rig"
 
-    # ---- #516: a rig-side edit reflects in the dashboard's enriched feed + the masked prefill ----
     run_rigforge_reverse "$rig" "$orig_maxt"
 
-    # ---- #517: an auto-rollback (rigforge#236) is recorded end-to-end from the dashboard ----
     run_rigforge_rollback "$rig"
 
     # ---- #1002a/#1237: the one-click upgrade path, real when the rig is behind latest ----
@@ -2318,9 +2319,7 @@ run_rigforge_control() {
     # Restore: baseline config drops the injected descriptor + turns control back off (the end-of-run
     # restore_baseline would too; doing it here keeps the box clean even if a later phase is added).
     it_step "restoring baseline (control off, descriptor dropped)…"
-    push_config "$BASELINE_CONFIG"
-    pithead apply -y >/dev/null 2>&1 || it_warn "restore apply returned non-zero — check the box"
-    wait_status_ok 240 || true
+    _restore_rig_control_baseline
 }
 
 # Predicate: the rig is present in the live feed with its enriched block parsed.
@@ -2527,18 +2526,19 @@ main() {
         done < <(scenario_matrix)
     fi
 
+    local rig_control_ok=1
     if [ "$RUN_RIGFORGE_CONTROL" = "1" ]; then
-        run_rigforge_control
+        run_rigforge_control || rig_control_ok=0
     elif [ "$RUN_RIGFORGE" = "1" ]; then
         run_rigforge_integration
     fi
-    [ "$RUN_LIFECYCLE" = "1" ] && run_lifecycle
-    [ "$RUN_FAULTS" = "1" ] && run_fault_injection
-    [ "$RUN_AUTH_FAIL_CLOSED" = "1" ] && run_auth_fail_closed
-    [ "$RUN_HARDENING" = "1" ] && run_hardening
+    [ "$rig_control_ok" = 1 ] && [ "$RUN_LIFECYCLE" = "1" ] && run_lifecycle
+    [ "$rig_control_ok" = 1 ] && [ "$RUN_FAULTS" = "1" ] && run_fault_injection
+    [ "$rig_control_ok" = 1 ] && [ "$RUN_AUTH_FAIL_CLOSED" = "1" ] && run_auth_fail_closed
+    [ "$rig_control_ok" = 1 ] && [ "$RUN_HARDENING" = "1" ] && run_hardening
     # Subnet last among the destructive phases: it does a full down/up, so it re-establishes the
     # baseline stack cleanly before the end-of-run restore.
-    [ "$RUN_SUBNET" = "1" ] && run_subnet_scenario
+    [ "$rig_control_ok" = 1 ] && [ "$RUN_SUBNET" = "1" ] && run_subnet_scenario
 
     # Failure → roll the box back to the safety backup; success → leave it (restore_baseline
     # just puts config.json back to where we found it). Then drop the generated archive.
