@@ -5,8 +5,6 @@
 #   tests/integration/e2e.sh <branch> [options]
 #   tests/integration/e2e.sh claude/my-feature --mode matrix
 #
-# Deploys a branch to the dedicated bench checkout, runs the selected gate, then restores it.
-#   3. Takes a `pithead backup` of the live stack (the rollback anchor).
 #   4. Borrows a miner (set MINER_HOST): backs up its xmrig config and repoints it at the test bench so
 #      the live matrix has a real worker mining through this stack.
 #   5. Deploys the branch (`pithead upgrade` — re-renders configs AND rebuilds the branch's first-party
@@ -161,6 +159,8 @@ case "$MODE" in check | targeted | matrix) ;; *) die "--mode must be check|targe
 [ -z "$SCENARIO" ] || [ "$MODE" = matrix ] || die "--scenario is only supported with --mode matrix."
 [ -z "$SCENARIO" ] || printf '%s' "$SCENARIO" | grep -qE '^[a-z0-9-]+$' || die "--scenario contains unsupported characters: $SCENARIO"
 [ -z "$RIGFORGE_BOOTSTRAP_VERSION" ] || printf '%s' "$RIGFORGE_BOOTSTRAP_VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' || die "RIGFORGE_BOOTSTRAP_VERSION must be a vX.Y.Z tag."
+[ -z "$RIG_NAME" ] || printf '%s' "$RIG_NAME" | grep -qE '^[A-Za-z0-9._-]+$' || die "RIG_NAME contains unsupported characters."
+printf '%s' "$RIG_CONTROL_PORT" | grep -qE '^[0-9]{1,5}$' && [ "$RIG_CONTROL_PORT" -ge 1 ] && [ "$RIG_CONTROL_PORT" -le 65535 ] || die "RIG_CONTROL_PORT must be a TCP port 1-65535."
 
 # --- SSH helpers ------------------------------------------------------------
 # Keepalives so a quiet (but live) connection isn't dropped; BatchMode so we never hang on a prompt.
@@ -615,7 +615,7 @@ run_harness() {
     if [ "$BORROW_MINER" = "1" ] && [ "$MODE" != "check" ]; then
         rig_supply
         [ -n "$RIG_NAME" ] || die "Borrowed rig NAME unavailable from $RIGFORGE_CONFIG."
-        phases="$phases --rigforge --rigforge-control --rig-name $(quote_arg "$RIG_NAME")${RIG_HOST:+ --rig-host $(quote_arg "$RIG_HOST") --rig-control-port $RIG_CONTROL_PORT}${RIGFORGE_BOOTSTRAP_VERSION:+ --rigforge-bootstrap-version $(quote_arg "$RIGFORGE_BOOTSTRAP_VERSION")}"
+        phases="$phases --rigforge --rigforge-control --rig-name $(quote_arg "$RIG_NAME")${RIG_HOST:+ --rig-host $(quote_arg "$RIG_HOST") --rig-control-port $(quote_arg "$RIG_CONTROL_PORT")}${RIGFORGE_BOOTSTRAP_VERSION:+ --rigforge-bootstrap-version $(quote_arg "$RIGFORGE_BOOTSTRAP_VERSION")}"
     fi
     # #905: no borrowed miner means no worker will ever appear — tell the harness to SKIP its two
     # mining assertions (workers online, stratum hashes) instead of failing a healthy stack.

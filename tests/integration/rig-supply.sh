@@ -96,6 +96,11 @@ rig_supply() {
         warn "write phase UNDER-SUPPLIED (#1378): no rig host — set MINER_HOST or RIG_HOST."
         return 0
     fi
+    if ! printf '%s' "$RIG_NAME" | grep -qE '^[A-Za-z0-9._-]+$'; then
+        warn "write phase UNDER-SUPPLIED: $RIGFORGE_CONFIG did not provide a safe non-empty NAME for the borrowed rig."
+        RIG_NAME=""
+        return 0
+    fi
     if [ -z "$IT_RIG_TOKEN" ]; then
         if [ "$unpriv_rc" != 0 ]; then
             warn "write phase UNDER-SUPPLIED (#1466): could NOT READ $RIGFORGE_CONFIG on $MINER_HOST (read rc=$unpriv_rc, sudo -n rc=$sudo_rc). The read's own error is above."
@@ -104,11 +109,6 @@ rig_supply() {
             warn "write phase UNDER-SUPPLIED (#1378): no token in $RIGFORGE_CONFIG on $MINER_HOST, and IT_RIG_TOKEN is unset."
         fi
         warn "  The phase then runs only if the bench baseline already pins a descriptor for this rig, and #516's feed leg cannot run at all."
-        return 0
-    fi
-    if ! printf '%s' "$RIG_NAME" | grep -qE '^[A-Za-z0-9._-]+$'; then
-        warn "write phase UNDER-SUPPLIED: $RIGFORGE_CONFIG did not provide a safe non-empty NAME for the borrowed rig."
-        RIG_NAME=""
         return 0
     fi
     # Dial from the BENCH, not from here: the bench is the box run.sh's legs dial, and it is the one
