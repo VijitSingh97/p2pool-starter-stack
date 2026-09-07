@@ -140,8 +140,10 @@ case "$api_url" in
     ;;
 *getUpdates*)
     nonce=$(jq -r '.nonce' "$FAKE_APPROVAL_PENDING"/.*.approval-pending)
-    jq -n --arg nonce "$nonce" --arg uid "${FAKE_TG_UID:-7}" \
-        '{ok:true,result:[{update_id:1,callback_query:{id:"cb",from:{id:($uid|tonumber)},data:("approve-config:"+$nonce),message:{message_id:77,chat:{id:-10042}}}}]}' >"$out"
+    prompt_text=$(jq -r '.text' "$FAKE_APPROVAL_DIR/prompt.json")
+    [ -z "${FAKE_TG_TEXT+x}" ] || prompt_text="$FAKE_TG_TEXT"
+    jq -n --arg nonce "$nonce" --arg uid "${FAKE_TG_UID:-7}" --arg text "$prompt_text" \
+        '{ok:true,result:[{update_id:1,callback_query:{id:"cb",from:{id:($uid|tonumber)},data:("approve-config:"+$nonce),message:{message_id:77,chat:{id:-10042},text:$text}}}]}' >"$out"
     ;;
 *) exit 2 ;;
 esac
@@ -166,6 +168,42 @@ assert_contains "host Telegram prompt contains the complete sanitized change" \
     "$(jq -r '.text' "$TG/prompt.json")" "MONERO_RPC_LAN_ACCESS: RPC access changed"
 assert_eq "host Telegram verifier records the actual allow-listed identity" \
     "$(jq -r '.approver' "$TG/staged.json.approved")" "tg-7"
+cp "$C/config.json" "$TG/tampered.json"
+if FAKE_TG_TEXT="Approve a harmless-looking change" FAKE_APPROVAL_DIR="$TG" PATH="$C/bin:$PATH" run_sourced "$C" \
+    control_telegram_approve "$TG/tampered.json" "$UUID3" "admin" '{}' \
+    $'APPROVAL\tMONERO_RPC_LAN_ACCESS\tRPC access changed' "$TG/control" >/dev/null; then
+    bad "edited Telegram approval text is refused" "accepted a callback for altered prompt text"
+else
+    ok "edited Telegram approval text is refused"
+fi
+unset FAKE_TG_TEXT
+mkdir -p "$TG/failbin"
+cat >"$TG/failbin/mv" <<'EOF'
+#!/usr/bin/env bash
+case "${2:-}" in
+*"${FAKE_MV_DEST:?}") exit 1 ;;
+esac
+exec /bin/mv "$@"
+EOF
+chmod +x "$TG/failbin/mv"
+cp "$C/config.json" "$TG/rate-write-failure.json"
+if FAKE_MV_DEST=approval-prompts FAKE_APPROVAL_DIR="$TG" PATH="$TG/failbin:$C/bin:$PATH" run_sourced "$C" \
+    control_telegram_approve "$TG/rate-write-failure.json" "$UUID3" "admin" '{}' \
+    $'APPROVAL\tMONERO_RPC_LAN_ACCESS\tRPC access changed' "$TG/control" >/dev/null; then
+    bad "approval refuses a failed prompt-budget write" "continued without durable rate accounting"
+else
+    ok "approval refuses a failed prompt-budget write"
+fi
+cp "$C/config.json" "$TG/approver-write-failure.json"
+if FAKE_MV_DEST=.approved FAKE_APPROVAL_DIR="$TG" PATH="$TG/failbin:$C/bin:$PATH" run_sourced "$C" \
+    control_telegram_approve "$TG/approver-write-failure.json" "$UUID3" "admin" '{}' \
+    $'APPROVAL\tMONERO_RPC_LAN_ACCESS\tRPC access changed' "$TG/control" >/dev/null; then
+    bad "approval refuses a failed verified-approver write" "continued without durable approver audit"
+else
+    ok "approval refuses a failed verified-approver write"
+fi
+[ ! -e "$TG/approver-write-failure.json.approved" ] && ok "failed approver write leaves no approval marker" ||
+    bad "failed approver write leaves no approval marker" "partial approval marker remains"
 export FAKE_APPROVAL_PENDING="$C/data/control/staged"
 # Type-to-confirm alone is still only friction. A sensitive RPC exposure is refused without an
 # envelope bound to this preview and actor, then accepted with the real envelope.
@@ -217,6 +255,16 @@ run_pending >/dev/null
 assert_eq "approved worker repoint applies" "$(jq -r '.status' "$RESULTS/$UUID3.json")" "applied"
 assert_eq "approved worker host landed" "$(jq -r '.workers.list[0].host' "$C/config.json")" "192.168.1.51"
 assert_contains "worker repoint audit names workers.list" "$(grep '"action":"commit-approved","status":"applied"' "$AUDIT" | tail -n 1)" "workers.list"
+
+# Appending a remote worker creates a new host/token trust relationship and cannot bypass the same
+# approval requirement just because no existing list element was changed.
+jq -n --slurpfile live "$C/config.json" --arg id "$UUID3" \
+    '{id:$id,action:"preview",actor:"admin",config:($live[0] | .workers.list += [{name:"rig-2",host:"192.168.1.52",control_port:8082,token:"another-token"}])}' >"$REQS/$UUID3.json"
+run_pending >/dev/null
+assert_eq "worker append preview requires approval" "$(jq -r '.approval_required' "$RESULTS/$UUID3.json")" "true"
+printf '{"id":"%s","action":"commit","actor":"admin"}\n' "$UUID3" >"$REQS/$UUID3.json"
+run_pending >/dev/null
+assert_eq "worker append without host approval is refused" "$(jq -r '.status' "$RESULTS/$UUID3.json")" "rejected"
 
 # A confirm-key in its heavy direction (prune disable) is now approval-gated too: it still needs
 # typed APPLY, but is no longer impossible for a shell-less appliance operator.

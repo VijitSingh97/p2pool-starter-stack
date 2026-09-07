@@ -57,7 +57,11 @@ control_telegram_approve() { # <staged-file> <id> <actor> <suffixes-json> <porce
         printf 'too many Telegram approval prompts recently — wait before trying again'
         return 1
     fi
-    printf '%s %s\n' "$now" "$actor" >>"$tmp" && mv "$tmp" "$ratef"
+    if ! { printf '%s %s\n' "$now" "$actor" >>"$tmp" && mv "$tmp" "$ratef"; }; then
+        rm -f "$tmp"
+        printf 'could not record the Telegram approval prompt budget — refusing the change'
+        return 1
+    fi
 
     nonce=$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-' || true)
     printf '%s' "$nonce" | grep -qE '^[0-9a-f]{32}$' || {
@@ -130,7 +134,12 @@ control_telegram_approve() { # <staged-file> <id> <actor> <suffixes-json> <porce
         printf 'Telegram did not accept the approval prompt — refusing the change'
         return 1
     }
-    jq --arg mid "$message_id" '. + {message_id:$mid}' "$pending" >"${pending}.tmp" && mv "${pending}.tmp" "$pending"
+    if ! { jq --arg mid "$message_id" '. + {message_id:$mid}' "$pending" >"${pending}.tmp" &&
+        mv "${pending}.tmp" "$pending"; }; then
+        rm -f "$pending" "${pending}.tmp" "$payload" "$response" "$updates"
+        printf 'could not bind the Telegram message to its approval record — refusing the change'
+        return 1
+    fi
 
     while [ "$(date +%s)" -lt "$deadline" ]; do
         poll_s=$((deadline - $(date +%s)))
@@ -146,10 +155,10 @@ control_telegram_approve() { # <staged-file> <id> <actor> <suffixes-json> <porce
             continue
         fi
         offset=$(jq -r '[.result[]?.update_id] | max // empty | . + 1' "$updates")
-        uid=$(jq -r --arg nonce "approve-config:$nonce" --arg chat "$chat" --arg mid "$message_id" '
+        uid=$(jq -r --arg nonce "approve-config:$nonce" --arg chat "$chat" --arg mid "$message_id" --arg text "$text" '
             .result[]?.callback_query
             | select(.data == $nonce and (.message.chat.id|tostring) == $chat
-                     and (.message.message_id|tostring) == $mid)
+                     and (.message.message_id|tostring) == $mid and .message.text == $text)
             | (.from.id|tostring)' "$updates" | tail -n 1)
         [ -n "$uid" ] || continue
         case " $(printf '%s' "$allowed" | tr ',\t\n' '   ') " in
@@ -159,8 +168,12 @@ control_telegram_approve() { # <staged-file> <id> <actor> <suffixes-json> <porce
                 printf 'the staged configuration changed while approval was pending — refusing it'
                 return 1
             }
-            jq --arg approver "tg-$uid" '. + {approver:$approver}' "$pending" >"${pending}.approved" &&
-                mv "${pending}.approved" "${staged}.approved"
+            if ! { jq --arg approver "tg-$uid" '. + {approver:$approver}' "$pending" >"${pending}.approved" &&
+                mv "${pending}.approved" "${staged}.approved"; }; then
+                rm -f "$pending" "${pending}.approved" "$payload" "$response" "$updates"
+                printf 'could not save the verified Telegram approver — refusing the change'
+                return 1
+            fi
             rm -f "$pending" "$payload" "$response" "$updates"
             printf 'tg-%s' "$uid"
             return 0
