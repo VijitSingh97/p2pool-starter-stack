@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourced by test-backup.sh: running-stack recovery and archive finalization failures.
 echo "== black-box: backup failures recover a previously running stack (#551, #1965) =="
 FB="$SANDBOX/failbackup"
