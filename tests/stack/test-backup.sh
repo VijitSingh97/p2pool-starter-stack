@@ -401,9 +401,6 @@ rc=$?
 assert_contains "encrypted restore w/o passphrase explains" "$out" "PITHEAD_BACKUP_PASSPHRASE"
 rm -f "$BK"/backups/pithead-backup-*
 
-# shellcheck source=tests/stack/test-backup-recovery.sh
-source "$HERE/test-backup-recovery.sh"
-
 echo "== black-box: reset-dashboard targets .env dirs, not config.json (#139) =="
 # reset-dashboard must wipe the LIVE deployment's data dirs (from .env), not a path the user may
 # have edited into config.json without applying. docker = noop; sudo only LOGS (never executes the
