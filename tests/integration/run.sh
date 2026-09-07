@@ -942,7 +942,7 @@ assert_xvb_over_tor() {
 # wiring api_state (which hits the app directly on 127.0.0.1:8000) can't prove: the route a real
 # scraper uses, behind the proxy and its basic_auth (#8). Only the bcrypt HASH of the dashboard
 # password lives in .env, so when a login is set the plaintext must come via IT_DASHBOARD_PASSWORD
-# (it stays out of logs/artifacts; it does ride the remote curl argv on the operator's own box) —
+# (it travels to curl as stdin configuration, outside shell/SSH/curl argv) —
 # without it the check skips rather than false-FAILs on the 401 Caddy returns by design.
 assert_metrics_via_caddy() {
     local host secure scheme port curl_auth="" body
@@ -967,10 +967,10 @@ assert_metrics_via_caddy() {
             it_skip_leg "/metrics via Caddy" "dashboard login is set — export IT_DASHBOARD_PASSWORD to test through it"
             return 0
         fi
-        curl_auth="-u $(quote_arg "$(env_on_box DASHBOARD_AUTH_USER):$IT_DASHBOARD_PASSWORD")"
+        curl_auth="$(printf 'user = %s\n' "$(printf '%s:%s' "$(env_on_box DASHBOARD_AUTH_USER)" "$IT_DASHBOARD_PASSWORD" | jq -Rs .)")"
     fi
     # -k: the LAN cert is Caddy's internal CA (tls internal); trust isn't what this asserts.
-    body="$(rx "curl -ksS --max-time 15 --resolve $(quote_arg "$host:$port:127.0.0.1") $curl_auth $(quote_arg "$scheme://$host/metrics")" 2>/dev/null)"
+    body="$(printf '%s\n' "$curl_auth" | rx "curl -ksS --max-time 15 -K - --resolve $(quote_arg "$host:$port:127.0.0.1") $(quote_arg "$scheme://$host/metrics")" 2>/dev/null)"
     if metrics_has_pithead_sample "$body"; then
         it_pass "/metrics serves pithead_ samples through Caddy (#379)"
     else
@@ -2391,14 +2391,14 @@ run_rigforge_reverse() { # <rig-name> <orig-max_temp_c-or-empty>
 # POST a change straight to the rig's control API from the bench (the same dial the host runner makes,
 # minus the dashboard) and echo the rig's change_id. Needs IT_RIG_TOKEN + RIG_HOST. Used only by #516.
 _rig_control_apply() { # <changes-json> -> echoes change_id
-    rx "curl -fsS --max-time 15 -X POST -H $(quote_arg "Authorization: Bearer ${IT_RIG_TOKEN:-}") -H 'Content-Type: application/json' --data $(quote_arg "$1") $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/apply")" 2>/dev/null | jq -r '.change_id // empty' 2>/dev/null
+    printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "${IT_RIG_TOKEN:-}" | jq -Rs .)" | rx "curl -fsS --max-time 15 -K - -X POST -H 'Content-Type: application/json' --data $(quote_arg "$1") $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/apply")" 2>/dev/null | jq -r '.change_id // empty' 2>/dev/null
 }
 
 # Poll the rig's /status for <change_id> reaching <want-status>. Returns 0 on match within the window.
 _rig_control_await() { # <change_id> <want-status> [timeout-s=30]
     local id="$1" want="$2" deadline=$((SECONDS + ${3:-30})) sbody
     while [ "$SECONDS" -lt "$deadline" ]; do
-        sbody="$(rx "curl -fsS --max-time 10 -H $(quote_arg "Authorization: Bearer ${IT_RIG_TOKEN:-}") $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/status")" 2>/dev/null)"
+        sbody="$(printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "${IT_RIG_TOKEN:-}" | jq -Rs .)" | rx "curl -fsS --max-time 10 -K - $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/status")" 2>/dev/null)"
         if [ "$(printf '%s' "$sbody" | jq -r '.change_id // empty' 2>/dev/null)" = "$id" ] &&
             [ "$(printf '%s' "$sbody" | jq -r '.status // empty' 2>/dev/null)" = "$want" ]; then
             return 0
