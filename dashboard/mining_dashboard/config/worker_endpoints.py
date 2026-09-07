@@ -1,8 +1,7 @@
 # Split out of config.py to keep it under its file-budget ceiling (#1285). Unlike the rest of
 # config.py's flat environment settings, these two loaders parse the read-only config.json bind
-# mount itself (not an env var) — config.py calls them once at import time to populate
-# DASHBOARD_WORKERS / DASHBOARD_ENERGY, passing its own HOST_CONFIG_PATH explicitly so this module
-# never has to import config.py back (that would be circular).
+# mount itself (not an env var). config.py passes paths explicitly so this module never imports
+# config.py back (that would be circular); worker endpoints are reloaded for atomic host updates.
 
 import json
 import logging
@@ -35,6 +34,7 @@ logger = logging.getLogger("Config")
 #           calculator (#260) can still total the fleet draw. Marked "estimated" in the UI.
 _WORKER_NAME_RE = re.compile(r"^[\x21-\x7e]{1,128}$")
 _WORKER_HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
+_READ_TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _valid_watts(v):
@@ -42,7 +42,7 @@ def _valid_watts(v):
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 1e6 else None
 
 
-def load_worker_endpoints(path) -> list[dict]:
+def load_worker_endpoints(path, read_tokens_path=None) -> list[dict]:
     """The validated workers.list[] entries (#506); invalid entries dropped, first name wins.
 
     The deprecated dashboard.workers[] fallback (#172) was removed in 2.0.0 (#1832): pithead
@@ -58,6 +58,26 @@ def load_worker_endpoints(path) -> list[dict]:
     raw = workers_block.get("list") if isinstance(workers_block, dict) else None
     if not isinstance(raw, list):
         return []
+    read_tokens = {}
+    if read_tokens_path:
+        try:
+            with open(read_tokens_path) as f:
+                read_rows = json.load(f)
+            if isinstance(read_rows, list):
+                for row in read_rows:
+                    if (
+                        isinstance(row, dict)
+                        and isinstance(row.get("name"), str)
+                        and _WORKER_NAME_RE.fullmatch(row["name"])
+                        and isinstance(row.get("host"), str)
+                        and _WORKER_HOST_RE.fullmatch(row["host"])
+                        and isinstance(row.get("read_token"), str)
+                        and _READ_TOKEN_RE.fullmatch(row["read_token"])
+                        and row["name"] not in read_tokens
+                    ):
+                        read_tokens[row["name"]] = (row["host"], row["read_token"])
+        except (OSError, ValueError, AttributeError):
+            pass
     out, seen = [], set()
     for item in raw:
         if not isinstance(item, dict):
@@ -101,6 +121,10 @@ def load_worker_endpoints(path) -> list[dict]:
             if watts is None:
                 continue  # fail-closed like every other field: a bad watts drops the whole entry
             entry["watts"] = watts
+        if "host" in entry and isinstance(entry.get("token"), dict):
+            read_token = read_tokens.get(name)
+            if read_token and read_token[0] == entry["host"]:
+                entry["read_token"] = read_token[1]
         seen.add(name)
         out.append(entry)
     return out

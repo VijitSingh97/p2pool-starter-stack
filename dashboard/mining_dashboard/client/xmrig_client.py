@@ -7,11 +7,11 @@ from mining_dashboard.client.rig_config_meta import parse_config_meta
 from mining_dashboard.client.rigforge_freshness import STALE_AFTER_S, feed_age
 from mining_dashboard.config.config import (
     API_TIMEOUT,
-    DASHBOARD_WORKERS,
     MINING_NET_CIDR,
     XMRIG_API_AUTH,
     XMRIG_API_PORT,
     XMRIG_API_TOKEN,
+    current_worker_endpoints,
 )
 
 # The writable-key allowlist lives with the WRITE path (control_service) and is imported here
@@ -22,13 +22,7 @@ from mining_dashboard.config.config import (
 from mining_dashboard.helper.http import ResponseTooLarge, bounded_read
 from mining_dashboard.service.control_service import SECRET_SENTINEL, WORKER_WRITABLE_KEYS
 
-# Per-worker endpoint descriptors (#172): the validated workers.list[] list from config.json.
-# Module-level (not from-import at call sites) so tests can swap it per case. Fleets are small, so
-# the per-poll lookups below are linear scans — no index to keep in sync.
-WORKER_ENDPOINTS = DASHBOARD_WORKERS
-
-# Longest worker-name we'll ever echo back as a Bearer token (#122). xmrig names/tokens are short;
-# this just bounds a pathological miner-supplied value before it goes into a header.
+WORKER_ENDPOINTS = None  # test override; production reads mounted files live
 _MAX_NAME_TOKEN = 128
 
 # Ceiling on one rig's /1/summary. The poll pulls a device's response straight into the
@@ -296,11 +290,12 @@ def _worker_override(name_token, safe_ip):
     address). config.py already enforces unique names (first-declared wins), so the first list
     hit is the match.
     """
-    for entry in WORKER_ENDPOINTS:
+    entries = WORKER_ENDPOINTS if WORKER_ENDPOINTS is not None else current_worker_endpoints()
+    for entry in entries:
         if entry["name"] == name_token:
             return entry
     if safe_ip:
-        for entry in WORKER_ENDPOINTS:
+        for entry in entries:
             if entry.get("host") == safe_ip:
                 return entry
     return None
@@ -325,10 +320,8 @@ class XMRigWorkerClient:
         A per-worker token (#172) implies token-auth for that worker only, whatever the
         fleet-wide mode says.
         """
-        # Only a real STRING token overrides the fleet auth. The container reads the MASKED config
-        # (#440), where a per-worker token is the {"__secret__": true} sentinel — it means "a token
-        # exists but the container doesn't hold it", so fall through to the fleet auth mode (e.g. name)
-        # for the read probe. The host-side runner still uses the real token for control (#508/#440).
+        # Only a real string overrides fleet auth. Masked sentinels are handled by get_stats before
+        # this helper; they may never fall through to a fleet credential (#1983).
         if isinstance(override_token, str) and override_token:
             return {"Authorization": f"Bearer {override_token}"}
         mode = XMRIG_API_AUTH
@@ -407,16 +400,21 @@ class XMRigWorkerClient:
         elif safe_ip:
             host = safe_ip
         else:
-            # No safe target: ip is missing/internal/not a bare address, and no operator-set host.
-            # This isn't a misconfigured miner — it's a worker we deliberately won't probe — so
-            # stay quiet and leave api_ok unset (unknown) rather than flagging a failure. Never
-            # fall back to the miner-controlled name as a host: that is the SSRF this guard exists
-            # to prevent (#122).
+            # Never fall back to the miner-controlled name as a host (#122).
             return {}
 
         port = override.get("port", XMRIG_API_PORT)
         url = f"http://{host}:{port}/1/summary"
-        headers = self._auth_header(name_token, override.get("token", ""))
+        if isinstance(override.get("token"), dict):
+            read_token = override.get("read_token")
+            if not read_token:
+                self._warn(
+                    host, name_token, url, "the adopted rig's read credential is unavailable"
+                )
+                return {"api_ok": False, "adopted": adopted}
+            headers = self._auth_header(name_token, read_token)
+        else:
+            headers = self._auth_header(name_token, override.get("token", ""))
 
         try:
             async with self.session.get(url, headers=headers, timeout=API_TIMEOUT) as response:
