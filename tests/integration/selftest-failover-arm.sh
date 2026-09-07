@@ -29,6 +29,18 @@ assert_eq "an unseen monerod keeps node-down injection blocked" \
 assert_eq "an already-rejected proxy keeps a duplicate fault blocked" \
     "$(arm_result true true true 'exited none')" "blocked"
 
+echo "== node-down call site never injects an unarmed fault =="
+FAULT_SRC="$(sed -n '/^fault_node_down() {$/,/^}$/p' "$HERE/run.sh")"
+STOP_LOG="$(mktemp)"
+trap 'rm -f "$STOP_LOG"' EXIT
+wait_for() { return 1; }
+it_fail() { IT_FAIL=$((IT_FAIL + 1)); }
+rx() { printf '%s\n' "$*" >>"$STOP_LOG"; }
+eval "$FAULT_SRC"
+fault_node_down
+assert_eq "an unarmed fault records one failure" "$IT_FAIL" "1"
+assert_eq "an unarmed fault never calls docker compose stop" "$(grep -c 'stop monerod' "$STOP_LOG")" "0"
+
 echo "== injected RigForge credentials stay out of jq argv =="
 CONTROL_SRC="$(sed -n '/^run_rigforge_control() {/,/^}$/p' "$HERE/run.sh")"
 assert_eq "the raw rig token is absent from jq arguments" \

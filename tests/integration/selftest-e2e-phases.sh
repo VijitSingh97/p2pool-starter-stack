@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 #
-# Self-test for e2e.sh's phase composition (#1364): which run.sh phases each --mode actually
-# launches with. The defect this locks down was invisible because it was an ABSENCE — the
-# rigforge-control phase was gated on `--mode matrix` while docs/dev/releasing.md mandates
-# `--mode targeted` before every cut, so the whole dashboard-to-rig write surface
-# (#513/#514/#516/#517/#1002b/#1236) was never even REQUESTED by the gate that decides whether a
-# release ships. Nothing in the output mentioned it; there was no skip line to notice.
+# Self-test e2e.sh's exact per-mode phase composition (#1364).
 #
 # It runs the REAL run_harness out of e2e.sh (extracted, then evaluated against stubbed ssh) and
 # reads the phase list off the command that would have been launched — not off a re-implementation
@@ -63,12 +58,13 @@ drive_harness() { # <mode> <borrow_miner> [rig-token] -> "LAUNCH\t<cmd>" then "S
         # a hang reads as a mutation that survived. A pipeline still supplies its own stdin.
         exec </dev/null
         MODE="$1" BORROW_MINER="$2" WORKERS=1 BENCH_HOST=bench E2E_DIR=/srv/code/pithead-e2e
+        SCENARIO="${4:-}" RIGFORGE_BOOTSTRAP_VERSION="${5:-}"
         # rig_supply's inputs (#1378). MINER_HOST is what RIG_HOST defaults to; the token comes off
         # the stubbed on_miner, so the empty-token path is reachable by passing "".
-        MINER_HOST=rig1 RIG_HOST="" IT_RIG_TOKEN="" RIGFORGE_CONFIG=/opt/rigforge/config.json
+        MINER_HOST=rig1 RIG_HOST="" RIG_NAME="" IT_RIG_TOKEN="" RIGFORGE_CONFIG=/opt/rigforge/config.json
         STUB_TOKEN="${3-s3cr3t-tok3n}"
         LAUNCH_FILE="$lf" STDIN_FILE="$sf"
-        on_miner() { printf '%s' "$STUB_TOKEN"; }
+        on_miner() { case "$1" in *".NAME"*) printf rig1 ;; *) printf '%s' "$STUB_TOKEN" ;; esac }
         log() { :; }
         step() { :; }
         warn() { :; }
@@ -143,7 +139,7 @@ assert_eq "targeted requests the rigforge-control WRITE phase (#1364)" \
     "$(has_phase "$TARGETED" --rigforge-control)" "yes"
 assert_eq "targeted launches EXACTLY its documented phases, and nothing else" \
     "$(phase_set "$TARGETED")" \
-    "--auth-fail-closed --lifecycle --rig-control-port --rig-host --rigforge --rigforge-control --scenario 8082 local-pruned-main-secure-tari rig1 "
+    "--auth-fail-closed --lifecycle --rig-control-port --rig-host --rig-name --rigforge --rigforge-control --scenario 8082 local-pruned-main-secure-tari rig1 rig1 "
 
 echo "== --mode matrix keeps everything it had =="
 MATRIX="$(compose_phases matrix 1)"
@@ -151,7 +147,11 @@ assert_eq "matrix still requests the rigforge-control WRITE phase" \
     "$(has_phase "$MATRIX" --rigforge-control)" "yes"
 assert_eq "matrix launches EXACTLY its documented phases, and nothing else" \
     "$(phase_set "$MATRIX")" \
-    "--auth-fail-closed --fault-injection --hardening --lifecycle --rig-control-port --rig-host --rigforge --rigforge-control --safety-backup --subnet 8082 rig1 "
+    "--auth-fail-closed --fault-injection --hardening --lifecycle --rig-control-port --rig-host --rig-name --rigforge --rigforge-control --safety-backup --subnet 8082 rig1 rig1 "
+FOCUSED_MATRIX="$(compose_phases matrix 1 s3cr3t-tok3n local-pruned-main-secure-tari v1.17.2)"
+assert_eq "matrix accepts one scenario and explicit bootstrap target without dropping its phases" \
+    "$(phase_set "$FOCUSED_MATRIX")" \
+    "--auth-fail-closed --fault-injection --hardening --lifecycle --rig-control-port --rig-host --rig-name --rigforge --rigforge-bootstrap-version --rigforge-control --safety-backup --scenario --subnet 8082 local-pruned-main-secure-tari rig1 rig1 v1.17.2 "
 
 echo "== --mode check stays non-destructive (pure reads) =="
 CHECK="$(compose_phases check 1)"
@@ -215,7 +215,7 @@ echo "== rig_supply's rc-0 contract, which e2e.sh's && chain depends on (#1378) 
 rc_of() { # <miner-host> <token-from-rig> <dial-rc> -> rig_supply's exit code
     (
         MINER_HOST="$1" TOKEN_OUT="$2" DIAL_RC="$3"
-        RIG_HOST="" IT_RIG_TOKEN="" RIGFORGE_CONFIG=/opt/rigforge/config.json BENCH_HOST=bench
+        RIG_HOST="" RIG_NAME=rig1 IT_RIG_TOKEN="" RIGFORGE_CONFIG=/opt/rigforge/config.json BENCH_HOST=bench
         warn() { :; }
         ok() { :; }
         on_miner() { printf '%s' "$TOKEN_OUT"; }
@@ -245,7 +245,7 @@ echo "== rig_supply REPORTS which case it took, and says the right thing (#1378)
 report_of() { # <miner-host> <token-from-rig> <dial-rc> -> "WARN <msg>" / "OK <msg>" lines
     (
         MINER_HOST="$1" TOKEN_OUT="$2" DIAL_RC="$3"
-        RIG_HOST="" IT_RIG_TOKEN="" RIGFORGE_CONFIG=/opt/rigforge/config.json BENCH_HOST=bench
+        RIG_HOST="" RIG_NAME=rig1 IT_RIG_TOKEN="" RIGFORGE_CONFIG=/opt/rigforge/config.json BENCH_HOST=bench
         warn() { printf 'WARN %s\n' "$*"; }
         ok() { printf 'OK %s\n' "$*"; }
         on_miner() { printf '%s' "$TOKEN_OUT"; }
@@ -299,7 +299,7 @@ supply_of() { # <unpriv-out> <unpriv-rc> <sudo-out> <sudo-rc> -> report lines, f
     local f
     f="$(mktemp)"
     (
-        MINER_HOST=rig1 RIG_HOST="" IT_RIG_TOKEN="" RIGFORGE_CONFIG=/opt/rigforge/config.json
+        MINER_HOST=rig1 RIG_HOST="" RIG_NAME=rig1 IT_RIG_TOKEN="" RIGFORGE_CONFIG=/opt/rigforge/config.json
         BENCH_HOST=bench U_OUT="$1" U_RC="$2" S_OUT="$3" S_RC="$4" TRACE="$f"
         warn() { printf 'WARN %s\n' "$*"; }
         ok() { printf 'OK %s\n' "$*"; }
@@ -398,7 +398,7 @@ dial_of() { # -> the argv rig_supply's proof dial hands to curl on the bench
     local f
     f="$(mktemp)"
     (
-        MINER_HOST=rig1 RIG_HOST="" IT_RIG_TOKEN="" RIGFORGE_CONFIG=/opt/rigforge/config.json
+        MINER_HOST=rig1 RIG_HOST="" RIG_NAME=rig1 IT_RIG_TOKEN="" RIGFORGE_CONFIG=/opt/rigforge/config.json
         BENCH_HOST=bench DIAL_FILE="$f"
         warn() { :; }
         ok() { :; }
@@ -437,7 +437,7 @@ echo "== the flag e2e.sh emits is one run.sh actually parses =="
 # it kills the whole harness run. Assert the handshake rather than trusting the two files agree.
 # grep '^--' so the loop reads FLAGS only: since #1378 the list also carries their VALUES
 # (--rig-host <host>, --rig-control-port <port>), and a value is not something run.sh's parser sees.
-for flag in $(printf '%s %s %s %s' "$TARGETED" "$MATRIX" "$CHECK" "$NOMINER" | tr ' ' '\n' | grep '^--' | LC_ALL=C sort -u); do
+for flag in $(printf '%s %s %s %s %s' "$TARGETED" "$MATRIX" "$FOCUSED_MATRIX" "$CHECK" "$NOMINER" | tr ' ' '\n' | grep '^--' | LC_ALL=C sort -u); do
     assert_eq "run.sh's arg parser accepts '$flag'" \
         "$(grep -cE "^[[:space:]]*(\-\-[a-z-]+ \| )*${flag}\)" "$RUN_SRC" | awk '{print ($1>0)?"yes":"no"}')" "yes"
 done

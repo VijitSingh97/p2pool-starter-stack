@@ -54,6 +54,8 @@ RUN_RIGFORGE=0
 RUN_RIGFORGE_CONTROL=0
 RUN_SUBNET=0
 RIG_HOST=""
+RIG_NAME=""
+RIGFORGE_BOOTSTRAP_VERSION=""
 RIG_CONTROL_PORT="8082"
 SAFETY_BACKUP=0
 SAFETY_ARCHIVE=""
@@ -142,30 +144,12 @@ MATRIX:
   --rigforge             also run the RigForge integration phase (#185/#235/#260): assert the
                          dashboard consumed a REAL rigforge rig's enriched feed and Worker Inspect
                          reads it. Non-destructive; self-skips if no rigforge rig is connected.
-  --rigforge-control     also run the RigForge control phase (#513/#514/#516/#517/#1002b/#1236), local
-                         mode only: with dashboard.control ON and workers.list[] populated for the
-                         borrowed rig (masked-token descriptor, #440/#506 — the box's pre-existing
-                         dashboard.workers[] alias was removed in 2.0.0, #1832, so a pre-2.0
-                         baseline is migrated to workers.list[] by this leg's apply), assert the enriched read path survives populated
-                         descriptors (#514) and the rig is editable (#508/#513), drive a reversible
-                         Worker Inspect edit end-to-end to the rig's control API on max_temp_c (#513),
-                         DONATION and watchdog_interval_min (#1236, read back from the rig's own
-                         reported config), and pools (#1002b, needs IT_RIG_POOLS_PROBE); reflect a
-                         rig-side edit back into the dashboard (#516), and record an auto-rollback
-                         (#517). autotune and watchdog are deliberately never driven — see
-                         docs/dev/integration-testing.md. Also drives the one-click RigForge upgrade
-                         (#1002a/#1237): when the dashboard offers this rig a newer release, POST it
-                         through /api/control/worker-upgrade and assert a REAL upgrade — the intent
-                         leaves the dashboard for the host runner, reaches an `applied` terminal, and
-                         the rig comes back reporting the new version; the already-up-to-date noop
-                         shortcut is then asserted on top of a precondition this run established.
-                         Not opt-in (it used to be, behind a flag no caller set); when the dashboard
-                         offers no newer release the leg self-skips with a classified reason.
-                         DESTRUCTIVE-then-restored. Needs a real rig
-                         with its control API opted in; each leg self-skips loudly without its
-                         prerequisites.
+  --rigforge-control     run the real RigForge control, reversible-write, and upgrade legs.
+                         DESTRUCTIVE-then-restored; local mode and an opted-in real rig required.
   --rig-host <h>         the borrowed rig's LAN host/IP for control dials — needed to inject a
                          workers.list[] descriptor when the box's baseline lacks one (#513/#514/#506).
+  --rig-name <name>      exact borrowed rig NAME from its protected RigForge config.
+  --rigforge-bootstrap-version <tag>  explicitly bootstrap that rig before feed-dependent checks.
   --rig-control-port <p> the rig's writable control API port (default: 8082, #185).
   --subnet               also run the moved-subnet phase (#201/#180), local mode only: bring the
                          stack DOWN then UP on a non-default network.subnet (10.84.0.0/24) — the one
@@ -304,6 +288,14 @@ parse_args() {
             RIG_HOST="$2"
             shift 2
             ;;
+        --rig-name)
+            RIG_NAME="$2"
+            shift 2
+            ;;
+        --rigforge-bootstrap-version)
+            RIGFORGE_BOOTSTRAP_VERSION="$2"
+            shift 2
+            ;;
         --rig-control-port)
             RIG_CONTROL_PORT="$2"
             shift 2
@@ -341,6 +333,18 @@ parse_args() {
 
     if [ "$IT_MODE" = "ssh" ] && [ -z "$IT_SSH_DEST" ]; then
         it_err "Provide --host <user@host> or --local. See --help."
+        exit 2
+    fi
+    [ -z "$RIG_NAME" ] || printf '%s' "$RIG_NAME" | grep -qE '^[A-Za-z0-9._-]+$' || {
+        it_err "--rig-name contains unsupported characters: $RIG_NAME"
+        exit 2
+    }
+    [ -z "$RIGFORGE_BOOTSTRAP_VERSION" ] || printf '%s' "$RIGFORGE_BOOTSTRAP_VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
+        it_err "--rigforge-bootstrap-version must be a vX.Y.Z tag."
+        exit 2
+    }
+    if [ -n "$RIGFORGE_BOOTSTRAP_VERSION" ] && [ -z "$RIG_NAME" ]; then
+        it_err "--rigforge-bootstrap-version requires --rig-name."
         exit 2
     fi
 }
@@ -1944,29 +1948,23 @@ summary() {
 }
 
 # --- RigForge integration phase (--rigforge) --------------------------------
-# The v1.5 dashboard <-> RigForge integration, validated against a REAL rig (the borrowed loaner) —
-# the one thing the tier-2 contract test (fakes/test_contract.py, #209) can't prove: that a real
-# RigForge v1.8.0 producer serves the enriched feed in the shape the dashboard consumes, and that the
-# LIVE dashboard reads it. Self-gates: if no worker exposes a rigforge enriched block (no real rig, or
-# its sister API is off), it warns and skips — it never fails the gate on a bench without a rigforge
-# rig. Non-destructive: it reads /api/state + /api/worker and checks the write path's fail-closed
-# guards; it does NOT push a config change to the borrowed rig (that stage->apply->RESTART->rollback
-# flow restarts a shared loaner and needs the rig's own control API opted in, so it's a manual runbook
-# step). Runs under the shared-bench flock like the rest of main() (rig_lock is already held).
-run_rigforge_integration() {
+# self-skips when the bench has no RigForge feed.
+run_rigforge_integration() { # [rig-name]
     # shellcheck disable=SC2034  # read by lib.sh:it_fail to label captured failures
     IT_CURRENT_SCENARIO="rigforge-integration"
     echo ""
     it_log "── RigForge integration phase (#185/#235/#260) ─────"
-    local st rig
+    local st rig="${1:-}"
     st="$(api_state)"
     if [ -z "$st" ]; then
-        it_skip_phase "rigforge-integration" "/api/state unreachable"
+        if [ -n "$rig" ]; then it_fail "dashboard state reachable for selected rig" "/api/state unreachable"; else it_skip_phase "rigforge-integration" "/api/state unreachable"; fi
         return 0
     fi
-    # A worker whose enriched rigforge block is present (version populated) = a real RigForge rig
-    # whose sister API the dashboard reached and parse_rigforge parsed (#235).
-    rig="$(printf '%s' "$st" | jq -r 'first(.workers[]? | select(.rigforge != null and .rigforge.version != null) | .name) // empty' 2>/dev/null)"
+    [ -n "$rig" ] || rig="$(printf '%s' "$st" | jq -r 'first(.workers[]? | select(.rigforge != null and .rigforge.version != null) | .name) // empty' 2>/dev/null)"
+    if [ -n "$rig" ] && ! printf '%s' "$st" | jq -e --arg n "$rig" 'any(.workers[]?; .name==$n and .rigforge.version != null)' >/dev/null 2>&1; then
+        it_fail "dashboard consumed the selected RigForge rig's enriched feed" "worker '$rig' has no enriched feed"
+        return 0
+    fi
     if [ -z "$rig" ]; then
         it_skip_phase "rigforge-integration" "no worker exposes a RigForge enriched feed (a real rigforge rig with api:enabled on :8081?); the parse contract is covered by the tier-2 test" "covered"
         return 0
@@ -2154,25 +2152,8 @@ _worker_apply() { # <worker> <changes-json>  -> echoes the dashboard result JSON
     rx "curl -fsS --max-time 60 -X POST -H 'Content-Type: application/json' -H 'X-Pithead-Control: 1' --data $(quote_arg "$body") http://127.0.0.1:8000/api/control/worker-apply" 2>/dev/null
 }
 
-# The v1.5 dashboard <-> RigForge WRITE surfaces that only a real rig with its control API opted in can
-# prove — the exact paths #508 (masked-token descriptor dropped -> not editable) and the v1.5.2
-# regression (masked sentinel stringified into the Bearer header -> :8081 probe 401) shipped through
-# because no live test drove them (#513/#514/#516/#517). With dashboard.control ON and the borrowed
-# rig pinned in workers.list[] (#506; its token seen only as the {"__secret__":true} sentinel inside
-# the container), this:
-#   #514  asserts the enriched READ path survives a populated masked descriptor (api_ok + rigforge feed)
-#   #513  asserts the rig is editable and drives a reversible Worker Inspect edit through to the rig
-#   #516  reflects a rig-side edit back into the dashboard's enriched feed + verifies the masked prefill
-#   #517  records an auto-rollback (rigforge#236) end-to-end from the dashboard
-# DESTRUCTIVE-then-restored (enables control + pins the descriptor, reverted at the end). Local mode
-# only; each leg self-skips LOUDLY without its prerequisites so a bench without the rig never fails.
-#
-# Descriptor shape (#506): workers.list[] is the only shape, and the one this leg injects. The
-# deprecated dashboard.workers[] fallback this leg used to honor as-is — cheap extra coverage of the
-# legacy read, kept "through v1.9" — was removed in 2.0.0 (#1832), so every read below resolves
-# workers.list[] alone. A box whose baseline still carries the old key is migrated in place by this
-# leg's own apply; the pre-apply probe below reads workers.list[] only, so on such a box the FIRST
-# run skips for want of a descriptor and a re-run finds the migrated one.
+# Real RigForge write coverage (#513/#514/#516/#517), destructive then restored. The only descriptor
+# shape is workers.list[]; explicit borrowed-rig inputs make missing setup a failure.
 run_rigforge_control() {
     # shellcheck disable=SC2034  # read by lib.sh:it_fail to label captured failures
     IT_CURRENT_SCENARIO="rigforge-control"
@@ -2188,27 +2169,30 @@ run_rigforge_control() {
         return 0
     fi
 
-    # A real RigForge rig must be connected + parsed into the feed (same gate as run_rigforge_integration).
-    local st rig
+    local st rig supplied=0
     st="$(api_state)"
-    rig="$(printf '%s' "$st" | jq -r 'first(.workers[]? | select(.rigforge != null and .rigforge.version != null) | .name) // empty' 2>/dev/null)"
+    rig="$RIG_NAME"
+    if [ -n "$rig" ]; then
+        supplied=1
+    else
+        rig="$(printf '%s' "$st" | jq -r 'first(.workers[]? | select(.rigforge != null and .rigforge.version != null) | .name) // empty' 2>/dev/null)"
+    fi
     if [ -z "$rig" ]; then
         it_skip_phase "rigforge-control" "no worker exposes a RigForge enriched feed — the write paths need a real rig with its :8081 API on (#513/#514/#516/#517)"
         return 0
     fi
 
-    # The write path resolves the rig's host + token from workers.list[] (#506) — the deprecated
-    # dashboard.workers[] fallback was removed in 2.0.0 (#1832). Use the baseline's descriptor if it
-    # already pins this rig's host (the live-box case); otherwise inject one into workers.list[] from
-    # --rig-host + IT_RIG_TOKEN (local-only, so the token never leaves the bench). No source for
-    # either -> skip: we won't drive an edit we can't address, nor mutate what we can't restore.
     local have_host inject=0
     have_host="$(printf '%s' "$BASELINE_CONFIG" | jq -r --arg n "$rig" 'first((.workers.list // [])[] | select(.name==$n) | .host) // empty' 2>/dev/null)"
     if [ -z "$have_host" ]; then
         if [ -n "$RIG_HOST" ] && [ -n "${IT_RIG_TOKEN:-}" ]; then
             inject=1
         else
-            it_skip_phase "rigforge-control" "rig '$rig' has no workers.list[] descriptor and no --rig-host + IT_RIG_TOKEN to inject one (#513/#514/#516/#517)"
+            if [ "$supplied" = 1 ]; then
+                it_fail "supplied rig has host/token descriptor inputs" "'$rig' lacks a descriptor and --rig-host + IT_RIG_TOKEN"
+            else
+                it_skip_phase "rigforge-control" "rig '$rig' has no workers.list[] descriptor and no --rig-host + IT_RIG_TOKEN to inject one (#513/#514/#516/#517)"
+            fi
             return 0
         fi
     fi
@@ -2226,10 +2210,6 @@ run_rigforge_control() {
             it_fail "--rig-control-port is a port number" "got [$RIG_CONTROL_PORT]"
             return 0
         fi
-        # Inject into workers.list[] (#506), the only shape since 2.0.0 removed the alias (#1832).
-        # del() stays load-bearing: it drops a stray legacy key so a pre-2.0 baseline cannot trip
-        # migrate_legacy_workers' both-set-to-different-values refusal on the apply below. The
-        # baseline is restored verbatim at the end regardless.
         ctrl_config="$(printf '%s' "$ctrl_config" | IT_RIG_TOKEN="${IT_RIG_TOKEN:-}" jq \
             --arg n "$rig" --arg h "$RIG_HOST" --argjson cp "$RIG_CONTROL_PORT" '
             del(.dashboard.workers)
@@ -2247,8 +2227,29 @@ run_rigforge_control() {
         return 0
     fi
     wait_status_ok 240 || true
-    # Let the recreated dashboard re-poll the rig so its enriched feed + descriptor state are fresh.
-    wait_for 120 5 "dashboard to re-read the rig after the control apply" _pred_rig_present "$rig" || true
+    if [ -n "$RIGFORGE_BOOTSTRAP_VERSION" ]; then
+        if ! rigforge_bootstrap "$rig" "$RIGFORGE_BOOTSTRAP_VERSION"; then
+            push_config "$BASELINE_CONFIG"
+            pithead apply -y >/dev/null 2>&1 || true
+            return 0
+        fi
+    fi
+    if ! wait_for 120 5 "dashboard to re-read the selected rig after control setup" _pred_rig_present "$rig"; then
+        if [ "$supplied" = 1 ]; then
+            it_fail "supplied rig exposes its enriched feed after control setup" "worker '$rig' never appeared"
+        else
+            it_skip_phase "rigforge-control" "worker '$rig' no longer exposes an enriched feed"
+        fi
+        push_config "$BASELINE_CONFIG"
+        pithead apply -y >/dev/null 2>&1 || true
+        return 0
+    fi
+
+    if [ "$RUN_RIGFORGE" = 1 ]; then
+        run_rigforge_integration "$rig"
+        # shellcheck disable=SC2034  # read by lib.sh:it_fail after the nested phase changes it
+        IT_CURRENT_SCENARIO="rigforge-control"
+    fi
 
     # ---- #514: the enriched READ path survives a populated (masked) descriptor ----
     # With a token in workers.list[], the container reads it ONLY as {"__secret__":true}. The
@@ -2310,7 +2311,7 @@ run_rigforge_control() {
     # ---- #1002a/#1237: the one-click upgrade path, real when the rig is behind latest ----
     # No longer opt-in. The flag it used to sit behind was set by no caller, so the gate's only
     # upgrade coverage never ran; the leg now runs every time and says which branch it took.
-    run_rigforge_upgrade "$rig"
+    [ -n "$RIGFORGE_BOOTSTRAP_VERSION" ] || run_rigforge_upgrade "$rig"
 
     [ "$IT_FAIL" -gt "$fails_before" ] && capture_artifacts "rigforge-control" "$OUT_DIR"
 
@@ -2526,12 +2527,11 @@ main() {
         done < <(scenario_matrix)
     fi
 
-    # RigForge integration (#185/#235/#260) first — it's read-only and wants the freshly-mined
-    # state with the borrowed rig connected, before the destructive phases churn the stack.
-    [ "$RUN_RIGFORGE" = "1" ] && run_rigforge_integration
-    # rigforge-control mutates config + dials the rig; run it with the read-only rigforge phase's rig
-    # still connected, before the node-breaking phases churn the stack.
-    [ "$RUN_RIGFORGE_CONTROL" = "1" ] && run_rigforge_control
+    if [ "$RUN_RIGFORGE_CONTROL" = "1" ]; then
+        run_rigforge_control
+    elif [ "$RUN_RIGFORGE" = "1" ]; then
+        run_rigforge_integration
+    fi
     [ "$RUN_LIFECYCLE" = "1" ] && run_lifecycle
     [ "$RUN_FAULTS" = "1" ] && run_fault_injection
     [ "$RUN_AUTH_FAIL_CLOSED" = "1" ] && run_auth_fail_closed
