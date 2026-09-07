@@ -95,8 +95,83 @@ provision_node_preflight_retention() { # <ip> <authenticated-cookie-jar>
     fi
 }
 
-# POST a dashboard control request and follow the existing result endpoint through a dashboard
-# restart. Preview's `previewed` is terminal; commit's is the old result waiting to be replaced.
+setup_failure_state_retained() { # <wizard-state-json> <expected-wallet>
+    printf '%s' "$1" | jq -e --arg m "$2" '
+        .stage == "setup" and (.error | type == "string" and length > 0) and
+        .config.monero.wallet_address == $m and .config.tari.mode == "local"' >/dev/null
+}
+
+# Move one required setup input so the host fails after validation, then restore it for retry.
+provision_setup_failure_recovery() { # <ip> <authenticated-cookie-jar> <old-token>
+    local ip="$1" jar="$2" old_token="$3" handoff="" state code new_token="" tries=0
+    local live=/data/pithead/docker-compose.yml backup=/run/pithead-os-1966-docker-compose.yml
+    if _ssh "test -s '$live' && test ! -e '$backup' && mv '$live' '$backup' && test ! -e '$live' && test -s '$backup'"; then
+        ok "post-validation setup fault is armed with the required Compose file absent"
+    else
+        bad "could not arm the disposable post-validation setup fault"
+        return 1
+    fi
+    code=$(provision_browser_submit "$ip" "$jar")
+    if [ "$code" = "200" ]; then
+        ok "the valid setup is accepted before the host-side fault fires"
+    else
+        _ssh "mv '$backup' '$live'" 2>/dev/null || true
+        bad "faulted setup was not accepted for host processing (HTTP ${code:-none})"
+        return 1
+    fi
+    while [ "$tries" -lt 24 ]; do
+        handoff=$(curl -sSk -b "$jar" -m 5 "https://$ip/api/handoff" 2>/dev/null)
+        printf '%s' "$handoff" | jq -e '.password' >/dev/null 2>&1 && break
+        sleep 5
+        tries=$((tries + 1))
+    done
+    if [ "$tries" -ge 24 ]; then
+        _ssh "mv '$backup' '$live'" 2>/dev/null || true
+        bad "faulted setup never reached its credentials handoff"
+        return 1
+    fi
+    if ! curl -fsSk -b "$jar" -X POST "https://$ip/handoff-ack" -o /dev/null 2>/dev/null; then
+        _ssh "mv '$backup' '$live'" 2>/dev/null || true
+        bad "faulted setup credentials could not be acknowledged"
+        return 1
+    fi
+    if ! _ssh "for i in \$(seq 60); do test -s /data/pithead/data/firstboot/error.txt && test -s '$backup' && test ! -e '$live' && exit 0; sleep 5; done; exit 1"; then
+        _ssh "mv '$backup' '$live'" 2>/dev/null || true
+        bad "the armed host setup fault never returned a recorded failure"
+        return 1
+    fi
+    if _ssh "mv '$backup' '$live' && test -s '$live' && test ! -e '$backup'"; then
+        ok "post-validation setup fault cleanup restores the exact Compose file"
+    else
+        bad "post-validation setup fault cleanup did not restore the Compose file"
+        return 1
+    fi
+    tries=0
+    while [ "$tries" -lt 40 ]; do
+        new_token=$(tr -d '\r' <"$SERIAL" | grep -oE 'pit-[A-Z0-9]{6}' | tail -1)
+        [ -n "$new_token" ] && [ "$new_token" != "$old_token" ] && break
+        sleep 3
+        tries=$((tries + 1))
+    done
+    [ "$tries" -lt 40 ] && _wait_setup_page 120 || {
+        bad "failed setup did not reopen the token-gated page"
+        return 1
+    }
+    : >"$jar"
+    curl -fsSk -c "$jar" -d "token=$new_token" "https://$ip/auth" -o /dev/null 2>/dev/null || {
+        bad "failed setup's fresh token was not accepted"
+        return 1
+    }
+    state=$(curl -sSk -b "$jar" -m 5 "https://$ip/api/wizard-state" 2>/dev/null)
+    if grep -q "wizard_session" "$jar" && setup_failure_state_retained "$state" "$HARNESS_WALLET"; then
+        ok "host setup failure reopens with a useful error and the safe values retained"
+    else
+        bad "host setup failure did not reopen a useful retained form"
+        return 1
+    fi
+}
+
+# POST a control request and follow its result through dashboard restarts.
 dashboard_curl() {
     local auth="${DASH_USER}:${DASH_PASS}"
     case "$auth" in *$'\n'* | *$'\r'*) return 1 ;; esac
@@ -250,17 +325,18 @@ _recovery_self_test() {
     ! node_preflight_state_retained "${response/\"dns\"/\"protocol\"}" "$state" wallet || return 1
     ! node_preflight_state_retained "$response" "${state/\"setup\"/\"failed\"}" wallet || return 1
     ! node_preflight_state_retained "$response" "${state/\"wallet\"/\"lost\"}" wallet || return 1
-    echo "provision-browser-submit self-test: preflight retention and failure controls passed"
+    local failed='{"stage":"setup","error":"Required Compose file is missing.","config":{"monero":{"wallet_address":"wallet"},"tari":{"mode":"local"}}}'
+    setup_failure_state_retained "$failed" wallet || return 1
+    ! setup_failure_state_retained "${failed/\"setup\"/\"failed\"}" wallet || return 1
+    ! setup_failure_state_retained "${failed/Required Compose file is missing./}" wallet || return 1
+    ! setup_failure_state_retained "${failed/\"wallet\"/\"lost\"}" wallet || return 1
+    echo "provision-browser-submit self-test: preflight/setup retention and failure controls passed"
 }
 
 # --- self-test (#1936) -----------------------------------------------------------------------
 #
-# Driven by `tests/os/provision-browser-submit.sh --self-test`, tier 1, no guest: curl is a shim
-# answering four shapes — a timeout, a 200 without .config, an HTML error page longer than the
-# 60-byte bound, a config that arrives on the third read with a blank line before the status —
-# and sleep is a no-op. Each
-# reason is asserted on the exact string the battery log will carry. The last case is the control
-# that the shim answered, not the real curl: no real read serves `.error` = x.
+# The curl shim answers timeout, no-config, HTML-error and delayed-config shapes. The last case
+# proves the shim answered: no real read serves `.error` = x.
 _wsp_case() { # <name> <got> <want>
     [ "$2" = "$3" ] && return 0
     printf '  FAIL %s: got [%s] want [%s]\n' "$1" "$2" "$3"

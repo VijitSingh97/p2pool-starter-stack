@@ -2002,8 +2002,11 @@ phase_provision() {
         rm -f "$jar"
         return
     }
-    # Prove a failed protocol preflight keeps the editable answers for a corrected submission.
     provision_node_preflight_retention "$ip" "$jar" || {
+        rm -f "$jar"
+        return
+    }
+    provision_setup_failure_recovery "$ip" "$jar" "$token" || {
         rm -f "$jar"
         return
     }
@@ -2107,7 +2110,6 @@ phase_provision() {
         return
     fi
 
-    # The appliance header has no update control unless /api/state carries os_update.
     local pv_user pv_pass
     pv_user=$(printf '%s' "$handoff_body" | jq -r '.username // "admin"' 2>/dev/null)
     pv_pass=$(printf '%s' "$handoff_body" | jq -r '.password // ""' 2>/dev/null)
