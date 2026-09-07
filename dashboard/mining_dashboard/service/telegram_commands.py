@@ -649,7 +649,7 @@ class TelegramCommandBot:
         self._poll_idle = asyncio.Event()
         self._poll_idle.set()
 
-    async def pause_for_host_approval(self):
+    async def pause_for_host_approval(self) -> bool:
         """Yield Telegram polling while the root runner verifies a configuration approval."""
         if not self.config_approval_enabled:
             return False
