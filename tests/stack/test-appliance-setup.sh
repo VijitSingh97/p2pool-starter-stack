@@ -156,6 +156,36 @@ rm -f "$RSPOOL/applied" "$RS/config.json"
 printf 'CADDY-ORIG\n' >"$RS/Caddyfile" # fixtures back to their case-1 state for the cases below
 printf 'DBDATA-ORIG\n' >"$RS/data/dashboard/dashboard.db"
 
+# Expected-member policy is shared by the wizard and carried-archive doors (#1971).
+# These are ordinary fixture files. The added note is outside the backup item list.
+RPSEED="$RS/preseed"
+mkdir "$RPSEED"
+cp "$rarchive" "$RPSEED/pithead-restore.enc"
+printf hunter2 >"$RPSEED/pithead-restore-pass"
+out=$(PITHEAD_PRESEED_DIR="$RPSEED" run_sourced "$RS" eval 'mount() { :; }; consume_preseed_restore && echo rc0')
+assert_contains "carried normal backup passes the shared member policy" "$out" rc0
+assert_eq "carried backup restores the original database" "$(cat "$RS/data/dashboard/dashboard.db")" DBDATA-ORIG
+assert_eq "carried backup consumes its passphrase" "$([ -e "$RPSEED/pithead-restore-pass" ] || echo gone)" gone
+printf 'ordinary note' >"$RS/unexpected.txt"
+printf 'BACKUP-CADDY' >"$RS/Caddyfile"
+tar -czf "$RS/unexpected.tar.gz" -C / "${RS#/}/config.json" "${RS#/}/.env" "${RS#/}/Caddyfile" "${RS#/}/unexpected.txt"
+printf 'CADDY-ORIG\n' >"$RS/Caddyfile"
+rm -f "$RS/config.json"
+cp "$RS/unexpected.tar.gz" "$RSPOOL/restore-archive"
+out=$(run_sourced "$RS" firstboot_consume_restore "$RSPOOL" 1 || echo "rc$?")
+assert_contains "wizard refuses an unexpected regular backup member" "$out" rc1
+assert_contains "member refusal identifies the backup layout" "$(cat "$RSPOOL/error.txt")" 'outside the appliance backup layout'
+assert_eq "invalid wizard backup does not surface a config" "$([ -e "$RS/config.json" ] || echo gone)" gone
+assert_eq "invalid wizard backup is not staged for installation" "$([ -e "$RCARRY/archive" ] || echo gone)" gone
+cp "$RS/unexpected.tar.gz" "$RPSEED/pithead-restore.enc"
+printf '' >"$RPSEED/pithead-restore-pass"
+out=$(PITHEAD_PRESEED_DIR="$RPSEED" run_sourced "$RS" eval 'mount() { :; }; consume_preseed_restore || echo "rc$?"' 2>&1)
+assert_contains "carried backup refuses an unexpected regular member" "$out" rc1
+assert_contains "carried member refusal identifies the backup layout" "$out" 'outside the appliance backup layout'
+assert_eq "member refusal applies no valid files beside the invalid member" "$(cat "$RS/Caddyfile")" CADDY-ORIG
+assert_eq "rejected carried backup is consumed" "$([ -e "$RPSEED/pithead-restore.enc" ] || echo gone)" gone
+rm -f "$RSPOOL/error.txt"
+
 # 2) Bad passphrase: rejected before anything is touched.
 printf 'CORRUPTED\n' >"$RS/Caddyfile"
 cp "$rarchive" "$RSPOOL/restore-archive"

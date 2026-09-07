@@ -193,17 +193,20 @@ the same "validate before mutating real state" idiom `consume_preseed_config` al
 
 1. Magic-byte format check, then a full-stream integrity verify (decrypt + `tar -tzf`) —
    identical to `stack_restore`'s own pre-flight — BEFORE anything is extracted.
-2. Extract to a `mktemp -d` staging tree, not to the real filesystem yet.
+2. Reject links, special files and members outside the appliance backup layout before
+   extracting to a private staging tree. The accepted items are `config.json`, `.env`,
+   `Caddyfile`, and the `data/{tor,dashboard,monero,tari,p2pool}` trees under the install
+   directory. Backups with custom data paths need the administrative restore workflow.
 3. Validate the staged `config.json` through the same fresh-process `parse_and_validate_config`
    call `firstboot_consume_spool` uses.
-4. Only on success: `cp -a` the whole staged tree onto `/` (config, `.env`, Caddyfile, the Tor
-   data dir, the dashboard database — never the chains, which `stack_backup` excludes by
-   default) and touch `applied` — the exact contract a typed submission leaves. The firstboot
+4. Only on success: install the accepted configuration files at mode `0600`, copy the
+   accepted data trees to their mapped destinations, and publish `applied`. Optional chain
+   data is accepted within the upload cap; normal backups exclude it. The firstboot
    loop short-circuits straight into that acceptance path; `prepare_directories` (run by the
    `setup` it feeds) unconditionally re-chowns every data dir, so restore does not need to.
 
 A rejected archive (bad passphrase, wrong format, failed integrity, unparseable config) writes
-`error.txt` and returns 1 — nothing is extracted, nothing already on disk is touched, and the
+`error.txt` and returns 1 — nothing already on disk is touched, and the
 page falls back to the form exactly like a rejected typed config. The passphrase file is deleted
 at the top of the call, accepted or not; it never outlives the attempt.
 

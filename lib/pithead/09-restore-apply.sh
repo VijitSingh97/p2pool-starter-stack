@@ -14,6 +14,33 @@
 # shell suite can run this without root's /run.
 restore_carry_dir() { printf '%s' "${PITHEAD_RESTORE_CARRY_DIR:-/run/pithead-restore}"; }
 
+# Setup accepts the appliance backup layout, never arbitrary host paths from an archive.
+# Trailing slashes name data trees; other entries name individual files. Keep the same list
+# for membership checks and application so a newly accepted item cannot escape the mapping.
+restore_setup_items() {
+    printf '%s\n' "$PWD/$CONFIG_FILE" "$PWD/$ENV_FILE" "$PWD/Caddyfile" \
+        "$PWD/data/tor/" "$PWD/data/dashboard/" "$PWD/data/monero/" \
+        "$PWD/data/tari/" "$PWD/data/p2pool/"
+}
+
+restore_setup_members() { # <tar name listing>
+    local member item accepted
+    while IFS= read -r member; do
+        case "$member" in '' | /* | *\\* | . | ./* | */./* | */. | *//* | ../* | */../* | */..) return 1 ;; esac
+        member="${member%/}"
+        accepted=0
+        while IFS= read -r item; do
+            item="${item#/}"
+            if [[ "$item" = */ ]]; then
+                [[ "$member" = "${item%/}" || "$member" = "$item"* ]] && accepted=1
+            elif [ "$member" = "$item" ]; then
+                accepted=1
+            fi
+        done < <(restore_setup_items)
+        [ "$accepted" = 1 ] || return 1
+    done <<<"$1"
+}
+
 # The whole restore acceptance, shared by its two doors — the wizard's spool channel
 # (firstboot_consume_restore) and the installer-carried ESP pre-seed (consume_preseed_restore):
 # size cap, encryption detection, decrypt verification, tar integrity, path-safety audit,
@@ -86,8 +113,13 @@ restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
         rlinks=$(tar -tvzf "$archive" 2>/dev/null)
     fi
     if printf '%s\n' "$rnames" | grep -qE '^/|(^|/)\.\.(/|$)' ||
-        printf '%s\n' "$rlinks" | grep -qE '^l| -> | link to '; then
+        printf '%s\n' "$rlinks" | grep -qvE '^[-d]'; then
         printf 'archive contains unsafe paths or links — refusing to restore' >"$errf"
+        return 1
+    fi
+
+    if ! restore_setup_members "$rnames"; then
+        printf 'archive contains files outside the appliance backup layout — refusing to restore' >"$errf"
         return 1
     fi
 
@@ -126,12 +158,29 @@ restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
         rm -rf "$tmp"
         return 0
     fi
-    # Commit: everything the archive carried (config.json, .env, Caddyfile, the Tor data dir,
-    # the dashboard database) lands at its real absolute path in one move — the same
-    # destination `tar -xzf archive -C /` would use directly, just proven safe first.
-    # prepare_directories (run by the `setup` this feeds) unconditionally re-chowns every data
-    # dir afterwards, so ownership here does not need fixing up by hand.
-    cp -a "$tmp"/. /
+    # Apply only the accepted files/data trees. Do not copy staging's ancestor directories
+    # onto /: their metadata is not part of the backup contract.
+    local item source copy_failed=0
+    while IFS= read -r item; do
+        source="$tmp/${item#/}"
+        [ -e "$source" ] || continue
+        if [[ "$item" = */ ]]; then
+            mkdir -p "$item" && cp -a "$source". "$item" || {
+                copy_failed=1
+                break
+            }
+        else
+            install -m 600 "$source" "$item" || {
+                copy_failed=1
+                break
+            }
+        fi
+    done < <(restore_setup_items)
+    if [ "$copy_failed" = 1 ]; then
+        rm -rf "$tmp"
+        printf 'could not apply the backup files' >"$errf"
+        return 1
+    fi
     rm -rf "$tmp"
     # #1239 (live KVM guest evidence): the archive's .env is the SOURCE machine's own —
     # DEPLOYMENT_COMPLETED=true there records THAT machine's prior deployment, not this
