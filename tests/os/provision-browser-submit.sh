@@ -168,11 +168,15 @@ phase_provision_control_regressions() { # <dashboard-user> <dashboard-password>
 
     live=$(dashboard_curl -fsSk -m 8 "https://$ip/api/config" 2>/dev/null) || return
     old=$(printf '%s' "$live" | jq -r '.monero.out_peers // 48')
-    case "$old" in *[!0-9]* | "")
-        bad "post-provision approved setting returned a non-numeric current value"
+    case "$old" in *[!0-9]* | "" | ?????*)
+        bad "post-provision approved setting returned an unsafe current value"
         return
         ;;
     esac
+    if [ "$old" -lt 1 ] || [ "$old" -gt 1024 ]; then
+        bad "post-provision approved setting returned an out-of-range current value"
+        return
+    fi
     [ "$old" -lt 1024 ] && peers=$((old + 1)) || peers=$((old - 1))
     proposed=$(printf '%s' "$live" | jq -c --argjson peers "$peers" '.monero.out_peers = $peers')
     preview=$(dashboard_control_request preview "$(jq -nc --argjson config "$proposed" '{config:$config}')")
