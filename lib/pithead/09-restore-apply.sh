@@ -154,42 +154,40 @@ restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
     return 0
 }
 
-firstboot_consume_restore() { # <spool-dir> [<installer 0|1>]
-    local spool="$1" installer="${2:-0}" archive="$1/restore-archive" passfile="$1/restore-passphrase"
-    local pass=""
-    [ -f "$archive" ] || return 2
-    { set +x; } 2>/dev/null # xtrace would print the passphrase below
-    pass=$(cat "$passfile" 2>/dev/null || true)
-    rm -f "$passfile" # never persisted in the spool beyond this attempt, accepted or not
-
+firstboot_consume_restore() ( # <spool-dir> [<installer 0|1>]
+    local spool="$1" installer="${2:-0}" archive pass_snap="" pass="" rc=0 errf
+    archive=$(wizard_spool_request "$spool" restore-archive "$RESTORE_MAX_BYTES") || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+    errf="${archive%/*}/error"
+    trap 'rm -f "$errf"; wizard_spool_clean "${archive%/*}"; [ -z "$pass_snap" ] || wizard_spool_clean "${pass_snap%/*}"' EXIT
+    { set +x; } 2>/dev/null
+    pass_snap=$(wizard_spool_snapshot "$spool" restore-passphrase 4096) || rc=$?
+    rm -f "$spool/restore-passphrase" "$spool/restore-archive"
+    if [ "$rc" = 0 ]; then
+        pass=$(cat "$pass_snap")
+    elif [ "$rc" != 2 ]; then
+        wizard_spool_publish "$spool" error.txt printf '%s' 'Unsafe restore passphrase file — submit again.'
+        return 1
+    fi
+    # Error text is private too: restore_apply never receives a page-writable path.
+    umask 077
     if [ "$installer" -eq 1 ]; then
-        # Installer boot: validate and surface the config for the card, but the restored TREE
-        # belongs to the TARGET — decrypted keys must never rest on the stick. The accepted
-        # archive and its passphrase park in tmpfs for the ESP carry the install branch stages.
-        if ! restore_apply "$archive" "$pass" "$spool/error.txt" "$PWD/config.json"; then
-            pass=""
-            rm -f "$archive"
+        if ! restore_apply "$archive" "$pass" "$errf" "$PWD/config.json"; then
+            wizard_spool_publish "$spool" error.txt cat "$errf"
             return 1
         fi
         local carry
         carry=$(restore_carry_dir)
         (umask 077 && mkdir -p "$carry" &&
-            mv "$archive" "$carry/archive" &&
+            mv -fT "$archive" "$carry/archive" &&
             printf '%s' "$pass" >"$carry/pass") || {
-            pass=""
-            printf 'could not stage the restore for the install' >"$spool/error.txt"
-            rm -rf "$carry" "$archive" "$PWD/config.json"
+            wizard_spool_publish "$spool" error.txt printf '%s' 'could not stage the restore for the install'
+            rm -rf "$carry" "$PWD/config.json"
             return 1
         }
-        pass=""
-        touch "$spool/applied"
-        return 0
+    elif ! restore_apply "$archive" "$pass" "$errf"; then
+        wizard_spool_publish "$spool" error.txt cat "$errf"
+        return 1
     fi
-    local rrc=0
-    restore_apply "$archive" "$pass" "$spool/error.txt" || rrc=1
-    pass=""
-    rm -f "$archive"
-    [ "$rrc" -eq 0 ] || return 1
-    touch "$spool/applied"
-    return 0
-}
+    wizard_spool_publish "$spool" applied true
+)

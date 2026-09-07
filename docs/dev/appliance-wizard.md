@@ -407,3 +407,25 @@ The orchestration row is the one that was missing. pytest proved the endpoint pu
 credentials; a render probe proved the card renders given them; nothing proved the app *asked*.
 When adding a step, cover it at the layer that owns the promise **and** at the seam to the next
 one.
+
+## Host and page spool files
+
+The host owns the wizard spool directory (`root:1000`, mode `1770`). The page
+runs as UID/GID 1000. Host publishers create a private temporary directory, write
+mode-0600 files there, and rename completed files into the spool. TLS files,
+schema, inventories, saved role and the credentials card remain `root:1000` at
+mode `0640`. The page can read these files but cannot replace them.
+
+`error.txt`, `last-attempt.json` and `installing` belong to UID/GID 1000 at mode
+`0600` after publication. The page removes or replaces them during retry. Full
+configuration snapshots can contain credentials; they receive the same private
+creation as the credentials card. No host writer opens these published paths for
+writing or changes their ownership after publication.
+
+Host consumers pin a request without following links, reject nonregular files
+and existing hard links, and copy accepted bytes into a private inode before
+validation. Parsing and application use that copy. The page can still replace its
+request or hold its original inode open; neither changes the validated copy.
+The shared helpers live in `lib/pithead/11a-wizard-spool.sh`. The shell boundary
+suite exercises hostile entries, replacement, private creation and the real root
+and page permissions. The integrated KVM battery checks boot and browser setup.
