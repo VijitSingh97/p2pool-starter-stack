@@ -5,11 +5,9 @@ NODE_PROBE_REASON=""
 
 remote_node_ip_allowed() { # <ip> <firewall-enabled>
     local ip="$1" firewall="$2" a b
-    if [[ "$ip" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-        a=${BASH_REMATCH[1]}
-        b=${BASH_REMATCH[2]}
-        case "$a.$b" in 0.* | 127.* | 169.254) return 1 ;; esac
-        [ "$a" -lt 224 ] || return 1
+    if _is_canonical_ipv4 "$ip"; then
+        _ipv4_is_sensitive "$ip" && return 1
+        IFS=. read -r a b _ _ <<<"$ip"
         [ "$firewall" = false ] && return 0
         case "$a.$b" in
         10.* | 192.168) return 0 ;;
@@ -19,14 +17,15 @@ remote_node_ip_allowed() { # <ip> <firewall-enabled>
         esac
         return
     fi
+    _is_ipv6_literal "$ip" || return 1
+    _ipv6_is_sensitive "$ip" && return 1
     [ "$firewall" = false ] || return 1
-    case "${ip,,}" in :: | ::1 | fe[89ab]* | ff*) return 1 ;; esac
-    [[ "$ip" == *:* ]]
+    case "${ip,,}" in 2*:* | 3*:* | fc*:* | fd*:*) return 0 ;; *) return 1 ;; esac
 }
 
 remote_node_address() { # <config-file> <host>; prints one address approved for every probe
     local cfg="$1" host="$2" firewall resolved ip first=""
-    firewall=$(jq -r '.network.tor_egress_firewall // true' "$cfg")
+    firewall=$(config_bool '.network.tor_egress_firewall' true "$cfg")
     resolved=$(_resolve_host_ips "$host") || return 1
     [ -n "$resolved" ] || return 1
     while IFS= read -r ip; do
@@ -75,6 +74,7 @@ zmq_endpoint_is_publisher() { # <host> <port>
         exec 3<>/dev/tcp/"$0"/"$1" 2>/dev/null || exit 1
         { printf "\xff\x00\x00\x00\x00\x00\x00\x00\x00\x7f\x03\x01NULL"; head -c 48 /dev/zero; } >&3
         g=$(head -c 64 <&3 | od -An -v -tx1 | tr -d " \n")
+        [ ${#g} -eq 128 ] && [ "${g:0:2}" = ff ] && [ "${g:18:2}" = 7f ] && [ $((16#${g:20:2})) -ge 3 ] || { printf "%s\n" "$g"; exit 2; }
         printf "\x04\x19\x05READY\x0bSocket-Type\x00\x00\x00\x03SUB" >&3
         h=$(head -c 2 <&3 | od -An -v -tx1 | tr -d " \n")
         [ ${#h} -eq 4 ] && [ $((16#${h:0:2} & 2)) -eq 0 ] || exit 2
@@ -82,7 +82,7 @@ zmq_endpoint_is_publisher() { # <host> <port>
         printf "%s\n%s%s" "$g" "$h" "$b"' "$1" "$2" 2>/dev/null) || rc=$?
     greeting=${reply%%$'\n'*}
     ready=${reply#*$'\n'}
-    case "$rc" in 0) NODE_PROBE_REASON=protocol ;; 124) NODE_PROBE_REASON=timeout ;; *) NODE_PROBE_REASON=refused ;; esac
+    case "$rc" in 0 | 2) NODE_PROBE_REASON=protocol ;; 124) NODE_PROBE_REASON=timeout ;; *) NODE_PROBE_REASON=refused ;; esac
     [ "$rc" -eq 0 ] && zmq_greeting_ok "$greeting" && zmq_ready_is_publisher "$ready" || return 1
     NODE_PROBE_REASON=ok
 }

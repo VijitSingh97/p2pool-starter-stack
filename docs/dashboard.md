@@ -1053,14 +1053,16 @@ own approval.
 A node-endpoint change is the one confirm-gated setting with a second gate behind the typed
 `APPLY`: before the commit is accepted, the host dials the endpoint you staged and refuses one it
 cannot reach, reporting which check failed
-([#1889](https://github.com/p2pool-starter-stack/pithead/issues/1889)) — a TCP connect on each
-port, and for Monero's ZMQ port a protocol greeting, because a published container port with no
-publisher behind it answers a reachability check exactly like a live node does. The probe runs on
-the staged config, host-side, and only when an endpoint key actually changed, so an unrelated
-commit is never held up by a node that happens to be down. It is what makes the endpoints
-committable at all: the typed token is friction, but the probe means a dashboard cannot park a
-chain on a node that is not there. Remote node credentials can also be changed through approval,
-but their secret values stay masked in the browser, preview, result, and audit trail.
+([#1889](https://github.com/p2pool-starter-stack/pithead/issues/1889)). The host resolves once and
+requires every answer to satisfy `network.tor_egress_firewall`, then reuses one address for each
+check. Monero RPC must return a bounded, usable `get_info` response with the configured Digest
+login; ZMQ must complete a ZMTP READY exchange and advertise PUB or XPUB. Tari gets a bounded TCP
+connect because the host CLI ships no gRPC client. The probe runs on the staged config, host-side,
+and only when an endpoint key actually changed, so an unrelated commit is never held up by a node
+that happens to be down. It is what makes the endpoints committable at all: the typed token is
+friction, but the probe means a dashboard cannot park a chain on a node that is not there. Remote
+node credentials can also be changed through approval, but their secret values stay masked in the
+browser, preview, result, and audit trail.
 
 On an appliance a refusal never tells you to open a shell you do not have: where a DIY host is
 told to edit `config.json` and run `./pithead apply`, the appliance is told the setting is fixed at

@@ -133,6 +133,22 @@ run_sourced "$PFSB" remote_node_ip_allowed 8.8.8.8 true
 assert_rc "default Tor-egress policy refuses a public node address" "$?" "1"
 run_sourced "$PFSB" remote_node_ip_allowed 192.168.50.8 true
 assert_rc "default Tor-egress policy accepts a LAN node address" "$?" "0"
+run_sourced "$PFSB" remote_node_ip_allowed 8.8.8.8 false
+assert_rc "an explicit Tor-egress opt-out accepts a public node address" "$?" "0"
+run_sourced "$PFSB" remote_node_ip_allowed ::ffff:127.0.0.1 false
+assert_rc "an IPv4-mapped loopback address is always refused" "$?" "1"
+run_sourced "$PFSB" remote_node_ip_allowed 100::1 false
+assert_rc "a reserved IPv6 address is always refused" "$?" "1"
+out=$(
+    cd "$PFSB" || exit
+    # shellcheck disable=SC1090
+    source "$STACK"
+    set +e
+    timeout() { return 2; }
+    zmq_endpoint_is_publisher 192.168.50.8 18083
+    printf '%s' "$NODE_PROBE_REASON"
+)
+assert_eq "a malformed ZMQ exchange is a protocol failure" "$out" "protocol"
 out=$(
     cd "$PFSB" || exit
     # shellcheck disable=SC1090
