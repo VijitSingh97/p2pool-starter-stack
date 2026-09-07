@@ -184,12 +184,11 @@ dashboard_curl() {
     case "$auth" in *$'\n'* | *$'\r'*) return 1 ;; esac
     auth=${auth//\\/\\\\}
     auth=${auth//\"/\\\"}
-    printf 'user = "%s"\n' "$auth" | curl --config - "$@"
+    curl --config <(printf 'user = "%s"\n' "$auth") "$@"
 }
 dashboard_control_request() { # <route> <json-body> [deadline-seconds]
     local route="$1" body="$2" deadline=$(($(date +%s) + ${3:-240})) out rid status
-    out=$(dashboard_curl -sSk -m 8 -H 'Content-Type: application/json' \
-        -H 'X-Pithead-Control: 1' --data "$body" "https://$ip/api/control/$route" 2>/dev/null)
+    out=$(dashboard_control_post "$route" "$body") || return
     rid=$(printf '%s' "$out" | jq -r '.id // ""' 2>/dev/null)
     [ -n "$rid" ] || return 1
     while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -218,7 +217,7 @@ phase_provision_control_regressions() { # <dashboard-user> <dashboard-password>
     }
 
     proposed=$(printf '%s' "$live" | jq -c '.dashboard.energy.cost_per_kwh = 0.17')
-    preview=$(dashboard_control_request preview "$(jq -nc --argjson config "$proposed" '{config:$config}')")
+    preview=$(dashboard_control_request preview "$(dashboard_config_body "$proposed")")
     if printf '%s' "$preview" | jq -e '.status == "previewed" and .destructive == false and any(.changes[]; .flag == "INFO")' >/dev/null; then
         ok "post-provision benign setting previews as an ordinary committable change"
     else
@@ -248,7 +247,7 @@ phase_provision_control_regressions() { # <dashboard-user> <dashboard-password>
     fi
     [ "$old" -lt 1024 ] && peers=$((old + 1)) || peers=$((old - 1))
     proposed=$(printf '%s' "$live" | jq -c --argjson peers "$peers" '.monero.out_peers = $peers')
-    preview=$(dashboard_control_request preview "$(jq -nc --argjson config "$proposed" '{config:$config}')")
+    preview=$(dashboard_control_request preview "$(dashboard_config_body "$proposed")")
     if printf '%s' "$preview" | jq -e '.status == "previewed" and .destructive == true and any(.changes[]; .flag == "CONFIRM")' >/dev/null; then
         ok "post-provision disruptive setting previews behind typed approval"
     else
@@ -263,7 +262,7 @@ phase_provision_control_regressions() { # <dashboard-user> <dashboard-password>
         bad "post-provision disruptive apply crossed the approval gate without APPLY"
         return
     fi
-    preview=$(dashboard_control_request preview "$(jq -nc --argjson config "$proposed" '{config:$config}')")
+    preview=$(dashboard_control_request preview "$(dashboard_config_body "$proposed")")
     rid=$(printf '%s' "$preview" | jq -r '.id')
     result=$(dashboard_control_request commit "$(jq -nc --arg id "$rid" '{id:$id,confirm:"APPLY"}')")
     if printf '%s' "$result" | jq -e '.status == "applied"' >/dev/null &&
@@ -276,7 +275,7 @@ phase_provision_control_regressions() { # <dashboard-user> <dashboard-password>
     fi
     proposed=$(dashboard_curl -fsSk -m 8 "https://$ip/api/config" 2>/dev/null |
         jq -c --argjson old "$old" '.monero.out_peers = $old')
-    preview=$(dashboard_control_request preview "$(jq -nc --argjson config "$proposed" '{config:$config}')")
+    preview=$(dashboard_control_request preview "$(dashboard_config_body "$proposed")")
     rid=$(printf '%s' "$preview" | jq -r '.id')
     result=$(dashboard_control_request commit "$(jq -nc --arg id "$rid" '{id:$id,confirm:"APPLY"}')")
     printf '%s' "$result" | jq -e '.status == "applied"' >/dev/null || bad "post-provision approved-setting cleanup failed"

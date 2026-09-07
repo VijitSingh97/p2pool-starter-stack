@@ -402,21 +402,21 @@ vm_destroy() {
     virsh undefine "$VM" --nvram >/dev/null 2>&1 || true
 }
 cleanup() {
-    declare -F approval_fixture_disarm >/dev/null && approval_fixture_disarm
-    # Preserve the console on failure. It is deleted with everything else on a green run, which
-    # meant the one artefact that explains a boot failure was destroyed by the failure itself.
+    local approval_cleanup_rc=0
+    declare -F approval_fixture_cleanup >/dev/null && approval_fixture_cleanup || approval_cleanup_rc=$?
+    # Preserve the console on failure; an at-assertion no-clobber copy remains authoritative.
     if [ "$FAIL" -gt 0 ] && [ -s "$SERIAL" ] && [ ! -f "$SERIAL.failed" ]; then
-        # No-clobber: an assertion that copied the console AT the failure got it before later
-        # boots truncated $SERIAL — this end-of-phase copy would replace it with the wrong boot.
         cp "$SERIAL" "$SERIAL.failed" 2>/dev/null &&
             info "console from the failed run kept at $SERIAL.failed"
     fi
     if [ "$KEEP" -eq 1 ]; then
         info "left VM '$VM' and $DISK in place (--keep)"
+        [ "$approval_cleanup_rc" -eq 0 ] || exit "$approval_cleanup_rc"
         return
     fi
     vm_destroy
     rm -f "$DISK" "$SERIAL" "$SSH_ERR"
+    [ "$approval_cleanup_rc" -eq 0 ] || exit "$approval_cleanup_rc"
 }
 trap cleanup EXIT
 # Wait until the serial log matches a pattern, or time out. $1 pattern, $2 seconds.

@@ -110,11 +110,13 @@ The provision phase's remote-node consumer row is mandatory and takes reserved, 
 nodes from `PITHEAD_OS_MONERO_NODE_HOST`, `PITHEAD_OS_MONERO_RPC_PORT`,
 `PITHEAD_OS_MONERO_ZMQ_PORT`, `PITHEAD_OS_TARI_NODE_HOST`, and
 `PITHEAD_OS_TARI_GRPC_PORT`. `PITHEAD_OS_MONERO_NODE_USERNAME` and
-`PITHEAD_OS_MONERO_NODE_PASSWORD` may be empty when the test node allows it. Supply these to the
+`PITHEAD_OS_MONERO_NODE_PASSWORD` may be empty when the test node allows it; when supplied they
+must be disposable test-only credentials, never an operator credential. Supply these to the
 root-run battery without overriding `HOME`. The row requires the host preflight and fake
-second-identity approval to succeed, reads p2pool's current startup through the existing
-`uses chain_id` verdict, then restores the original local-node configuration. Missing node inputs
-are a counted failure, never a skipped release gate.
+second-identity approval to succeed, checks the current p2pool container's narrowly extracted
+Monero and Tari endpoints, and binds the current-startup `uses chain_id` verdict to that Tari
+endpoint (or its documented SOCKS loopback bridge). It then restores the original local-node
+configuration. Missing node inputs are a counted failure, never a skipped release gate.
 
 ## Static verification
 

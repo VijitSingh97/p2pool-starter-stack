@@ -374,10 +374,13 @@ to self-approve disruptive changes.
 The automated battery first keeps the stable `monero.out_peers` `CONFIRM` round trip, then drives
 the sensitive path with fake test-only Telegram identifiers. Its transport recognizes only the
 fake approval calls and cannot fall through to the real provider. It proves missing and wrong
-identities stay refused, the host-generated preview and allow-listed callback bind the commit,
+identities stay refused, the host-generated preview and allow-listed callback bind the exact
+prompt text and commit,
 and a dashboard password remains physical-presence-only. With the reserved-node environment
-inputs, it requires the real host preflight, rendered endpoints, p2pool's current-startup
-`uses chain_id` round trip, and restoration of the original local-node config. The payout-address
+inputs, it requires the real host preflight, rendered endpoints, the current p2pool container's
+narrowly extracted endpoints, an endpoint-bound current-startup `uses chain_id` round trip, and
+root-side restoration from a mode-600 raw snapshot. Reserved-node credentials must be disposable
+test values. The payout-address
 confirmation and a real human Telegram click remain manual M16 evidence.
 
 RC1 addendum, still manual after the automated rows run:
