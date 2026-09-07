@@ -66,10 +66,10 @@ wizard_spool_snapshot() ( # <spool-dir> <name> [max-bytes] -> private snapshot p
     owner=$(stat -c '%u' "$tmp/input")
     [ "$owner" = "$(id -u)" ] || [ "$owner" = 1000 ] || return 1
     size=$(stat -c '%s' "$tmp/input")
-    [ "$size" -le "$limit" ] || return 1
+    [ "$size" -le "$limit" ] || return 3
     umask 077
     head -c "$((limit + 1))" -- "$tmp/input" >"$tmp/value" || return 1
-    [ "$(stat -c '%s' "$tmp/value")" -le "$limit" ] || return 1
+    [ "$(stat -c '%s' "$tmp/value")" -le "$limit" ] || return 3
     rm -f -- "$tmp/input"
     trap - EXIT
     printf '%s\n' "$tmp/value"
@@ -94,9 +94,13 @@ wizard_spool_request() { # <spool-dir> <name> [max-bytes] -> snapshot
     snap=$(wizard_spool_snapshot "$@") || rc=$?
     if [ "$rc" = 0 ]; then
         printf '%s\n' "$snap"
-    elif [ "$rc" = 1 ]; then
+    elif [ "$rc" = 1 ] || [ "$rc" = 3 ]; then
         rm -f -- "$1/$2" 2>/dev/null || true
-        wizard_spool_publish "$1" error.txt printf '%s' 'Unsafe setup submission — submit the settings again.'
+        if [ "$rc" = 3 ]; then
+            wizard_spool_publish "$1" error.txt printf '%s' 'Setup submission is too large — use a smaller file and submit again.'
+        else
+            wizard_spool_publish "$1" error.txt printf '%s' 'Unsafe setup submission — submit the settings again.'
+        fi
         return 1
     else
         return "$rc"

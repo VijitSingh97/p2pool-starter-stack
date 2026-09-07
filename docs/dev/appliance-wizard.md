@@ -429,3 +429,9 @@ request or hold its original inode open; neither changes the validated copy.
 The shared helpers live in `lib/pithead/11a-wizard-spool.sh`. The shell boundary
 suite exercises hostile entries, replacement, private creation and the real root
 and page permissions. The integrated KVM battery checks boot and browser setup.
+
+A new installer session clears saved configuration, disk selection, authentication
+choice and change notices from the previous machine. Retry re-staging keeps those
+files for the current attempt. The bare reinstall path enforces its keep-only
+policy on the consumed request. Oversize or unsafe restore submissions consume
+the submitted passphrase when rejected.

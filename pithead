@@ -1989,12 +1989,14 @@ firstboot_consume_rig() ( # <spool-dir>
     worker=$(jq -r '.worker // ""' "$req" 2>/dev/null | tr -d '[:cntrl:]')
     host="${pool%:*}"
     port="${pool##*:}"
-    if [ -z "$host" ] || [ "$host" = "$pool" ] || ! [[ "$port" =~ ^[0-9]+$ ]]; then
+    host="${host#\[}"
+    host="${host%\]}"
+    if [ "$host" = "$pool" ] || ! is_valid_host "$host" || ! is_valid_port "$port"; then
         printf 'the pool address must look like host:port — a Pithead answers on port 3333' | wizard_spool_publish "$spool" error.txt cat
         rm -f "$spool/rig-request.json"
         return 1
     fi
-    if ! timeout 5 bash -c "</dev/tcp/$host/$port" 2>/dev/null; then
+    if ! timeout 5 bash -c '</dev/tcp/"$1"/"$2"' _ "$host" "$port" 2>/dev/null; then
         printf 'cannot reach a pool at %s:%s — check the address, and that the Pithead is up' "$host" "$port" | wizard_spool_publish "$spool" error.txt cat
         rm -f "$spool/rig-request.json"
         return 1
@@ -2179,7 +2181,10 @@ restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
 firstboot_consume_restore() ( # <spool-dir> [<installer 0|1>]
     local spool="$1" installer="${2:-0}" archive pass_snap="" pass="" rc=0 errf
     archive=$(wizard_spool_request "$spool" restore-archive "$RESTORE_MAX_BYTES") || rc=$?
-    [ "$rc" = 0 ] || return "$rc"
+    if [ "$rc" != 0 ]; then
+        [ "$rc" = 2 ] || rm -f "$spool/restore-passphrase"
+        return "$rc"
+    fi
     errf="${archive%/*}/error"
     trap 'rm -f "$errf"; wizard_spool_clean "${archive%/*}"; [ -z "$pass_snap" ] || wizard_spool_clean "${pass_snap%/*}"' EXIT
     { set +x; } 2>/dev/null
@@ -2519,7 +2524,7 @@ preflight_remote_nodes() { # <config-file>
 # the wizard's combined submit; both fields are re-validated HERE because they arrive through
 # a web form — the disk against the inventory this host published, the wipe mode against the
 # fixed set. The container asks, the host decides.
-consume_install_request() ( # <spool-dir>
+consume_install_request() ( # <spool-dir> [required-wipe]
     local spool="$1" req="$1/install-request" target wipe err
     local snap rc=0
     snap=$(wizard_spool_request "$spool" install-request) || rc=$?
@@ -2530,6 +2535,12 @@ consume_install_request() ( # <spool-dir>
     wipe=$(cut -f2 <"$req" | tr -dc 'a-z')
     rm -f "$spool/install-request"
     case "$wipe" in keep | data | all) ;; *) wipe="keep" ;; esac
+    # The bare-reinstall door may only preserve data, even if the page replaces its request
+    # after that door's readiness check. Enforce the policy on THIS consumed snapshot.
+    if [ -n "${2:-}" ] && [ "$wipe" != "$2" ]; then
+        wizard_spool_publish "$spool" error.txt printf '%s' 'The install request changed — submit the settings again.'
+        return 1
+    fi
     if ! "$(install_bin)" --list 2>/dev/null | cut -f1 | grep -qx "$target"; then
         printf 'not an offered target: %s' "$target" | wizard_spool_publish "$spool" error.txt cat
         return 1
@@ -2715,10 +2726,10 @@ wizard_spool_snapshot() ( # <spool-dir> <name> [max-bytes] -> private snapshot p
     owner=$(stat -c '%u' "$tmp/input")
     [ "$owner" = "$(id -u)" ] || [ "$owner" = 1000 ] || return 1
     size=$(stat -c '%s' "$tmp/input")
-    [ "$size" -le "$limit" ] || return 1
+    [ "$size" -le "$limit" ] || return 3
     umask 077
     head -c "$((limit + 1))" -- "$tmp/input" >"$tmp/value" || return 1
-    [ "$(stat -c '%s' "$tmp/value")" -le "$limit" ] || return 1
+    [ "$(stat -c '%s' "$tmp/value")" -le "$limit" ] || return 3
     rm -f -- "$tmp/input"
     trap - EXIT
     printf '%s\n' "$tmp/value"
@@ -2743,9 +2754,13 @@ wizard_spool_request() { # <spool-dir> <name> [max-bytes] -> snapshot
     snap=$(wizard_spool_snapshot "$@") || rc=$?
     if [ "$rc" = 0 ]; then
         printf '%s\n' "$snap"
-    elif [ "$rc" = 1 ]; then
+    elif [ "$rc" = 1 ] || [ "$rc" = 3 ]; then
         rm -f -- "$1/$2" 2>/dev/null || true
-        wizard_spool_publish "$1" error.txt printf '%s' 'Unsafe setup submission — submit the settings again.'
+        if [ "$rc" = 3 ]; then
+            wizard_spool_publish "$1" error.txt printf '%s' 'Setup submission is too large — use a smaller file and submit again.'
+        else
+            wizard_spool_publish "$1" error.txt printf '%s' 'Unsafe setup submission — submit the settings again.'
+        fi
         return 1
     else
         return "$rc"
@@ -2908,7 +2923,8 @@ firstboot_wizard() {
         # The pre-fill is derived fresh every boot, never inherited: the stick's spool
         # survives between machines, and machine 2 must not open on machine 1's answers —
         # the same staleness rule the per-session flow-marker clear below enforces.
-        rm -f "$spool/last-attempt.json"
+        rm -f "$spool/last-attempt.json" "$spool/install-attempt.json" \
+            "$spool/auth-mode" "$spool/config-changes.json"
         if [ "$operator_preseed" -eq 1 ] && wizard_spool_publish "$spool" last-attempt.json jq -c . "$PRESEED_DIR/pithead-config.json" 2>/dev/null; then
             log "Pre-seeded configuration found — the page opens with it filled in."
         elif prefill_from_previous_install "$spool"; then
@@ -3016,7 +3032,7 @@ firstboot_wizard() {
                 [ ! -e "$spool/restore-archive" ] && [ ! -L "$spool/restore-archive" ]; then
                 wizard_install_begin "$spool"
                 local irc=0
-                consume_install_request "$spool" || irc=$?
+                consume_install_request "$spool" keep || irc=$?
                 if [ "$irc" -ne 0 ]; then
                     rm -f "$spool/installing"
                     wizard_install_failed_page "$spool" "Reinstall"

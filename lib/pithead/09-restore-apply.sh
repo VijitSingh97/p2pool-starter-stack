@@ -157,7 +157,10 @@ restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
 firstboot_consume_restore() ( # <spool-dir> [<installer 0|1>]
     local spool="$1" installer="${2:-0}" archive pass_snap="" pass="" rc=0 errf
     archive=$(wizard_spool_request "$spool" restore-archive "$RESTORE_MAX_BYTES") || rc=$?
-    [ "$rc" = 0 ] || return "$rc"
+    if [ "$rc" != 0 ]; then
+        [ "$rc" = 2 ] || rm -f "$spool/restore-passphrase"
+        return "$rc"
+    fi
     errf="${archive%/*}/error"
     trap 'rm -f "$errf"; wizard_spool_clean "${archive%/*}"; [ -z "$pass_snap" ] || wizard_spool_clean "${pass_snap%/*}"' EXIT
     { set +x; } 2>/dev/null

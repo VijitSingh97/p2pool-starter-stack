@@ -303,7 +303,7 @@ preflight_remote_nodes() { # <config-file>
 # the wizard's combined submit; both fields are re-validated HERE because they arrive through
 # a web form — the disk against the inventory this host published, the wipe mode against the
 # fixed set. The container asks, the host decides.
-consume_install_request() ( # <spool-dir>
+consume_install_request() ( # <spool-dir> [required-wipe]
     local spool="$1" req="$1/install-request" target wipe err
     local snap rc=0
     snap=$(wizard_spool_request "$spool" install-request) || rc=$?
@@ -314,6 +314,12 @@ consume_install_request() ( # <spool-dir>
     wipe=$(cut -f2 <"$req" | tr -dc 'a-z')
     rm -f "$spool/install-request"
     case "$wipe" in keep | data | all) ;; *) wipe="keep" ;; esac
+    # The bare-reinstall door may only preserve data, even if the page replaces its request
+    # after that door's readiness check. Enforce the policy on THIS consumed snapshot.
+    if [ -n "${2:-}" ] && [ "$wipe" != "$2" ]; then
+        wizard_spool_publish "$spool" error.txt printf '%s' 'The install request changed — submit the settings again.'
+        return 1
+    fi
     if ! "$(install_bin)" --list 2>/dev/null | cut -f1 | grep -qx "$target"; then
         printf 'not an offered target: %s' "$target" | wizard_spool_publish "$spool" error.txt cat
         return 1

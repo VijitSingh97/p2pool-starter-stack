@@ -205,12 +205,14 @@ firstboot_consume_rig() ( # <spool-dir>
     worker=$(jq -r '.worker // ""' "$req" 2>/dev/null | tr -d '[:cntrl:]')
     host="${pool%:*}"
     port="${pool##*:}"
-    if [ -z "$host" ] || [ "$host" = "$pool" ] || ! [[ "$port" =~ ^[0-9]+$ ]]; then
+    host="${host#\[}"
+    host="${host%\]}"
+    if [ "$host" = "$pool" ] || ! is_valid_host "$host" || ! is_valid_port "$port"; then
         printf 'the pool address must look like host:port — a Pithead answers on port 3333' | wizard_spool_publish "$spool" error.txt cat
         rm -f "$spool/rig-request.json"
         return 1
     fi
-    if ! timeout 5 bash -c "</dev/tcp/$host/$port" 2>/dev/null; then
+    if ! timeout 5 bash -c '</dev/tcp/"$1"/"$2"' _ "$host" "$port" 2>/dev/null; then
         printf 'cannot reach a pool at %s:%s — check the address, and that the Pithead is up' "$host" "$port" | wizard_spool_publish "$spool" error.txt cat
         rm -f "$spool/rig-request.json"
         return 1

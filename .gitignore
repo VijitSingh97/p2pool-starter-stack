@@ -50,3 +50,6 @@ os/build/
 os/rauc/build/
 os/rauc/certs/
 os/rootfs/BUILD_COMMIT
+
+# Local code index
+graphify-out/

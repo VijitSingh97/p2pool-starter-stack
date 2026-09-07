@@ -26,7 +26,7 @@ for kind in symlink fifo directory hardlink; do
     hardlink) ln "$WSS/target" "$WSS/spool/request" ;;
     esac
     run_sourced "$WSS" wizard_spool_read "$WSS/spool" request >/dev/null 2>&1
-    assert_rc "$kind input is refused without reading it" "$?" 1
+    assert_rc "unsafe input is refused without reading it" "$?" 1
     if [ "$kind" = directory ]; then rmdir "$WSS/spool/request"; else rm -f "$WSS/spool/request"; fi
 done
 printf original >"$WSS/spool/request"
@@ -35,7 +35,7 @@ printf replacement >"$WSS/spool/request"
 assert_eq "in-place page writes cannot change a completed snapshot" "$(cat "$SNAP")" original
 run_sourced "$WSS" wizard_spool_clean "${SNAP%/*}"
 run_sourced "$WSS" wizard_spool_snapshot "$WSS/spool" request 2 >/dev/null
-assert_rc "oversize requests are refused" "$?" 1
+assert_rc "oversize requests have a distinct refusal status" "$?" 3
 run_sourced "$WSS" eval 'ln() { command ln "$@"; rm -f "$WSS/spool/request"; command ln -s "$WSS/target" "$WSS/spool/request"; }; wizard_spool_read "$WSS/spool" request' >/dev/null
 assert_rc "replacement during pinning fails closed" "$?" 1
 assert_eq "replacement target is unchanged" "$(cat "$WSS/target")" sentinel
@@ -51,6 +51,65 @@ run_sourced "$WSS" eval 'bash() { printf "{}" >"$WSS/spool/config.json"; }; firs
 assert_rc "config acceptance promotes the validated snapshot" "$?" 0
 assert_eq "the promoted config is the snapshot, not the replaced request" "$(jq -c . "$WSS/config.json")" '{"fixture":true}'
 assert_eq "accepted config is private" "$(stat -c '%a' "$WSS/config.json")" 600
+echo "== unit: wizard submission policy and reusable-media lifecycle =="
+# Invalid host syntax is rejected before any network command is constructed. The timeout stub
+# succeeding is a control: the old format-only predicate would accept this request.
+printf '{"pool":"invalid host:3333","worker":"fixture"}' >"$WSS/spool/rig-request.json"
+run_sourced "$WSS" eval 'timeout() { : >"$WSS/dialed"; return 0; }; firstboot_consume_rig "$WSS/spool"' >/dev/null
+assert_rc "invalid rig host syntax is refused before the dial" "$?" 1
+[ ! -e "$WSS/dialed" ] && ok "invalid host never reaches the network command" || bad "invalid host never reaches the network command" "dialed"
+printf '{"pool":"example.test:3333","worker":"fixture"}' >"$WSS/spool/rig-request.json"
+run_sourced "$WSS" eval 'timeout() { [ "$#" = 7 ] && [ "$5" = _ ] && [ "$6" = example.test ] && [ "$7" = 3333 ]; }; firstboot_consume_rig "$WSS/spool"' >/dev/null
+assert_rc "rig host and port travel as command arguments" "$?" 0
+# A keep-only request cannot turn into a wipe after the shortcut's readiness check.
+printf 'disk-fixture\tall' >"$WSS/spool/install-request"
+run_sourced "$WSS" eval 'install_bin() { : >"$WSS/installer-called"; echo /nonexistent; }; consume_install_request "$WSS/spool" keep' >/dev/null
+assert_rc "the keep-only consumer refuses a replaced wipe request" "$?" 1
+[ ! -e "$WSS/installer-called" ] && ok "keep-only refusal happens before invoking the installer" || bad "keep-only refusal happens before invoking the installer" "called"
+assert_contains "keep-only refusal returns an editable error" "$(cat "$WSS/spool/error.txt")" 'request changed'
+# The reader rejects over-limit input before restore_apply; the passphrase still belongs to the
+# rejected attempt and must be consumed on that early return.
+truncate -s 67108865 "$WSS/spool/restore-archive"
+printf fixture-pass >"$WSS/spool/restore-passphrase"
+run_sourced "$WSS" firstboot_consume_restore "$WSS/spool" >/dev/null
+assert_rc "oversize restore is rejected" "$?" 1
+assert_contains "oversize restore names the problem" "$(cat "$WSS/spool/error.txt")" 'too large'
+[ ! -e "$WSS/spool/restore-passphrase" ] && ok "early archive rejection consumes its passphrase" || bad "early archive rejection consumes its passphrase" "retained"
+# Run the actual new-machine path until image loading, before a page or container starts.
+# Its stubbed inventory selects installer mode; no disk, network or container is touched.
+mkdir "$WSS/preseed"
+WS_NEW_MACHINE='
+    _console() { :; }; container_engine() { echo fixture-engine; }
+    installer_mode_available() { return 0; }; machine_role() { echo pithead; }
+    export_build_provenance() { STACK_VERSION=fixture; PITHEAD_REGISTRY=registry.example; }
+    stage_wizard_spool() { :; }; prefill_from_previous_install() { return 1; }
+    load_baked_images() { exit 7; }; firstboot_wizard
+'
+for ws_file in last-attempt.json install-attempt.json auth-mode config-changes.json; do
+    printf old-machine >"$WSS/spool/$ws_file"
+done
+# firstboot's canonical spool is data/firstboot; retain the same inode for the fixture.
+mkdir "$WSS/data"
+mv "$WSS/spool" "$WSS/data/firstboot"
+PITHEAD_PRESEED_DIR="$WSS/preseed" run_sourced "$WSS" eval "$WS_NEW_MACHINE" >/dev/null 2>&1
+assert_rc "new machine reaches the image-loading boundary" "$?" 7
+WS_LEFT=$(find "$WSS/data/firstboot" -maxdepth 1 \( -name last-attempt.json -o -name install-attempt.json -o -name auth-mode -o -name config-changes.json \) | wc -l)
+assert_eq "new machine starts without old configuration or recovery metadata" "$WS_LEFT" 0
+for ws_file in last-attempt.json install-attempt.json auth-mode config-changes.json; do
+    printf this-machine >"$WSS/data/firstboot/$ws_file"
+done
+cp "$ROOT/config.reference.json" "$WSS/config.reference.json"
+run_sourced "$WSS" eval 'publish_rig_defaults() { :; }; publish_saved_role() { :; }; publish_data_wipe_note() { :; }; installer_mode_available() { return 1; }; wizard_mint_cert() { :; }; stage_wizard_spool "$WSS/data/firstboot"' >/dev/null
+assert_rc "retry re-staging succeeds" "$?" 0
+WS_LEFT=$(find "$WSS/data/firstboot" -maxdepth 1 \( -name last-attempt.json -o -name install-attempt.json -o -name auth-mode -o -name config-changes.json \) | wc -l)
+assert_eq "retry keeps all four recovery files" "$WS_LEFT" 4
+assert_eq "retry preserves this machine's auth choice" "$(cat "$WSS/data/firstboot/auth-mode")" this-machine
+PITHEAD_PRESEED_DIR="$WSS/preseed" run_sourced "$WSS" eval "$WS_NEW_MACHINE" >/dev/null 2>&1
+assert_rc "the next machine reaches the same loading boundary" "$?" 7
+WS_LEFT=$(find "$WSS/data/firstboot" -maxdepth 1 \( -name last-attempt.json -o -name install-attempt.json -o -name auth-mode -o -name config-changes.json \) | wc -l)
+assert_eq "the next machine cannot inherit the prior machine's recovery metadata" "$WS_LEFT" 0
+mv "$WSS/data/firstboot" "$WSS/spool"
+unset WS_NEW_MACHINE WS_LEFT ws_file
 # A real UID boundary, not a mocked chown. CI's Linux runner supplies sudo and setpriv.
 echo "== unit: wizard spool root and page ownership =="
 if command -v setpriv >/dev/null && sudo -n true 2>/dev/null; then

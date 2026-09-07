@@ -154,7 +154,8 @@ firstboot_wizard() {
         # The pre-fill is derived fresh every boot, never inherited: the stick's spool
         # survives between machines, and machine 2 must not open on machine 1's answers —
         # the same staleness rule the per-session flow-marker clear below enforces.
-        rm -f "$spool/last-attempt.json"
+        rm -f "$spool/last-attempt.json" "$spool/install-attempt.json" \
+            "$spool/auth-mode" "$spool/config-changes.json"
         if [ "$operator_preseed" -eq 1 ] && wizard_spool_publish "$spool" last-attempt.json jq -c . "$PRESEED_DIR/pithead-config.json" 2>/dev/null; then
             log "Pre-seeded configuration found — the page opens with it filled in."
         elif prefill_from_previous_install "$spool"; then
@@ -262,7 +263,7 @@ firstboot_wizard() {
                 [ ! -e "$spool/restore-archive" ] && [ ! -L "$spool/restore-archive" ]; then
                 wizard_install_begin "$spool"
                 local irc=0
-                consume_install_request "$spool" || irc=$?
+                consume_install_request "$spool" keep || irc=$?
                 if [ "$irc" -ne 0 ]; then
                     rm -f "$spool/installing"
                     wizard_install_failed_page "$spool" "Reinstall"
