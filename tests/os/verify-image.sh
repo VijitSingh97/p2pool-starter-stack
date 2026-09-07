@@ -33,9 +33,8 @@ rigforge_ref_matches() { # <image-root> <dockerfile> — 0 iff the recorded ref 
 }
 
 # #1069 W11: pithead-data-reset's repair chain (`os/overlay/pithead-data-reset`) runs
-# `fsck`/`e2fsck`/`mkfs.ext4` behind `|| true`, so a rootfs missing e2fsprogs doesn't refuse — a
-# transient mount failure reads exactly like a refusal-class corruption and the box proceeds to
-# treat /data as wedged with no tool present to repair it, only to reformat it. The Dockerfile
+# `fsck`/`e2fsck`/`mkfs.ext4` behind `|| true`, so a rootfs missing e2fsprogs doesn't refuse — the
+# box proceeds with no tool present to repair or reformat /data. The Dockerfile
 # installs e2fsprogs today (os/rootfs/Dockerfile); this is the regression guard, checked on the
 # built artifact rather than the package list so a base-image change can't silently drop it.
 data_reset_repair_tools_present() { # <image-root> — 0 iff both e2fsck and mkfs.ext4 are baked
