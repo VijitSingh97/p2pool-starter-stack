@@ -7,12 +7,14 @@ import re
 
 from aiohttp import web
 
+from mining_dashboard.client.rigforge_freshness import feed_stale
 from mining_dashboard.client.xmrig_client import strip_sentinel_credentials
 from mining_dashboard.config import config
 from mining_dashboard.service import audit_service, control_service, worker_adopt, worker_refresh
 from mining_dashboard.service.metrics import build_metrics, share_reject_pct
 from mining_dashboard.service.update_checker import parse_semver
 from mining_dashboard.web import diagnostics_views, download_views
+from mining_dashboard.web.config_commit import approval_envelope
 from mining_dashboard.web.prometheus import CONTENT_TYPE as PROMETHEUS_CONTENT_TYPE
 from mining_dashboard.web.prometheus import render_prometheus
 from mining_dashboard.web.views import (
@@ -179,13 +181,18 @@ async def handle_control_commit(request):
     _require_control_header(request)
     try:
         body = await request.json()
+        actor = request.headers.get("X-Auth-User", "")
+        approval, pending = await approval_envelope(request, body, actor)
+        if pending is not None:
+            return pending
         rid = control_service.submit(
             "commit",
-            actor=request.headers.get("X-Auth-User", ""),
+            actor=actor,
             intent_id=body.get("id"),
             # #719: the operator's typed confirmation for an in-scope disruptive change. It is
             # friction, not a secret — the host gate requires it before a CONFIRM row proceeds.
             confirm=body.get("confirm"),
+            approval=approval,
         )
     except Exception:
         raise web.HTTPBadRequest(text="Body must be JSON with a valid intent 'id'.") from None
@@ -407,7 +414,8 @@ async def handle_worker_upgrade(request):
         raise web.HTTPBadRequest(text="'version' must look like vX.Y.Z.")
     data = request.app["latest_data"] or {}
     live = next((w for w in data.get("workers", []) if w.get("name") == worker), None)
-    running = ((live or {}).get("rigforge") or {}).get("version")
+    rigforge = (live or {}).get("rigforge") or {}
+    running = None if feed_stale(rigforge) else rigforge.get("version")
     # The rig reports bare "1.11.2", the badge proposes tag "v1.11.2" — compare parsed (#596).
     if running and parse_semver(running) and parse_semver(running) == parse_semver(version):
         return web.json_response(
@@ -569,11 +577,12 @@ async def _cancel_bg_tasks(app):
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def create_app(state_manager, latest_data_ref):
+def create_app(state_manager, latest_data_ref, telegram_bot=None):
     """Factory to create the web app instance."""
     app = web.Application(middlewares=[security_headers_middleware])
     app["state_manager"] = state_manager
     app["latest_data"] = latest_data_ref
+    app["telegram_bot"] = telegram_bot
     # Fire-and-forget recorder tasks (worker-upgrade, #1014) — tracked so they can't be
     # garbage-collected mid-flight and so shutdown can cancel any still in progress.
     app["_bg_tasks"] = set()

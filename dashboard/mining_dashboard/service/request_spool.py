@@ -21,6 +21,7 @@ silently stop taking effect, which is the failure that leaves a test green while
 
 import json
 import os
+import tempfile
 
 from mining_dashboard.config import config
 
@@ -33,8 +34,24 @@ def write(request: dict) -> str:
     writer does not invent one, because a request whose id was chosen here could not be returned
     to the caller before the file appeared."""
     rid = request["id"]
-    tmp = os.path.join(config.CONTROL_REQUESTS_DIR, f".{rid}.tmp")
-    with open(tmp, "w") as f:
-        json.dump(request, f)
-    os.replace(tmp, os.path.join(config.CONTROL_REQUESTS_DIR, f"{rid}.json"))
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=config.CONTROL_REQUESTS_DIR,
+            prefix=f".{rid}.",
+            suffix=".tmp",
+            delete=False,
+        ) as f:
+            tmp = f.name
+            json.dump(request, f)
+        os.replace(tmp, os.path.join(config.CONTROL_REQUESTS_DIR, f"{rid}.json"))
+    except BaseException:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+        raise
     return rid

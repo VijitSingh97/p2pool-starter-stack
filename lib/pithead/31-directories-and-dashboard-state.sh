@@ -6,6 +6,8 @@
 prepare_control_dirs() {
     mkdir -p "$CONTROL_DIR/requests" "$CONTROL_DIR/staged" "$CONTROL_DIR/results" "$CONTROL_DIR/audit"
     ensure_owner "$CONTROL_DIR/requests" "$APP_UID" "$APP_GID"
+    chmod 700 "$CONTROL_DIR" "$CONTROL_DIR/requests" 2>/dev/null ||
+        sudo chmod 700 "$CONTROL_DIR" "$CONTROL_DIR/requests"
     # Appliance only: seed the OS-update state file the dashboard reads through the results/
     # mount. Its presence is what tells the container "this is an appliance — render the OS
     # update control"; the os-* verbs and pithead-boot keep it current from then on.

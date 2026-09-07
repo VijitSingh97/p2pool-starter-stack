@@ -330,6 +330,10 @@ class DataService:
             # restored `rigforge_release` would keep serving stale per-worker badges until the
             # first poll cycle. The checker re-fetches on its cadence; drop it on restore.
             loaded_snapshot.pop("rigforge_release", None)
+            for worker in loaded_snapshot.get("workers", []):
+                rigforge = worker.get("rigforge") or {}
+                if rigforge and "generated_at" not in rigforge:
+                    rigforge["stale"] = True
             self.latest_data.update(loaded_snapshot)
             self.workers_rejected = bool(self.latest_data.get("workers_rejected", False))
             self.miner_released = bool(self.latest_data.get("miner_released", False))
@@ -737,7 +741,7 @@ class DataService:
             explained_paths = set()
             for e in audit_service.recent_changes():
                 if (
-                    e.get("action") == "commit"
+                    e.get("action") in ("commit", "commit-confirmed", "commit-approved")
                     and e.get("status") == "applied"
                     and (ts := _parse_audit_ts(e.get("ts"))) is not None
                     and ts >= since
@@ -769,7 +773,10 @@ class DataService:
         while still in the log tail, same as before this feature."""
         if not config.DASHBOARD_CONTROL_ENABLED:
             return
-        for e in audit_service.recent_changes():
+        # The log reader returns newest first, but preview and terminal commit share an id. Replay
+        # oldest first so the terminal outcome is the row left in durable history, not the preview
+        # that happened to be mirrored first.
+        for e in reversed(audit_service.recent_changes()):
             if not e.get("id"):
                 continue
             await asyncio.to_thread(
