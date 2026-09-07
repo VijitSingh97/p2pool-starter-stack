@@ -27,6 +27,10 @@ publish_saved_role() { # <spool-dir>
             wizard_spool_publish "$spool" last-attempt.json strip_config_secrets "$PWD/config.json"
         fi
     fi
+# The wizard's credentials card, both roles: the coordinator's login, or (since #1836) the rig's
+# control token. The shared spool publisher creates it privately and replaces any stale card.
+write_handoff_card() { # <spool-dir>; the card's JSON on stdin
+    wizard_spool_publish "$1" handoff.json cat
 }
 
 # "Keep it": the page wrote keep-role. Nothing on /data was touched — the marker, rig.json and
