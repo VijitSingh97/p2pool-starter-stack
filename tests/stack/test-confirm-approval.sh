@@ -256,16 +256,16 @@ assert_eq "approved worker repoint applies" "$(jq -r '.status' "$RESULTS/$UUID3.
 assert_eq "approved worker host landed" "$(jq -r '.workers.list[0].host' "$C/config.json")" "192.168.1.51"
 assert_contains "worker repoint audit names workers.list" "$(grep '"action":"commit-approved","status":"applied"' "$AUDIT" | tail -n 1)" "workers.list"
 
-# Appending a remote worker creates a new host/token trust relationship and cannot bypass the same
-# approval requirement just because no existing list element was changed.
-jq -n --slurpfile live "$C/config.json" --arg id "$UUID3" \
-    '{id:$id,action:"preview",actor:"admin",config:($live[0] | .workers.list += [{name:"rig-2",host:"192.168.1.52",control_port:8082,token:"another-token"}])}' >"$REQS/$UUID3.json"
+# A remote-worker append needs the same host approval and must remain a supported operation.
+jq -n --slurpfile live "$C/config.json" --arg id "$UUID3" '{id:$id,action:"preview",actor:"admin",config:($live[0] | .workers.list += [{name:"rig-2",host:"192.168.1.52",control_port:8082,token:"another-token"}])}' >"$REQS/$UUID3.json"
 run_pending >/dev/null
 assert_eq "worker append preview requires approval" "$(jq -r '.approval_required' "$RESULTS/$UUID3.json")" "true"
-printf '{"id":"%s","action":"commit","actor":"admin"}\n' "$UUID3" >"$REQS/$UUID3.json"
+jq -n --arg id "$UUID3" '{id:$id,action:"commit",actor:"admin",approval:{payout_suffixes:{}}}' >"$REQS/$UUID3.json"
+arm_fake_telegram
 run_pending >/dev/null
-assert_eq "worker append without host approval is refused" "$(jq -r '.status' "$RESULTS/$UUID3.json")" "rejected"
-
+assert_eq "approved worker append applies" "$(jq -r '.status' "$RESULTS/$UUID3.json")" "applied"
+assert_eq "approved worker append lands the new descriptor" "$(jq -r '.workers.list[] | select(.name=="rig-2") | .host' "$C/config.json")" "192.168.1.52"
+assert_contains "worker append audit names workers.list" "$(grep '"action":"commit-approved","status":"applied"' "$AUDIT" | tail -n 1)" "workers.list"
 # A confirm-key in its heavy direction (prune disable) is now approval-gated too: it still needs
 # typed APPLY, but is no longer impossible for a shell-less appliance operator.
 jq -n --arg w "$WALLET" '{monero:{mode:"local",wallet_address:$w,node_username:"u",node_password:"p",prune:true},

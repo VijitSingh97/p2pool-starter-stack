@@ -186,8 +186,8 @@ control_approval_gate() { # <staged-file> [confirm-token] <id> <actor> [approval
     fi
     # Approved: echo the changed key NAMES so the commit's audit entry can record WHAT changed
     # (#349) without a third dry-run. Names only, never values. dashboard.energy (#504) is
-    # config.json-only, so it never appears in the env porcelain — fold a synthetic DASHBOARD_ENERGY
-    # name into the list when that block changed, else an energy-only commit would audit no key.
+    # config.json-only, so it never appears in the env porcelain — include the changed
+    # dashboard.energy.* paths directly, else an energy-only commit would audit no key.
     # Reference defaults merged into both sides (#696), same as the preview leg: the editor
     # round-trips the reference-merged form, and materialized defaults are not a change.
     {
