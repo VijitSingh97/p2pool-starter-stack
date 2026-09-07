@@ -410,6 +410,6 @@ else
     ok "invalid provenance id fails without deleting its retry marker"
 fi
 assert_contains "direct wizard audit failure re-enters the retry path" \
-    "$(sed -n '515,530p' "$ROOT/lib/pithead/12-firstboot-wizard.sh")" "setup_rc=1"
+    "$(sed -n '/if control_audit_provisioned/,/setup_rc=1/p' "$ROOT/lib/pithead/12-firstboot-wizard.sh")" "setup_rc=1"
 rm -rf "$PROV"
 unset PROV

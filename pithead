@@ -11355,7 +11355,7 @@ control_commit() { # <id> <actor> <control-dir> [confirm-token] [approval-json]
     fi
     # On refusal the gate's stdout is the reason; on approval it is the changed key names, which
     # the audit entries below record — WHAT changed, by name only (#349).
-    local gate_out keys=""
+    local gate_out audit_keys=""
     if ! gate_out=$(control_approval_gate "$staged" "$confirm" "$id" "$actor" "$approval" "$cdir"); then
         [ -n "$gate_out" ] || gate_out="approval denied"
         control_write_result "$cdir/results" "$id" "$(jq -n --arg e "$gate_out" '{status:"rejected",error:$e,ts:(now|floor)}')"
@@ -11363,7 +11363,7 @@ control_commit() { # <id> <actor> <control-dir> [confirm-token] [approval-json]
         control_audit "$cdir/audit/control.log" "$id" "$actor" "commit" "rejected"
         return 0
     fi
-    keys="$gate_out"
+    audit_keys="$gate_out"
     # A confirm-gated destructive change (#719) is logged AS SUCH — the gate touches this marker
     # when a typed confirmation carried an in-scope CONFIRM row past the perimeter. The distinct
     # `commit-confirmed` action separates a dashboard-confirmed disruptive apply from an ordinary
@@ -11387,12 +11387,12 @@ control_commit() { # <id> <actor> <control-dir> [confirm-token] [approval-json]
     if [ "$rc" -eq 0 ]; then
         control_reown_operator_files # the root apply wrote .env/Caddyfile as root — give them back (#33)
         control_write_result "$cdir/results" "$id" "$(jq -n '{status:"applied",ts:(now|floor)}')"
-        control_audit "$cdir/audit/control.log" "$id" "$actor" "$audit_action" "applied" "$keys" "$approver"
+        control_audit "$cdir/audit/control.log" "$id" "$actor" "$audit_action" "applied" "$audit_keys" "$approver"
     else
         # apply's own .apply-incomplete marker handles the container-recreate retry; the config
         # backup lets the operator revert by hand if the new config itself is the problem.
         control_write_result "$cdir/results" "$id" "$(jq -n --arg e "$(tail -c 2000 "$logf")" --arg b "${CONFIG_FILE}.bak-control" '{status:"failed",error:$e,backup:$b,ts:(now|floor)}')"
-        control_audit "$cdir/audit/control.log" "$id" "$actor" "$audit_action" "failed" "$keys" "$approver"
+        control_audit "$cdir/audit/control.log" "$id" "$actor" "$audit_action" "failed" "$audit_keys" "$approver"
     fi
     rm -f "$staged" "$logf" "${staged}.confirmed" "${staged}.approved"
 }
