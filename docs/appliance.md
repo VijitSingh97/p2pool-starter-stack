@@ -529,8 +529,9 @@ setup, so it is treated as first-time provisioning even though the identity unde
 This works on the installation medium's combined page too, alongside the disk choice.
 
 A wrong passphrase or a damaged archive is rejected with the reason, and the page falls back to
-the normal form — restore never blocks setup. Restore only runs at first setup, on a machine
-that has no configuration yet; it does not restore over a running install.
+the normal form — restore never blocks setup. Restore is available at first setup and from the
+saved-setup screen. In both cases it runs through setup again; the day-two `restore` command is
+the separate path for restoring a running stack in place.
 
 ## Changing settings with a USB stick
 

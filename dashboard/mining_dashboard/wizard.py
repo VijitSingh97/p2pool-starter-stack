@@ -181,7 +181,9 @@ def wizard_stage() -> str:
     installer  running from the installation medium
     setup      no config accepted yet
     """
-    if installer_mode() and _spool_read("error.txt") is not None:
+    if _spool_read("setup-failed") is not None or (
+        installer_mode() and _spool_read("error.txt") is not None
+    ):
         return "failed"
     if _spool_read("handoff.json") is not None and _spool_read("handoff-ack") is None:
         return "handoff"

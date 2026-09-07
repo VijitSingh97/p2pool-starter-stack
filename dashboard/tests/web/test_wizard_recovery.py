@@ -265,12 +265,17 @@ async def test_prefill_migration_notice_survives_submit_and_host_failure(client,
         },
     )
     assert response.status == 200
+    spool.joinpath("disks.tsv").unlink()
     spool.joinpath("error.txt").write_text("node unavailable")
+    spool.joinpath("setup-failed").write_text("1")
     failed = await _state(client)
     assert failed["stage"] == "failed"
     assert failed["config"]["monero"]["wallet_address"] == "4OLD"
     assert failed["config"]["xvb"]["enabled"] is False
     assert failed["config_changes"] == ["xmrig_proxy.enabled → xvb.enabled"]
+    assert (await client.post("/retry")).status == 200
+    assert (await _state(client))["stage"] == "setup"
+    assert not spool.joinpath("setup-failed").exists()
 
 
 async def test_retry_is_authenticated_and_only_opens_a_real_failure(client, spool):

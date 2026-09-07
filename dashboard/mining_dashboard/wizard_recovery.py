@@ -47,7 +47,7 @@ def retry_handler(authed, stage, spool):
             raise web.HTTPFound("/")
         if stage() != "failed":
             return web.json_response({"error": "no failed install to reopen"}, status=409)
-        remove_spool(spool(), "error.txt", "installing")
+        remove_spool(spool(), "error.txt", "installing", "setup-failed")
         return web.json_response({"status": "settings"})
 
     return retry
