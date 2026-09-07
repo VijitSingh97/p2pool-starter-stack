@@ -122,9 +122,9 @@ restore_stage_archive() { # <archive> <encrypted:0|1> <passphrase>
 }
 
 restore_recheck_destinations() {
-    local staged=("${RESTORE_ALLOWED_DIRS[@]}") path trusted match
+    local restore_paths_snapshot=("${RESTORE_ALLOWED_DIRS[@]}") path trusted match
     restore_collect_destinations
-    for path in "${staged[@]}"; do
+    for path in "${restore_paths_snapshot[@]}"; do
         match=0
         for trusted in "${RESTORE_TRUSTED_DIRS[@]}"; do [ "$path" != "$trusted" ] || match=1; done
         if [ "$match" -ne 1 ]; then
@@ -132,7 +132,7 @@ restore_recheck_destinations() {
             error "Restore destinations changed while the archive was being checked — nothing was restored. Retry against the current configuration."
         fi
     done
-    RESTORE_ALLOWED_DIRS=("${staged[@]}")
+    RESTORE_ALLOWED_DIRS=("${restore_paths_snapshot[@]}")
     for path in "${RESTORE_FIXED_PATHS[@]}"; do
         restore_destination_safe "$path" file || {
             restore_discard_stage

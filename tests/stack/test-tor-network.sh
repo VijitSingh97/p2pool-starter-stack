@@ -2,7 +2,6 @@
 : "${STACK_SUITE:?is unset: this file is a tests/stack/run.sh fragment, not a script — run tests/stack/run.sh}"
 # Tor-network domain (#1105 Phase 1): Tor-only egress, clearnet transport, onion rendering and
 # provisioning, including installed-runtime no-build policy (#1967).
-# Sourced by tests/stack/run.sh.
 #
 # Re-derive the idempotent validation sandbox so this domain does not depend on source order (#1305).
 build_val_sandbox
@@ -764,6 +763,7 @@ compose_layout_probe() { # <installed|source> <checked|tor>
     [ "$layout" != source ] || { mkdir -p "$dir/dashboard" && : >"$dir/dashboard/Dockerfile"; }
     (
         cd "$dir" || exit
+        # shellcheck disable=SC1090 # the selected built CLI is the subject under test
         source "$STACK"
         remove_deactivated_profile_containers() { :; }
         docker() { printf '%s' "$*"; }
