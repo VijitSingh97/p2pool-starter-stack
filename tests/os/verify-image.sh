@@ -106,9 +106,9 @@ mount -o ro "${LOOP}p1" "$ESP" || {
 echo "==> boot path (each location burned us once)"
 chk "BOOTX64.EFI at the fallback path" '[ -s "$ESP/EFI/BOOT/BOOTX64.EFI" ]'
 chk "grub.cfg in the prefix dir" '[ -s "$ESP/grub/grub.cfg" ]'
-# load_env reads \$prefix/grubenv; at the ESP root it is a silent no-op and updates never take.
 chk "grubenv in the prefix dir, not the ESP root" '[ -s "$ESP/grub/grubenv" ] && [ ! -e "$ESP/grubenv" ]'
 chk "grubenv seeds slot A good" 'grub-editenv "$ESP/grub/grubenv" list | grep -q "A_OK=1"'
+chk "grubenv names slot A's version and records slot B empty" 'grub-editenv "$ESP/grub/grubenv" list | grep -q "^A_VERSION=$(tr -d "[:space:]" <"$ROOT/opt/pithead/VERSION")$" && grub-editenv "$ESP/grub/grubenv" list | grep -q "^B_VERSION=$"'
 chk "kernel root by probed PARTUUID, never label" 'grep -q "probe --set=PU --part-uuid" "$ESP/grub/grub.cfg"'
 # The console carries the token and the password; chatter that scrolls them away is a defect.
 chk "console is quieted so the token stays readable" 'grep -q "loglevel=4" "$ESP/grub/grub.cfg"'

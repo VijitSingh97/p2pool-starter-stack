@@ -238,7 +238,7 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-boot-release.sh" && domain_
 
 # shellcheck source=tests/stack/test-appliance-os-update.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-os-update.sh" && domain_ran test-appliance-os-update.sh "$_d0" "$?" || domain_ran test-appliance-os-update.sh "$_d0" "$?"
-
+source "$HERE/test-appliance-boot-labels.sh"
 # shellcheck source=tests/stack/test-appliance-os-update-verbs.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-os-update-verbs.sh" && domain_ran test-appliance-os-update-verbs.sh "$_d0" "$?" || domain_ran test-appliance-os-update-verbs.sh "$_d0" "$?"
 
