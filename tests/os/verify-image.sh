@@ -31,18 +31,9 @@ rigforge_ref_matches() { # <image-root> <dockerfile> — 0 iff the recorded ref 
     pin=$(sed -n 's/^ARG RIGFORGE_REF=\([^ ]*\).*/\1/p' "$2" 2>/dev/null)
     [ -n "$rec" ] && [ "$rec" = "$pin" ]
 }
-
-# #1069 W11: pithead-data-reset's repair chain (`os/overlay/pithead-data-reset`) runs
-# `fsck`/`e2fsck`/`mkfs.ext4` behind `|| true`, so a rootfs missing e2fsprogs doesn't refuse — the
-# box proceeds with no tool present to repair or reformat /data. The Dockerfile
-# installs e2fsprogs today (os/rootfs/Dockerfile); this is the regression guard, checked on the
-# built artifact rather than the package list so a base-image change can't silently drop it.
-data_reset_repair_tools_present() { # <image-root> — 0 iff both e2fsck and mkfs.ext4 are baked
-    local root="$1"
-    { [ -x "$root/usr/sbin/e2fsck" ] || [ -x "$root/sbin/e2fsck" ]; } &&
-        { [ -x "$root/usr/sbin/mkfs.ext4" ] || [ -x "$root/sbin/mkfs.ext4" ]; }
-}
-# Sourcing defines the helpers and runs nothing, so the self-test drives the REAL comparison.
+# shellcheck source=tests/os/verify-image-artifact-helpers.sh
+. "$SCRIPT_DIR/verify-image-artifact-helpers.sh"
+# Sourcing defines the helpers and runs nothing, so the self-tests drive the REAL comparisons.
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then return 0; fi
 
 IMAGE="${1:-}"
@@ -281,7 +272,12 @@ fi
 if [ -f ./pithead ] && [ -f dashboard/mining_dashboard/wizard.py ]; then
     echo "==> the artifact matches the tree it was built from"
     chk "shipped pithead is the tree's pithead" 'cmp -s "$ROOT/opt/pithead/pithead" ./pithead'
-    chk "shipped compose file matches" 'cmp -s "$ROOT/opt/pithead/docker-compose.yml" ./docker-compose.yml'
+    # The compose file is staged from the STACK_VERSION tag when that tag exists (#1215), so the
+    # tree is the wrong reference then. The stamp says which; compose_reference refuses the rest.
+    COMPOSE_REF=$(mktemp)
+    chk "shipped compose file matches its stamped source ($(cat "$ROOT/opt/pithead/COMPOSE_SOURCE" 2>/dev/null || echo missing))" \
+        'compose_reference "$ROOT" "$COMPOSE_REF" && cmp -s "$ROOT/opt/pithead/docker-compose.yml" "$COMPOSE_REF"'
+    rm -f "$COMPOSE_REF"
     chk "shipped config reference matches" 'cmp -s "$ROOT/opt/pithead/config.reference.json" ./config.reference.json'
 
     # The wizard is the part that shipped stale, and it lives inside a container archive rather
