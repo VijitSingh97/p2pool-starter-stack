@@ -100,16 +100,24 @@ is on, the group the dashboard's [Configuration view](dashboard.md#configuration
 top of its form. Both read the exact same list, [`config.core-keys.json`](../config.core-keys.json)
 — there's only ever one shortlist to keep in sync with this table, not two.
 
-Below the core group, the Configuration view groups the rest of this table into **logical sections**
-an operator recognizes (Wallets & payout, Monero node, Tari node, Mining, Workers, Dashboard &
-access, Notifications, Energy, Alerts & thresholds, System / advanced), each collapsed by default —
-not one section per top-level key like this table's own layout, so a key like `dashboard.energy`
-lands in "Energy" and `dashboard.auth` lands in "Dashboard & access" rather than sharing a section
-just because they share a JSON prefix. It also greys out any key the dashboard's control channel
-can't actually commit — most of them, including every credential and every setting listed as
-"Security-relevant" or requiring `./pithead apply` below — instead of letting you edit it and
-finding out only when Save is rejected. Both are display-only: `config.json` itself, and what the
-control channel will commit, are unaffected either way.
+Below the core group, the Configuration view and `config.reference.json` follow the same
+operator-purpose order: **Mining, Payouts, Monero node, Tari node, Workers, Dashboard & access,
+Notifications, Energy, Alerts, Advanced**. Each group says in one line what its settings affect.
+Every reference key belongs to one of those named groups; the frontend test fails if a new key
+would otherwise fall into an unlabeled catch-all.
+
+Ordinary settings apply after the preview. Disruptive settings also require typed `APPLY`.
+Settings that redirect traffic, funds, control, authentication, or other sensitive behavior
+require the signed-in dashboard operator plus approval from an allow-listed Telegram user; payout changes additionally require the
+final eight characters of each new address. Their preview shows the full old and new non-secret
+values, while credentials and capability URLs stay masked. Four classes remain configuration-stick
+only: `ssh.*`, `dashboard.auth.password`, `telegram.control.allowed_ids`, and the
+`telegram.events.wallet_changed` / `telegram.events.clearnet_exposed` tamper alarms. These are the
+same physical-presence boundary enforced by the media configuration path, not a browser exception.
+
+When a key is absent from `config.json`, the view uses the value in `config.reference.json` and
+labels it `(default)`. That value is also what the renderer applies; a failed apply is called out so
+the desired value is not presented as proof of what the still-running services use.
 
 | Key | Default | Description |
 |---|---|---|
