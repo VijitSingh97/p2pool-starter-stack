@@ -112,4 +112,5 @@ assert_rc "switch: config.json does not short-circuit — the page path is reach
 assert_not_contains "...and setup did not run" "$out" "setup-ran"
 unset PITHEAD_PRESEED_DIR PITHEAD_RIGFORGE_DIR RF_LOG SAW_STUBS
 rm -rf "$SAWB" "$SAESP"
+
 unset SAWB SAESP out

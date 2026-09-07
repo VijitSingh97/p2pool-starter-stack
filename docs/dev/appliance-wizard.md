@@ -193,17 +193,20 @@ the same "validate before mutating real state" idiom `consume_preseed_config` al
 
 1. Magic-byte format check, then a full-stream integrity verify (decrypt + `tar -tzf`) —
    identical to `stack_restore`'s own pre-flight — BEFORE anything is extracted.
-2. Extract to a `mktemp -d` staging tree, not to the real filesystem yet.
+2. Reject links, special files and members outside the appliance backup layout before
+   extracting to a private staging tree. The accepted items are `config.json`, `.env`,
+   `Caddyfile`, and the `data/{tor,dashboard,monero,tari,p2pool}` trees under the install
+   directory. Backups with custom data paths need the administrative restore workflow.
 3. Validate the staged `config.json` through the same fresh-process `parse_and_validate_config`
    call `firstboot_consume_spool` uses.
-4. Only on success: `cp -a` the whole staged tree onto `/` (config, `.env`, Caddyfile, the Tor
-   data dir, the dashboard database — never the chains, which `stack_backup` excludes by
-   default) and touch `applied` — the exact contract a typed submission leaves. The firstboot
+4. Only on success: install the accepted configuration files at mode `0600`, copy the
+   accepted data trees to their mapped destinations, and publish `applied`. Optional chain
+   data is accepted within the upload cap; normal backups exclude it. The firstboot
    loop short-circuits straight into that acceptance path; `prepare_directories` (run by the
    `setup` it feeds) unconditionally re-chowns every data dir, so restore does not need to.
 
 A rejected archive (bad passphrase, wrong format, failed integrity, unparseable config) writes
-`error.txt` and returns 1 — nothing is extracted, nothing already on disk is touched, and the
+`error.txt` and returns 1 — nothing already on disk is touched, and the
 page falls back to the form exactly like a rejected typed config. The passphrase file is deleted
 at the top of the call, accepted or not; it never outlives the attempt.
 
@@ -407,3 +410,31 @@ The orchestration row is the one that was missing. pytest proved the endpoint pu
 credentials; a render probe proved the card renders given them; nothing proved the app *asked*.
 When adding a step, cover it at the layer that owns the promise **and** at the seam to the next
 one.
+
+## Host and page spool files
+
+The host owns the wizard spool directory (`root:1000`, mode `1770`). The page
+runs as UID/GID 1000. Host publishers create a private temporary directory, write
+mode-0600 files there, and rename completed files into the spool. TLS files,
+schema, inventories, saved role and the credentials card remain `root:1000` at
+mode `0640`. The page can read these files but cannot replace them.
+
+`error.txt`, `last-attempt.json` and `installing` belong to UID/GID 1000 at mode
+`0600` after publication. The page removes or replaces them during retry. Full
+configuration snapshots can contain credentials; they receive the same private
+creation as the credentials card. No host writer opens these published paths for
+writing or changes their ownership after publication.
+
+Host consumers pin a request without following links, reject nonregular files
+and existing hard links, and copy accepted bytes into a private inode before
+validation. Parsing and application use that copy. The page can still replace its
+request or hold its original inode open; neither changes the validated copy.
+The shared helpers live in `lib/pithead/11a-wizard-spool.sh`. The shell boundary
+suite exercises hostile entries, replacement, private creation and the real root
+and page permissions. The integrated KVM battery checks boot and browser setup.
+
+A new installer session clears saved configuration, disk selection, authentication
+choice and change notices from the previous machine. Retry re-staging keeps those
+files for the current attempt. The bare reinstall path enforces its keep-only
+policy on the consumed request. Oversize or unsafe restore submissions consume
+the submitted passphrase when rejected.
