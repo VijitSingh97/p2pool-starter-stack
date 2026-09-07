@@ -12527,8 +12527,11 @@ control_worker_apply() { # <claimed-file> <id> <actor> <control-dir>
         case "$status" in
         applied | rejected | rolled_back | failed)
             # reason is rig-supplied (attacker-influenceable); cap it before it is stored/rendered.
-            reason=$(jq -r '.reason // ""' "$sbody" | head -c 500)
-            ckeys=$(jq -c '.changed_keys // []' "$sbody")
+            if ! reason=$(jq -r '(.reason // "") | tostring | .[:500]' "$sbody") ||
+                ! ckeys=$(jq -c '.changed_keys // []' "$sbody"); then
+                rm -f "$sbody"
+                continue
+            fi
             rm -f "$sbody"
             control_write_result "$results" "$id" "$(jq -n --arg s "$status" --arg c "$change_id" --arg w "$worker" --argjson k "$ckeys" --arg r "$reason" \
                 '{status:$s,change_id:$c,worker:$w,changed_keys:$k,reason:(if $r=="" then null else $r end),ts:(now|floor)}')"
@@ -12678,7 +12681,10 @@ control_worker_upgrade() { # <claimed-file> <id> <actor> <control-dir>
         case "$status" in
         applied | noop | throttled | rolled_back | failed)
             # reason is rig-supplied (attacker-influenceable); cap it before it is stored/rendered.
-            reason=$(jq -r '.reason // ""' "$sbody" | head -c 500)
+            if ! reason=$(jq -r '(.reason // "") | tostring | .[:500]' "$sbody"); then
+                rm -f "$sbody"
+                continue
+            fi
             rm -f "$sbody"
             # Legacy remap: a pre-rigforge#320 rig (≤ v1.11.2, the supported floor) collapses its
             # 6h anti-beacon throttle into failed+"throttled — ..." free text, and retry-later

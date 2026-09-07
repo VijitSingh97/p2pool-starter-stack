@@ -56,11 +56,7 @@ def validate_worker_descriptor(entry):
         )
     control_port = entry.get("control_port", DEFAULT_CONTROL_PORT)
     api_port = entry.get("port", DEFAULT_API_PORT)
-    if (
-        isinstance(api_port, bool)
-        or not isinstance(api_port, int)
-        or not 1 <= api_port <= 65535
-    ):
+    if isinstance(api_port, bool) or not isinstance(api_port, int) or not 1 <= api_port <= 65535:
         return f"worker '{name}': port must be an integer between 1 and 65535."
     if (
         isinstance(control_port, bool)
