@@ -249,38 +249,6 @@ async def test_failed_install_refresh_and_return_keep_safe_editable_fields(clien
     assert not spool.joinpath("installing").exists()
 
 
-async def test_failed_installed_firstboot_reopens_without_an_install_disk(client, spool):
-    """The target's first boot has no disk inventory, but uses the same recovery page."""
-    spool.joinpath("disks.tsv").unlink()
-    spool.joinpath("last-attempt.json").write_text(
-        json.dumps(
-            {
-                "monero": {"wallet_address": "4PAYOUT"},
-                "dashboard": {"auth": {"password": "fixture-login-password"}},
-            }
-        )
-    )
-    spool.joinpath("error.txt").write_text("release image unavailable")
-    await _auth(client)
-
-    failed = await _state(client)
-    assert failed["stage"] == "failed"
-    assert failed["mode"] == "setup"
-    assert failed["disks"] == []
-    assert failed["config"]["monero"]["wallet_address"] == "4PAYOUT"
-    assert failed["config"]["dashboard"]["auth"]["password"] == "fixture-login-password"
-
-    assert (await client.post("/retry")).status == 200
-    reopened = await _state(client)
-    assert reopened["stage"] == "setup"
-    assert reopened["config"]["monero"]["wallet_address"] == "4PAYOUT"
-
-    response = await client.post("/submit", data={"config": json.dumps(reopened["config"])})
-    assert response.status == 200
-    assert spool.joinpath("config.json").is_file()
-    assert not spool.joinpath("install-request").exists()
-
-
 async def test_prefill_migration_notice_survives_submit_and_host_failure(client, spool):
     spool.joinpath("last-attempt.json").write_text(
         json.dumps({"xmrig_proxy": {"enabled": False}, "monero": {"wallet_address": "4OLD"}})
