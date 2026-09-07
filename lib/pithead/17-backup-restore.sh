@@ -294,11 +294,13 @@ stack_restore() {
     *) error "Not a pithead backup archive (neither openssl-encrypted nor gzip): $archive" ;;
     esac
 
-    # Note: we do NOT require/parse the current config here — restore must work even when the
-    # on-disk config.json is lost or corrupt. The config comes back out of the archive.
+    # Early UX check; the authoritative check runs under the mutation lock before extraction.
+    restore_require_stack_stopped
+
+    # Do not parse current config: restore must recover a lost or corrupt config.json.
 
     warn "Restore will OVERWRITE config.json, .env, Caddyfile, the Tor data dir, and the dashboard's database from the archive."
-    warn "Stop the stack first with '$0 down' so files are restored in a consistent state."
+    warn "The stack is stopped; keep it stopped until this restore finishes."
     if [ "$assume_yes" -eq 0 ]; then
         read -r -p "Continue and overwrite these files? (y/N): " CONFIRM || true
         if [[ ! "$CONFIRM" =~ ^[Yy] ]]; then
@@ -344,20 +346,15 @@ stack_restore() {
             error "Archive fails integrity verification (tampered or truncated) — nothing was restored."
     fi
 
-    # After the confirm and the passphrase prompt, and after the integrity verify (read-only):
-    # the extraction below is the mutating window.
+    # Stage and validate all destinations before the mutating window. The EXIT trap also removes
+    # the private copy after an interruption or any error() path.
+    trap restore_discard_stage EXIT
+    restore_stage_archive "$archive" "$encrypted" "$pass"
     mutation_lock_acquire restore
+    restore_require_stack_stopped
+    restore_recheck_destinations
     log "Restoring from $archive ..."
-    # The archive stores paths relative to / (leading slash stripped), so extracting at / puts
-    # every file back exactly where it came from. sudo so we can write into the 100:101-owned
-    # Tor data dir. The encrypted path streams openssl into tar — no plaintext archive on disk.
-    if [ "$encrypted" -eq 1 ]; then
-        openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
-            -pass fd:3 -in "$archive" 3< <(printf '%s' "$pass") |
-            sudo tar -xzf - -C "/"
-    else
-        sudo tar -xzf "$archive" -C "/"
-    fi
+    restore_commit_stage
 
     # Now that config.json is back, resolve the Tor data dir from it and fix ownership so the
     # onion keys load (matching prepare_directories).
