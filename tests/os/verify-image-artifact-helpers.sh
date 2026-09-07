@@ -1,0 +1,24 @@
+# shellcheck shell=bash
+# Sourced artifact-reference helpers for verify-image.sh and their focused self-tests.
+
+# Write the compose file named by the image's COMPOSE_SOURCE stamp (#1215): the tree's copy for
+# `tree`, or the staged commit's copy for `tag NAME SHA`. Missing or malformed stamps fail closed.
+compose_reference() { # <image-root> <out-file>
+    local kind tag sha extra trailing
+    {
+        read -r kind tag sha extra || return 1
+        if IFS= read -r trailing || [ -n "$trailing" ]; then return 1; fi
+    } 2>/dev/null <"$1/opt/pithead/COMPOSE_SOURCE" || return 1
+    case "$kind" in
+    tree) [ -z "$tag$sha$extra" ] && cp ./docker-compose.yml "$2" || return 1 ;;
+    tag) [ -n "$sha" ] && [ -z "$extra" ] && [ "$tag" = "v$(tr -d ' \t\r\n' <"$1/opt/pithead/VERSION")" ] && git show "$sha:docker-compose.yml" >"$2" 2>/dev/null || return 1 ;;
+    *) return 1 ;;
+    esac
+}
+
+# pithead-data-reset runs these behind `|| true`, so both must be baked into the image (#1069 W11).
+data_reset_repair_tools_present() { # <image-root> — 0 iff both tools are executable
+    local root="$1"
+    { [ -x "$root/usr/sbin/e2fsck" ] || [ -x "$root/sbin/e2fsck" ]; } &&
+        { [ -x "$root/usr/sbin/mkfs.ext4" ] || [ -x "$root/sbin/mkfs.ext4" ]; }
+}
