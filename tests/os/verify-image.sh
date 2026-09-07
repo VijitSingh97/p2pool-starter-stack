@@ -37,8 +37,11 @@ rigforge_ref_matches() { # <image-root> <dockerfile> — 0 iff the recorded ref 
 # the shipped VERSION's, or names a commit this checkout does not hold: each of those is a reason
 # the comparison cannot be trusted, and a comparison that cannot run must read as a failure.
 compose_reference() { # <image-root> <out-file>
-    local kind tag sha extra
-    read -r kind tag sha extra 2>/dev/null <"$1/opt/pithead/COMPOSE_SOURCE" || return 1
+    local kind tag sha extra trailing
+    {
+        read -r kind tag sha extra || return 1
+        if IFS= read -r trailing || [ -n "$trailing" ]; then return 1; fi
+    } 2>/dev/null <"$1/opt/pithead/COMPOSE_SOURCE" || return 1
     case "$kind" in
     tree) [ -z "$tag$sha$extra" ] && cp ./docker-compose.yml "$2" || return 1 ;;
     tag) [ -n "$sha" ] && [ -z "$extra" ] && [ "$tag" = "v$(tr -d ' \t\r\n' <"$1/opt/pithead/VERSION")" ] && git show "$sha:docker-compose.yml" >"$2" 2>/dev/null || return 1 ;;
