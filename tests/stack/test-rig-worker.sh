@@ -434,7 +434,6 @@ PATH="$unreach_dir/bin:$PATH" CONTROL_WU_BUDGET=1 PITHEAD_CONFIG_FILE="$unreach_
 assert_contains "an unreachable rig fails cleanly (nothing changed)" \
     "$(jq -r '.status + "|" + (.error // "")' "$unreach_dir/results/$w12.json")" "failed|could not reach worker"
 
-# A non-latest proposal is refused against the CACHED tag — before any rig dial.
 wa_dir="$SANDBOX/ctrl597-notlatest"
 mkdir -p "$wa_dir/staged" "$wa_dir/results" "$wa_dir/audit"
 cp "$WU/config.json" "$wa_dir/config.json"
