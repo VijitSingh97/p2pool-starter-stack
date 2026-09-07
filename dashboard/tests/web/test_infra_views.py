@@ -1,16 +1,7 @@
-"""Unit tests for the host/rig/node status sections (mining_dashboard/web/infra_views.py).
-
-Moved out of tests/web/test_views.py with the sections themselves (#1105). The test bodies are
-verbatim; the only edits are the three module-alias reads in ``TestBuildEnergy`` that follow their
-target from ``views`` to ``infra_views``.
-
-The shared builders — ``_SYNC_DONE``/``_BASE`` and the ``_metrics``, ``_sync``, ``_hashrate``,
-``_state_mgr`` and ``_data`` factories — are pytest fixtures in ``tests/web/conftest.py`` as of
-#1459. Each test that needs one takes it as a parameter; the call itself reads as it always did.
-What is deliberately NOT shared, and why, is written in that file.
-"""
+"""Unit tests for the host/rig/node status sections split from ``web/views.py`` (#1105)."""
 
 import time
+from datetime import UTC, datetime
 
 from mining_dashboard.service.metrics import _sync_metric
 from mining_dashboard.web.infra_views import (
@@ -26,6 +17,19 @@ from mining_dashboard.web.infra_views import (
 )
 from mining_dashboard.web.views import build_state
 from mining_dashboard.web.worker_detail import build_worker_detail
+
+
+def _fresh(report):
+    return {"generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), **report}
+
+
+def _versioned(worker, version):
+    return {**worker, "rigforge": _fresh({"version": version})}
+
+
+def _power(watts):
+    return _fresh({"power": {"watts": watts, "hs_per_watt": None}})
+
 
 # --- Sync display state mapping -------------------------------------------------------
 
@@ -270,33 +274,27 @@ class TestRigforgeUpdate:
     _W = {"name": "r", "ip": "10.0.0.1", "status": "online", "active_pool": "3333"}
 
     def test_behind_rig_gets_the_callout(self):
-        w = {**self._W, "rigforge": {"version": "1.11.1"}}
+        w = _versioned(self._W, "1.11.1")
         out = rigforge_update_for(w, self._REL)
         assert out == {"available": True, "latest": "v1.11.2", "url": "https://h/v1.11.2"}
 
     def test_current_rig_never_badges_its_own_version(self):
-        # The rig reports bare "1.11.2"; the tag is "v1.11.2" — equality must hold across the
-        # format difference (the #664 self-consistency guard, per-worker edition).
-        w = {**self._W, "rigforge": {"version": "1.11.2"}}
+        w = _versioned(self._W, "1.11.2")
         assert rigforge_update_for(w, self._REL) is None
 
     def test_newer_or_unparseable_rig_version_is_none(self):
-        assert rigforge_update_for({**self._W, "rigforge": {"version": "9.0.0"}}, self._REL) is None
-        assert (
-            rigforge_update_for({**self._W, "rigforge": {"version": "nightly"}}, self._REL) is None
-        )
+        assert rigforge_update_for(_versioned(self._W, "9.0.0"), self._REL) is None
+        assert rigforge_update_for(_versioned(self._W, "nightly"), self._REL) is None
 
     def test_no_version_or_no_release_is_none(self):
-        # A plain-:8080 rig reports no version: no badge, not a false "up to date". No cached
-        # release (check disabled / offline): same.
         assert rigforge_update_for(self._W, self._REL) is None
-        assert rigforge_update_for({**self._W, "rigforge": {"version": "1.11.1"}}, None) is None
+        assert rigforge_update_for(_versioned(self._W, "1.11.1"), None) is None
 
     def test_build_workers_attaches_per_row(self):
         rows = build_workers(
             [
-                {**self._W, "name": "behind", "rigforge": {"version": "1.11.1"}},
-                {**self._W, "name": "current", "rigforge": {"version": "1.11.2"}},
+                _versioned({**self._W, "name": "behind"}, "1.11.1"),
+                _versioned({**self._W, "name": "current"}, "1.11.2"),
                 {**self._W, "name": "plain"},
             ],
             self._REL,
@@ -307,12 +305,12 @@ class TestRigforgeUpdate:
         assert by["plain"] is None
 
     def test_build_workers_without_release_attaches_none(self):
-        rows = build_workers([{**self._W, "rigforge": {"version": "1.11.1"}}])
+        rows = build_workers([_versioned(self._W, "1.11.1")])
         assert rows[0]["rigforge_update"] is None
 
     def test_build_state_feeds_the_cached_release_through(self, _data, _state_mgr):
         data = _data(
-            workers=[{**self._W, "rigforge": {"version": "1.11.1"}}],
+            workers=[_versioned(self._W, "1.11.1")],
             rigforge_release=self._REL,
         )
         st = build_state(data, _state_mgr(), "all")
@@ -326,7 +324,7 @@ class TestRigforgeUpdate:
             d = build_worker_detail(
                 "r",
                 {
-                    "workers": [{**self._W, "rigforge": {"version": "1.11.1"}}],
+                    "workers": [_versioned(self._W, "1.11.1")],
                     "rigforge_release": self._REL,
                 },
                 sm,
@@ -372,6 +370,9 @@ class TestRigForgeDisplay:
     def _stats(self, disp):
         return {s["label"]: s for s in disp["stats"]}
 
+    def _display(self, report):
+        return _rigforge_display(_fresh(report))
+
     def test_none_for_plain_xmrig(self):
         assert _rigforge_display(None) is None
 
@@ -397,7 +398,7 @@ class TestRigForgeDisplay:
             },
             "watchdog": {"enabled": True, "thermal_hold": False, "temp_c": 62, "max_temp_c": 85},
         }
-        disp = _rigforge_display(parsed)
+        disp = self._display(parsed)
         assert disp["version"] == "1.7.0"
         texts = self._chip_texts(disp)
         assert "gov: performance" in texts
@@ -407,7 +408,6 @@ class TestRigForgeDisplay:
         assert "tune: perf" in texts
         assert "autotune → Sun 03:00" in texts
         assert "62°C / 85°C" in texts
-        # Nothing alarming here: no bad-variant chips.
         assert all(c["variant"] != "bad" for c in disp["chips"])
 
         # The detail table (#507) carries the same metrics as label/value pairs, row-for-row with
@@ -425,7 +425,7 @@ class TestRigForgeDisplay:
 
     def test_stats_split_label_from_value_and_colour_warn_states(self):
         # The label/value split powers the detail table; a bad/warn metric colours its own value.
-        disp = _rigforge_display(
+        disp = self._display(
             {
                 "version": "1.7.0",
                 "miner_down": True,
@@ -447,7 +447,7 @@ class TestRigForgeDisplay:
         assert stats["Governor"]["variant"] == "warn"
 
     def test_stats_empty_when_no_metrics_present(self):
-        disp = _rigforge_display(
+        disp = self._display(
             {
                 "version": None,
                 "miner_down": False,
@@ -465,7 +465,7 @@ class TestRigForgeDisplay:
         assert disp["stats"] == []
 
     def test_throttling_and_bad_governor_flag(self):
-        disp = _rigforge_display(
+        disp = self._display(
             {
                 "version": "1.7.0",
                 "miner_down": False,
@@ -486,7 +486,7 @@ class TestRigForgeDisplay:
 
     def test_nullable_fields_emit_no_chip(self):
         # No RAPL, no governor, disabled watchdog, no tune → only the fields that exist render.
-        disp = _rigforge_display(
+        disp = self._display(
             {
                 "version": None,
                 "miner_down": False,
@@ -505,7 +505,7 @@ class TestRigForgeDisplay:
         assert disp["chips"] == []
 
     def test_miner_down_chip(self):
-        disp = _rigforge_display(
+        disp = self._display(
             {
                 "version": "1.7.0",
                 "miner_down": True,
@@ -525,7 +525,7 @@ class TestRigForgeDisplay:
         assert disp["chips"][0]["variant"] == "bad"
 
     def test_thermal_hold_wins_over_temp_chip(self):
-        disp = _rigforge_display(
+        disp = self._display(
             {
                 "version": "1.7.0",
                 "miner_down": False,
@@ -648,7 +648,7 @@ class TestBuildEnergy:
     incomplete), and publishes the operator-set prices for the client to turn into cost/net."""
 
     def _worker(self, name, watts=None, hs=1000, active_pool="3333"):
-        rf = {"power": {"watts": watts, "hs_per_watt": None}} if watts is not None else None
+        rf = _power(watts) if watts is not None else None
         return {
             "name": name,
             "ip": "1.1.1.1",

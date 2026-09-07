@@ -7,6 +7,7 @@ import re
 
 from aiohttp import web
 
+from mining_dashboard.client.rigforge_freshness import feed_stale
 from mining_dashboard.client.xmrig_client import strip_sentinel_credentials
 from mining_dashboard.config import config
 from mining_dashboard.service import audit_service, control_service, worker_adopt, worker_refresh
@@ -407,7 +408,8 @@ async def handle_worker_upgrade(request):
         raise web.HTTPBadRequest(text="'version' must look like vX.Y.Z.")
     data = request.app["latest_data"] or {}
     live = next((w for w in data.get("workers", []) if w.get("name") == worker), None)
-    running = ((live or {}).get("rigforge") or {}).get("version")
+    rigforge = (live or {}).get("rigforge") or {}
+    running = None if feed_stale(rigforge) else rigforge.get("version")
     # The rig reports bare "1.11.2", the badge proposes tag "v1.11.2" — compare parsed (#596).
     if running and parse_semver(running) and parse_semver(running) == parse_semver(version):
         return web.json_response(
