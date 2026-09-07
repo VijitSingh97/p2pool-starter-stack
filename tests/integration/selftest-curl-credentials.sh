@@ -73,6 +73,7 @@ check_transport() { # <config directive> <expected decoded credential>
     test "$(sed "s/^$1 = //" "$CURL_CONFIG" | jq -r .)" = "$2"
 }
 
+echo "== authenticated probes keep credentials in curl config stdin and ordinary SSH stdin untouched =="
 for IT_MODE in local ssh; do
     : >"$ARGV_LOG"
     monero_caught_up
