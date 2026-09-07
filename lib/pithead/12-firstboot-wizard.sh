@@ -500,8 +500,7 @@ firstboot_wizard() {
                 sleep 2
                 "$engine" rm -f pithead-wizard >/dev/null 2>&1 || true
                 rm -rf "$spool"
-                # Subshell on purpose: error() exits, and a provisioning failure must NOT
-                # dead-end the machine. Without this, config.json exists, the wizard's condition
+                # Subshell on purpose: error() exits. Without this, config.json exists, the wizard's condition
                 # never re-arms, and a box with no shell has no recovery path at all. Output is
                 # teed: the console keeps its live narration, and the tail becomes the reopened
                 # page's error — a refusal that lives only in console scrollback cost a bench
@@ -516,15 +515,16 @@ firstboot_wizard() {
                 # away before it can be read.
                 { (setup) 2>&1 | tee "$setup_log"; } || setup_rc=$?
                 if [ "$setup_rc" -eq 0 ]; then
-                    control_audit_provisioned "$PWD/data/control" ||
-                        warn "Provisioning succeeded, but its setup-wizard history event could not be recorded."
-                    rm -f "$setup_log"
-                    return
+                    if control_audit_provisioned "$PWD/data/control"; then
+                        rm -f "$setup_log"
+                        return
+                    fi
+                    printf '[ERROR] Provisioning finished, but its setup history could not be recorded. Retry to complete setup history safely.\n' >>"$setup_log"
+                    setup_rc=1
                 fi
                 # The machine KEEPS its configuration (#1059) — this used to move it aside, which
                 # on this path can only cost. The reasoning, and why the removal that remains is
-                # conditional, is at wizard_keep_failed_config's definition. Which of the two
-                # failures this was, and whether a copy is taken at all, is wizard_setup_failed's.
+                # conditional, is at wizard_keep_failed_config's definition and wizard_setup_failed.
                 local kept_copy=0
                 if wizard_setup_failed "$setup_rc"; then kept_copy=1; fi
                 mkdir -p "$spool"
