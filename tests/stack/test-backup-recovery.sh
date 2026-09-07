@@ -23,13 +23,18 @@ cat >"$FB/bin/sudo" <<'EOF'
 if [ "$1" = chown ]; then [ "${CHOWN_FAIL:-0}" != 1 ]; exit; fi
 exec "$@"
 EOF
+cat >"$FB/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+echo "[systemctl] $*" >>"${DOCKER_LOG:-/dev/null}"
+[ "${BOOT_FAIL:-0}" != 1 ]
+EOF
 cat >"$FB/bin/tar" <<'EOF'
 #!/usr/bin/env bash
 [ -z "${TAR_CALLED:-}" ] || : >"$TAR_CALLED"
 [ "${TAR_FAIL:-1}" = 1 ] && exit 1
 exec /usr/bin/tar "$@"
 EOF
-chmod +x "$FB/bin/docker" "$FB/bin/sudo" "$FB/bin/tar"
+chmod +x "$FB/bin/docker" "$FB/bin/sudo" "$FB/bin/systemctl" "$FB/bin/tar"
 cat >"$FB/.env" <<EOF
 MONERO_ONION_ADDRESS=mona.onion
 TARI_ONION_ADDRESS=taria.onion
@@ -71,9 +76,15 @@ assert_rc "backup retries one failed restart (#1965)" "$rc" 0
 assert_contains "restart retry is reported" "$out" "retrying the normal startup path once"
 assert_eq "restart retry makes two up attempts" "$(cat "$FB/up.count")" 2
 
-out="$(backup_case env UP_FAILS=2 TAR_FAIL=0)"
+out="$(backup_case env PITHEAD_APPLIANCE=1 UP_FAILS=99 TAR_FAIL=0)"
 rc=$?
-assert_rc "backup reports two failed restarts (#1965)" "$rc" 1
+assert_rc "appliance backup recovers through the boot path (#1965)" "$rc" 0
+assert_contains "appliance recovery starts the boot unit" "$(cat "$FB/docker.log")" "systemctl] restart pithead-boot.service"
+assert_eq "appliance recovery does not repeat the failed compose path" "$(cat "$FB/up.count")" 1
+
+out="$(backup_case env PITHEAD_APPLIANCE=1 UP_FAILS=99 BOOT_FAIL=1 TAR_FAIL=0)"
+rc=$?
+assert_rc "backup reports failed compose and boot-path recovery (#1965)" "$rc" 1
 assert_contains "failed restart says the archive remains valid" "$out" "archive is valid"
 assert_eq "valid archive survives restart failure" "$(ls "$FB"/backups/pithead-backup-* 2>/dev/null | wc -l | tr -d ' ')" 1
 unset -f backup_case

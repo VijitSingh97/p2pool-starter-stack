@@ -72,15 +72,24 @@ test("runBackup surfaces a host-side rejection as the outcome, not a throw", asy
   assert.match(out.error, /10 minutes/);
 });
 
-test("runBackup uses backup recovery text when its own wait expires (#1965)", async () => {
-  const fetchStub = async (url) =>
-    url === "/api/control/backup"
-      ? { status: 202, ok: false, json: async () => ({ id: ID, status: "pending" }) }
-      : { status: 202, ok: false };
-  await assert.rejects(withFastPoll(fetchStub, () => runBackup()), (error) => {
+const timeoutFetch = async (url) =>
+  url === "/api/control/backup"
+    ? { status: 202, ok: false, json: async () => ({ id: ID, status: "pending" }) }
+    : { status: 202, ok: false };
+
+test("runBackup uses appliance recovery text when its own wait expires (#1965)", async () => {
+  await assert.rejects(withFastPoll(timeoutFetch, () => runBackup(true)), (error) => {
     assert.match(error.message, /Stopped waiting for the backup/);
     assert.match(error.message, /restart the appliance/);
     assert.doesNotMatch(error.message, /version is unchanged/);
+    return true;
+  });
+});
+
+test("runBackup gives a DIY host its own timeout recovery (#1965)", async () => {
+  await assert.rejects(withFastPoll(timeoutFetch, () => runBackup(false)), (error) => {
+    assert.match(error.message, /restart the stack from the host/);
+    assert.doesNotMatch(error.message, /restart the appliance/);
     return true;
   });
 });
@@ -121,7 +130,7 @@ test("BackupPanel confirm phase shows the disruption notice with Cancel/Create",
   c.state.phase = "confirm";
   const out = renderToString(c.render());
   assert.match(out, /stops the stack/);
-  assert.match(out, /more\s+than three minutes/);
+  assert.match(out, /three to four minutes/);
   assert.match(out, /dashboard pause/);
   assert.match(out, /Create backup/);
   assert.match(out, /Cancel/);
