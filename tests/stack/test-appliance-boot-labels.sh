@@ -93,9 +93,13 @@ assert_contains "the menu is emitted on the serial console" "$(cat "$ROOT/os/rau
 # shellcheck source=tests/os/boot-label-serial-verdict.sh
 source "$ROOT/tests/os/boot-label-serial-verdict.sh"
 printf 'Pithead 2.0.0 (slot B, current)\nPithead 2.0.0 (slot A, previous)\n' >"$BL/serial"
-boot_label_serial_verdict "$BL/serial" 2.0.0 B A >/dev/null
+boot_label_serial_verdict "$BL/serial" 0 2.0.0 B A >/dev/null
 assert_rc "serial verdict accepts both exact slot labels" "$?" "0"
-boot_label_serial_verdict "$BL/serial" 2.0.1 B A >/dev/null
+mark=$(wc -c <"$BL/serial" | tr -d ' ')
+printf 'Pithead 2.0.0 (slot A, current)\nPithead 2.0.0 (slot B, previous)\n' >>"$BL/serial"
+boot_label_serial_verdict "$BL/serial" "$mark" 2.0.0 B A >/dev/null
+assert_rc "serial verdict rejects matching labels from an earlier boot" "$?" "1"
+boot_label_serial_verdict "$BL/serial" 0 2.0.1 B A >/dev/null
 assert_rc "serial verdict rejects a stale version" "$?" "1"
 
 rm -rf "$BL"
