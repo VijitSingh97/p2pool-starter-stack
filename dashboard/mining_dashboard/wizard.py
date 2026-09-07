@@ -171,13 +171,13 @@ def wizard_stage() -> str:
     A page refresh must not walk back into an editable form after a config was accepted, and the
     client cannot know that alone: a bench session refreshed mid-provision got the setup form back.
 
-    failed     the host ended an installer attempt with an error
+    failed     the host ended an install or first-boot provisioning attempt with an error
     handoff    credentials published, waiting for the operator to save them
     done       provisioning under way (or finished) — nothing left to edit
     installer  running from the installation medium
     setup      no config accepted yet
     """
-    if installer_mode() and _spool_read("error.txt") is not None:
+    if _spool_read("error.txt") is not None:
         return "failed"
     if _spool_read("handoff.json") is not None and _spool_read("handoff-ack") is None:
         return "handoff"
