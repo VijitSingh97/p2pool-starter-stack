@@ -281,9 +281,10 @@ its own watts and needs no estimate.
 [Worker Inspect](dashboard.md#worker-inspect) to push config changes from the dashboard. Set it
 alongside `host` and `token` to make a rig editable — either by hand in `config.json`, or from
 Worker Inspect's own **adopt form** on a rig that doesn't have an entry yet; leave the whole
-feature off by not enabling the dashboard control channel. The token is the rig's `ACCESS_TOKEN`.
-Pithead keeps it on the host for writes and gives the dashboard only a lowercase hex HMAC-SHA256
-read bearer (token as key, `rigforge:api-read:v1` as the message). This split requires a
+feature off by not enabling the dashboard control channel. The token is the rig's `ACCESS_TOKEN`;
+the Adopt POST handles it transiently, then Pithead persists it host-side for writes. The steady
+dashboard runtime gets only a lowercase hex HMAC-SHA256 read bearer (token as key,
+`rigforge:api-read:v1` as the message). This split requires a
 cryptographically random token of at least 32 ASCII characters; generate one with
 `openssl rand -hex 16`. A shorter legacy token still works for raw host control but gets no derived
 read bearer, because the bearer would make guessing that token offline practical.
@@ -291,8 +292,9 @@ read bearer, because the bearer would make guessing that token offline practical
 ! The control token is **write-capable** and travels in **cleartext HTTP** over the LAN (like the
 stratum password): a change can alter a rig's pools or its thermal `watchdog`/`max_temp_c`, so anyone
 who can sniff or MITM the mining LAN and capture the token can push config to your rigs. Keep the
-mining LAN isolated from untrusted devices, and treat the token as a secret (it lives only in the
-owner-only `config.json`/`.env`, never in the dashboard container).
+mining LAN isolated from untrusted devices, and treat the token as a secret. After the Adopt POST,
+it is retained only in owner-protected host config and spool state, never in dashboard responses,
+logs, feed credentials, support bundles, or other exported artifacts.
 
 NOTE: a rig provisioned by the appliance (the setup page's RigForge choice) ships with control
 **on**, pinned to the Pithead it was pointed at. Its rendered RigForge config carries the `pools`
@@ -345,7 +347,7 @@ on `8080` sends no `rigforge` block and reads exactly as before — no chips, no
 open when the rig has no `ACCESS_TOKEN`. For an adopted token-protected rig, RigForge 1.17.2 or
 newer accepts the read-only bearer Pithead derives; an older release needs a RigForge upgrade before
 it can enrich (through Worker Inspect where remote upgrades are enabled, or locally otherwise). The
-raw control token never enters the dashboard container.
+raw control token is not retained in the dashboard runtime or used for feed reads.
 
 Current RigForge feeds stamp each response with UTC `generated_at`. Pithead ages that producer stamp,
 not the HTTP fetch: cached bytes can still arrive successfully after the refresh job freezes. Reports
