@@ -43,6 +43,10 @@ write_handoff_card() { # <spool-dir>; the card's JSON on stdin
         rm -f "$tmp"
         return 1
     }
+    chmod 600 "$tmp" || {
+        rm -f "$tmp"
+        return 1
+    }
     chown 1000:1000 "$tmp" 2>/dev/null || true
     mv -f "$tmp" "$1/handoff.json"
 }
