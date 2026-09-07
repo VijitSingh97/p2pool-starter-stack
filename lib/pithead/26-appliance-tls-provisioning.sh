@@ -241,6 +241,9 @@ appliance_mint_cert() { # -> prints the SHA-256 fingerprint
             log "Re-minting the dashboard certificate — the machine now answers to a different set of names than the one it was minted for. Your browser will need to trust the new certificate."
         names=$(appliance_site_names)
         primary="${names%% *}"
+        # X.509's legacy display CN is limited to 64 characters. SAN retains the full DNS name,
+        # including .local when a valid 63-character machine label exceeds that display limit.
+        primary="${primary:0:64}"
         openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
             -keyout "$d/wizard.key" -out "$d/wizard.crt" \
             -subj "/CN=$primary" -addext "subjectAltName=$alt" \

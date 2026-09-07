@@ -118,6 +118,9 @@ assert_eq "reconcile sets kernel name and refreshes Avahi" "$(hn_run appliance G
 assert_eq "existing name still retries mDNS announcement" "$(hn_run appliance old-name reconcile)" 'kernel=old-name calls=1'
 assert_eq "named cert includes mDNS and permitted IP" "$(hn_run appliance garden-box names)" 'DNS:garden-box.local,IP:192.168.1.10,DNS:localhost'
 assert_contains "minted certificate follows resolved name" "$(hn_run appliance garden-box cert)" 'DNS:garden-box.local'
+HN_LONG=$(printf 'a%.0s' {1..63})
+assert_contains "longest valid machine label mints its full SAN" "$(hn_run appliance "$HN_LONG" cert)" "DNS:$HN_LONG.local"
+unset HN_LONG
 assert_not_contains "name change removes old cert name" "$(hn_run appliance next-box cert)" 'DNS:garden-box.local'
 for op in setup render apply; do
     assert_eq "$op reconciles appliance name" "$(hn_run appliance garden-box "$op")" 'kernel=garden-box calls=2'

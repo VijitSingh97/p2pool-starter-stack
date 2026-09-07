@@ -405,7 +405,7 @@ async def submit(request: web.Request) -> web.Response:
         return web.json_response({"error": f"Not valid JSON: {exc}"}, status=400)
     try:
         cfg, changes = prepare_config(cfg, ref, reject_legacy_conflicts=True)
-        validate_machine_name(cfg)
+        validate_machine_name(cfg, _last_attempt())
     except ValueError as exc:
         return web.json_response({"error": f"Invalid configuration: {exc}"}, status=400)
     # The dashboard-login choice travels BESIDE the config: "no login" is an empty password,

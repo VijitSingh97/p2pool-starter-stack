@@ -14,16 +14,25 @@ NEW_MACHINE_ANSWERS = {
 }
 
 
-def validate_machine_name(cfg: dict) -> None:
+def validate_machine_name(cfg: dict, previous: dict) -> None:
     """Reject malformed explicit coordinator names before publishing a setup request.
 
-    Missing/auto names retain the host's existing identity, as in older configurations.
+    Missing/auto names retain identity. An unchanged legacy DNS/IP pin remains a certificate
+    address; entering a new machine name requires a label.
     """
     dashboard = cfg.get("dashboard", {})
     if not isinstance(dashboard, dict):
         raise ValueError("dashboard must be an object")
     host = dashboard.get("host", "auto")
     if host == "auto":
+        return
+    saved = previous.get("dashboard", {})
+    if (
+        isinstance(saved, dict)
+        and host == saved.get("host")
+        and isinstance(host, str)
+        and re.fullmatch(r"[a-zA-Z0-9._:-]{0,253}", host)
+    ):
         return
     if not isinstance(host, str) or not re.fullmatch(
         r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", host

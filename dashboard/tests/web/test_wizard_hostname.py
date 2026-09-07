@@ -60,3 +60,21 @@ async def test_missing_name_remains_compatible_and_bad_dashboard_shape_is_reject
     assert (await client.post("/submit", data={"config": "{}"})).status == 200
     result = await client.post("/submit", data={"config": '{"dashboard": []}'})
     assert result.status == 400
+
+
+@pytest.mark.parametrize(
+    "host", ["external.test", "old-name.local", "192.0.2.10", "2001:db8::1", ""]
+)
+async def test_unchanged_legacy_address_can_be_resubmitted_but_not_replaced_by_new_dns(
+    hostname_client, host
+):
+    client, spool = hostname_client
+    cfg = {"dashboard": {"host": host}}
+    spool.joinpath("last-attempt.json").write_text(json.dumps(cfg))
+    assert (await client.post("/submit", data={"config": json.dumps(cfg)})).status == 200
+    assert json.loads(spool.joinpath("last-attempt.json").read_text())["dashboard"]["host"] == host
+    result = await client.post("/submit", data={"config": '{"dashboard":{"host":"new.test"}}'})
+    assert result.status == 400
+    assert (
+        await client.post("/submit", data={"config": '{"dashboard":{"host":"new-label"}}'})
+    ).status == 200
