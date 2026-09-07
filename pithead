@@ -4887,7 +4887,7 @@ restore_staged_members_safe() {
         [ ! -d "$staged_root" ] || while IFS= read -r -d '' source; do
             rel="${source#"$staged_root"/}"
             destination="$root/$rel"
-            if [ -d "$source" ]; then kind=dir; else kind=file; fi
+            if [ -d "$source" ]; then kind="dir"; else kind="file"; fi
             restore_destination_safe "$destination" "$kind" || return 1
         done < <(find "$staged_root" -mindepth 1 -print0)
     done
