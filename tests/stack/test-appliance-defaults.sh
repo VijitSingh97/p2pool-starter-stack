@@ -49,7 +49,9 @@ assert_contains "failure points at the LAN-access switch" "$out" "grpc_lan_acces
 # verdict is pure over the greeting the peer sent, so every failure class is a fixture here
 # rather than a socket. The first is CAPTURED from a live monerod; the rest are the shapes a
 # live node will not produce.
-PFZ_LIVE=ff00000000000000017f03014e554c4c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+PFZ_LIVE=ff00000000000000007f03014e554c4c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+PFZ_READY_PUB=04190552454144590b536f636b65742d5479706500000003505542
+PFZ_READY_SUB=04190552454144590b536f636b65742d5479706500000003535542
 PFZ_HTTP=485454502f312e312034303020426164205265717565737400000000000000000000000000000000000000000000000000000000000000000000000000000000
 PFZ_ZMTP2=ff00000000000000007f01004e554c4c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 run_sourced "$PFSB" zmq_greeting_ok "$PFZ_LIVE"
@@ -63,6 +65,18 @@ run_sourced "$PFSB" zmq_greeting_ok "$PFZ_HTTP"
 assert_rc "a listener that is not ZMQ at all is refused" "$?" "1"
 run_sourced "$PFSB" zmq_greeting_ok "$PFZ_ZMTP2"
 assert_rc "a ZMTP 2 peer is refused — the READY exchange needs 3.x" "$?" "1"
+run_sourced "$PFSB" zmq_greeting_ok "${PFZ_LIVE:0:24}504c41494e${PFZ_LIVE:34}"
+assert_rc "a PLAIN-mechanism peer is refused before READY" "$?" "1"
+run_sourced "$PFSB" zmq_greeting_ok "${PFZ_LIVE:0:32}01${PFZ_LIVE:34}"
+assert_rc "a NULL mechanism with nonzero padding is refused before READY" "$?" "1"
+run_sourced "$PFSB" zmq_greeting_ok "${PFZ_LIVE:0:64}01${PFZ_LIVE:66}"
+assert_rc "an as-server peer is refused before READY" "$?" "1"
+run_sourced "$PFSB" zmq_greeting_ok "${PFZ_LIVE:0:66}01${PFZ_LIVE:68}"
+assert_rc "a greeting with nonzero filler is refused before READY" "$?" "1"
+run_sourced "$PFSB" zmq_ready_is_publisher "$PFZ_READY_PUB"
+assert_rc "a READY frame advertising PUB is accepted" "$?" "0"
+run_sourced "$PFSB" zmq_ready_is_publisher "$PFZ_READY_SUB"
+assert_rc "a READY frame advertising SUB is refused" "$?" "1"
 
 # Wiring, both directions, with no socket: stub `timeout` so every dial answers rc 0 and the
 # greeting read returns whatever the case supplies. An empty return is exactly the
@@ -74,27 +88,107 @@ out=$(
     source "$STACK"
     set +e
     timeout() { return 0; }
+    remote_node_address() { printf '127.0.0.1'; }
+    monero_rpc_speaks() { return 0; }
     preflight_remote_nodes "$PFSB/zmq.json" 2>/dev/null
 )
 assert_rc "reachable but no ZMTP greeting -> rc 1" "$?" "1"
 assert_contains "the refusal says nothing there speaks ZMQ" "$out" "speaks ZMQ"
 assert_contains "the refusal names the ZMQ port" "$out" "18083"
-# The same run with a live greeting must PASS, or the case above would go green against a
-# preflight that refuses everything.
+# The same run with a live greeting and publisher READY must PASS.
+out=$(
+    cd "$PFSB" || exit
+    # shellcheck disable=SC1090
+    source "$STACK"
+    set +e
+    timeout() { printf '%s\n%s' "$PFZ_LIVE" "$PFZ_READY_PUB"; }
+    remote_node_address() { printf '127.0.0.1'; }
+    monero_rpc_speaks() { return 0; }
+    preflight_remote_nodes "$PFSB/zmq.json" 2>/dev/null
+)
+assert_rc "reachable ZMQ publisher -> rc 0" "$?" "0"
+
+# The host-side check is the trusted re-check used by firstboot and dashboard config commits.
+# It must match the newer Python wizard probe on auth, response bounds and get_info shape.
+printf '{"monero":{"mode":"remote","node_username":"remoteuser","node_password":"remotepass","remote":{"host":"node.example","rpc_port":18081,"zmq_port":18083}},"tari":{"mode":"local"}}' >"$PFSB/rpc.json"
 out=$(
     cd "$PFSB" || exit
     # shellcheck disable=SC1090
     source "$STACK"
     set +e
     timeout() {
-        case "$*" in *"od -An"*) printf '%s' "$PFZ_LIVE" ;; esac
+        printf '%s' "$*" >"$PFSB/curl.args"
+        cat >"$PFSB/curl.stdin"
+        printf '{"status":"OK","nettype":"mainnet","height":10,"target_height":11}\n200'
+    }
+    _resolve_host_ips() { printf '192.168.50.8\n'; }
+    zmq_endpoint_is_publisher() {
+        printf '%s' "$1" >"$PFSB/zmq.host"
         return 0
     }
-    preflight_remote_nodes "$PFSB/zmq.json" 2>/dev/null
+    preflight_remote_nodes "$PFSB/rpc.json"
+    printf '%s' "$NODE_PROBE_REASON"
 )
-assert_rc "reachable AND greeting -> rc 0" "$?" "0"
+assert_eq "host preflight accepts authenticated, well-formed get_info" "$out" "ok"
+assert_contains "RPC re-check enables Digest auth" "$(cat "$PFSB/curl.args")" "--digest"
+assert_not_contains "RPC password is absent from process argv" "$(cat "$PFSB/curl.args")" "remotepass"
+assert_contains "RPC login is supplied through curl stdin config" "$(cat "$PFSB/curl.stdin")" "remoteuser:remotepass"
+assert_contains "RPC re-check caps the response body" "$(cat "$PFSB/curl.args")" "--max-filesize 1048576"
+assert_contains "RPC re-check bypasses ambient HTTP proxies" "$(cat "$PFSB/curl.args")" "--noproxy *"
+assert_contains "RPC uses the resolved address" "$(cat "$PFSB/curl.args")" "http://192.168.50.8:18081/get_info"
+assert_eq "ZMQ uses that same resolved address" "$(cat "$PFSB/zmq.host")" "192.168.50.8"
+run_sourced "$PFSB" remote_node_ip_allowed 8.8.8.8 true
+assert_rc "default Tor-egress policy refuses a public node address" "$?" "1"
+run_sourced "$PFSB" remote_node_ip_allowed 192.168.50.8 true
+assert_rc "default Tor-egress policy accepts a LAN node address" "$?" "0"
+run_sourced "$PFSB" remote_node_ip_allowed 8.8.8.8 false
+assert_rc "an explicit Tor-egress opt-out accepts a public node address" "$?" "0"
+run_sourced "$PFSB" remote_node_ip_allowed ::ffff:127.0.0.1 false
+assert_rc "an IPv4-mapped loopback address is always refused" "$?" "1"
+run_sourced "$PFSB" remote_node_ip_allowed 100::1 false
+assert_rc "a reserved IPv6 address is always refused" "$?" "1"
+out=$(
+    cd "$PFSB" || exit
+    # shellcheck disable=SC1090
+    source "$STACK"
+    set +e
+    timeout() { return 2; }
+    zmq_endpoint_is_publisher 192.168.50.8 18083
+    printf '%s' "$NODE_PROBE_REASON"
+)
+assert_eq "a malformed ZMQ exchange is a protocol failure" "$out" "protocol"
+out=$(
+    cd "$PFSB" || exit
+    # shellcheck disable=SC1090
+    source "$STACK"
+    set +e
+    timeout() { printf '{}\n200'; }
+    monero_rpc_speaks "$PFSB/rpc.json" node.example 18081
+    printf '%s' "$NODE_PROBE_REASON"
+)
+assert_eq "JSON that is not usable get_info -> protocol" "$out" "protocol"
+out=$(
+    cd "$PFSB" || exit
+    # shellcheck disable=SC1090
+    source "$STACK"
+    set +e
+    timeout() { printf '{"status":"OK","nettype":"mainnet","height":10.0,"target_height":11}\n200'; }
+    monero_rpc_speaks "$PFSB/rpc.json" node.example 18081
+    printf '%s' "$NODE_PROBE_REASON"
+)
+assert_eq "integral JSON floats do not pass as integer heights" "$out" "protocol"
+out=$(
+    cd "$PFSB" || exit
+    # shellcheck disable=SC1090
+    source "$STACK"
+    set +e
+    timeout() { return 63; }
+    monero_rpc_speaks "$PFSB/rpc.json" node.example 18081
+    printf '%s' "$NODE_PROBE_REASON"
+)
+assert_eq "an over-cap response is refused as unusable" "$out" "unusable"
 rm -rf "$PFSB"
-unset PFSB out PFZ_LIVE PFZ_HTTP PFZ_ZMTP2
+unset PFSB out PFZ_LIVE PFZ_READY_PUB PFZ_READY_SUB PFZ_HTTP PFZ_ZMTP2
 
 echo "== unit: appliance defaults (tor.auto_heal) =="
 # Applied only where ABSENT: an operator who wrote false meant it.
