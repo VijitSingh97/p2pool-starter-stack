@@ -65,14 +65,12 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-doctor-appliance.sh" && domain_ran te
 # shellcheck source=tests/stack/test-appliance-setup.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-setup.sh" && domain_ran test-appliance-setup.sh "$_d0" "$?" || domain_ran test-appliance-setup.sh "$_d0" "$?"
 
-# ---------------------------------------------------------------------------
 # shellcheck source=tests/stack/test-backup.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-backup.sh" && domain_ran test-backup.sh "$_d0" "$?" || domain_ran test-backup.sh "$_d0" "$?"
 _d0=$((PASS + FAIL)) && source "$HERE/test-backup-recovery.sh" && domain_ran test-backup-recovery.sh "$_d0" "$?" || domain_ran test-backup-recovery.sh "$_d0" "$?"
 # shellcheck source=tests/stack/test-install-verify.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-install-verify.sh" && domain_ran test-install-verify.sh "$_d0" "$?" || domain_ran test-install-verify.sh "$_d0" "$?"
 
-# ---------------------------------------------------------------------------
 # shellcheck source=tests/stack/test-secrets.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-secrets.sh" && domain_ran test-secrets.sh "$_d0" "$?" || domain_ran test-secrets.sh "$_d0" "$?"
 
@@ -234,6 +232,9 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-cert-advisory.sh" && domain
 
 # shellcheck source=tests/stack/test-appliance-boot-release.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-boot-release.sh" && domain_ran test-appliance-boot-release.sh "$_d0" "$?" || domain_ran test-appliance-boot-release.sh "$_d0" "$?"
+
+# shellcheck source=tests/stack/test-appliance-build-compose-source.sh disable=SC2015
+_d0=$((PASS + FAIL)) && source "$HERE/test-appliance-build-compose-source.sh" && domain_ran test-appliance-build-compose-source.sh "$_d0" "$?" || domain_ran test-appliance-build-compose-source.sh "$_d0" "$?"
 
 # shellcheck source=tests/stack/test-appliance-os-update.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-os-update.sh" && domain_ran test-appliance-os-update.sh "$_d0" "$?" || domain_ran test-appliance-os-update.sh "$_d0" "$?"
