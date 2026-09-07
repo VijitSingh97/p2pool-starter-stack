@@ -98,9 +98,15 @@ The test box holds real synced nodes and real keys. Treat it as production-sensi
   reaches the 48-character form, and no bound reaches the emoji form at all.
   **The JSON rule is keyed on the field NAME, not the value, and that is forced**:
   a view key and a container digest are both 64 hex characters, so nothing in the value separates
-  them. **The name list is open, and one field is out of the FILTER's reach** — `notifications.ntfy.url`
+  them. **The name list is open, and three fields are out of the FILTER's reach** — `notifications.ntfy.url`
   is a capability URL whose key is the bare word `url`, which only its nesting separates from the
-  public `xvb.url`, and a line-wise filter cannot see nesting. That is a limit of the filter, not
+  public `xvb.url`, and a line-wise filter cannot see nesting. `notifications.webhooks[]` is the
+  same kind of URL one shape over: the rule needs the key's colon to be followed by the value's own
+  quote, and a JSON list puts a bracket in between. The list shape alone is enough to defeat it —
+  `webhook_urls` sits in the redactor's vocabulary, and a value written as `["…"]` under that very
+  key still comes through raw. `xvb.standby.source` is the third, and it is a plain name gap: the
+  masked-config pass treats it as a secret, and no suffix in either vocabulary carries the bare
+  word `source`. That is a limit of the filter, not
   of the bundle: since [#1630](https://github.com/p2pool-starter-stack/pithead/issues/1630) the
   `config.json` artifact is masked BY PATH before it reaches the filter (*Artifacts & triage*
   below), so the topic does not survive a capture. The self-test states the filter's gap rather
@@ -183,7 +189,7 @@ Useful flags (full list in `run.sh --help`):
 | `--lifecycle` | Also run the lifecycle phase (restart, apply secret-preservation). |
 | `--fault-injection` | Also break monerod (stop / SIGSTOP / remove) and assert `status`' down/unhealthy/missing verdicts and the failover→recovery cycle, plus a dashboard DB-write fault (data dir made read-only → `/api/state` reports `db_healthy:false` → write access restored, [#202](https://github.com/p2pool-starter-stack/pithead/issues/202)). Destructive-then-restored; local mode only; slow. |
 | `--auth-fail-closed` | Also empty `PROXY_AUTH_TOKEN` in `.env` and assert `pithead up` refuses to start (the live counterpart to the tier-1 compose-config check, [#153](https://github.com/p2pool-starter-stack/pithead/issues/153)/[#203](https://github.com/p2pool-starter-stack/pithead/issues/203)), then restore the exact token and recover. Destructive-then-restored; ssh or local mode. |
-| `--rigforge-control` | Also drive the RigForge WRITE paths against a real rig with `dashboard.control` on and the rig pinned in `workers.list[]` (#506; a baseline that still carries the deprecated `dashboard.workers[]` fallback is left as-is, so that shape stays exercised too): the enriched read survives a populated masked-token descriptor ([#514](https://github.com/p2pool-starter-stack/pithead/issues/514)), the rig is editable and a reversible Worker Inspect edit lands on it on four of the six writable keys — `max_temp_c` ([#508](https://github.com/p2pool-starter-stack/pithead/issues/508)/[#513](https://github.com/p2pool-starter-stack/pithead/issues/513)), `DONATION` and `watchdog_interval_min` ([#1236](https://github.com/p2pool-starter-stack/pithead/issues/1236)), and `pools` (needs `IT_RIG_POOLS_PROBE`); `autotune` and `watchdog` are refused on purpose — a rig-side edit reflects back in the feed + masked prefill ([#516](https://github.com/p2pool-starter-stack/pithead/issues/516)), and an auto-rollback is recorded end-to-end ([#517](https://github.com/p2pool-starter-stack/pithead/issues/517)). Destructive-then-restored; local mode only; each leg self-skips without its prerequisites (see below). |
+| `--rigforge-control` | Also drive the RigForge WRITE paths against a real rig with `dashboard.control` on and the rig pinned in `workers.list[]` (#506; the deprecated `dashboard.workers[]` fallback was removed in 2.0.0 (#1832), so a baseline still carrying that key is migrated to `workers.list[]` before the legs run): the enriched read survives a populated masked-token descriptor ([#514](https://github.com/p2pool-starter-stack/pithead/issues/514)), the rig is editable and a reversible Worker Inspect edit lands on it on four of the six writable keys — `max_temp_c` ([#508](https://github.com/p2pool-starter-stack/pithead/issues/508)/[#513](https://github.com/p2pool-starter-stack/pithead/issues/513)), `DONATION` and `watchdog_interval_min` ([#1236](https://github.com/p2pool-starter-stack/pithead/issues/1236)), and `pools` (needs `IT_RIG_POOLS_PROBE`); `autotune` and `watchdog` are refused on purpose — a rig-side edit reflects back in the feed + masked prefill ([#516](https://github.com/p2pool-starter-stack/pithead/issues/516)), and an auto-rollback is recorded end-to-end ([#517](https://github.com/p2pool-starter-stack/pithead/issues/517)). Destructive-then-restored; local mode only; each leg self-skips without its prerequisites (see below). |
 | `--rig-host <h>` / `--rig-control-port <p>` | The borrowed rig's LAN host and writable control API port (default `8082`), used to inject a `workers.list[]` descriptor when the box's baseline lacks one ([#185](https://github.com/p2pool-starter-stack/pithead/issues/185)/#506). Pair with `IT_RIG_TOKEN` (env; never a flag). |
 | `--subnet` | Also bring the stack down then up on a non-default `network.subnet` (`10.84.0.0/24`) and assert the moved prefix reached `.env`, the docker bridge, Tor's render-at-start IP, monerod's proxy IP, the dashboard SSRF CIDR, and the [#344](https://github.com/p2pool-starter-stack/pithead/issues/344) onion vhost, then run the standard battery ([#201](https://github.com/p2pool-starter-stack/pithead/issues/201)/[#180](https://github.com/p2pool-starter-stack/pithead/issues/180)). Destructive-then-restored; local mode only. |
 | `--safety-backup` | Take a `pithead backup` before the destructive scenarios and auto-roll-back (down → restore → up) if anything fails; the archive is removed on success. Recommended for the destructive matrix on a precious box; also exercises backup/restore end-to-end. |
@@ -481,10 +487,10 @@ For one representative config:
 The dashboard↔RigForge WRITE surfaces that only a real rig with its `:8082` control API opted in
 can prove — the tier-2 fake covers the `:8081` read only. It enables `dashboard.control`, pins the
 borrowed rig in `workers.list[]` (#506; its token seen inside the container only as the
-`{"__secret__": true}` sentinel, [#440](https://github.com/p2pool-starter-stack/pithead/issues/440)
-— a baseline that still carries the deprecated `dashboard.workers[]` fallback is left as-is rather
-than force-migrated, so that shape stays exercised too), and drives five legs, each self-skipping
-loudly without its prerequisite:
+`{"__secret__": true}` sentinel, [#440](https://github.com/p2pool-starter-stack/pithead/issues/440);
+the deprecated `dashboard.workers[]` fallback was removed in 2.0.0 (#1832), so a baseline still
+carrying that key is migrated to `workers.list[]` before the legs run), and drives five legs, each
+self-skipping loudly without its prerequisite:
 
 - Read with a populated masked descriptor ([#514](https://github.com/p2pool-starter-stack/pithead/issues/514)):
   `api_ok` and the enriched feed still resolve — the guard for the v1.5.2 regression, where the
@@ -506,13 +512,15 @@ loudly without its prerequisite:
 - **Three writable keys are deliberately never driven, and this is a decision rather than a gap.**
   `autotune` would start a real tuning run — it moves hashrate and thermals and may not settle
   inside the leg. `watchdog` would remove thermal protection from a rig mining at its temperature
-  ceiling. `pools` cannot be round-tripped from the rig's own reading at all: RigForge strips `pass`
-  and `tls-fingerprint` before serving the config, and the dashboard strips them again, so the value
-  that comes back is lossy — and `pass` is the stack's stratum password
+  ceiling. `pools` cannot be round-tripped from the rig's own reading at all: RigForge serves a
+  stored `pass` or `tls-fingerprint` as the `{"__secret__": true}` marker and never the value, and
+  the dashboard drops the marker again on the way back, so the value that comes back is lossy — and
+  `pass` is the stack's stratum password
   ([#113](https://github.com/p2pool-starter-stack/pithead/issues/113)), which the proxy rejects a
-  login without. Worse, the harness cannot tell "this rig has no password" from "this rig's password
-  was stripped on the way to me": both arrive as `{"url": …}`. Writing that back would silently
-  strand a borrowed miner.
+  login without. The marker does let the harness tell "this rig has no password" (no `pass` key)
+  from "a password is stored here", but RigForge restores a stored password only for an entry whose
+  `url` and `user` still match what the rig holds, and a probe moves the URL. Writing the rig's own
+  reading back under a probe would silently strand a borrowed miner on password `x`.
 - `pools`, the operator-supplied route (the repoint-your-hashrate key): because the rig's own
   reading cannot be written back, the restore target is the dashboard's record of what *it* last
   pushed (`GET /api/worker`'s `.last_applied.pools`), which is un-stripped, and the probe is
@@ -542,6 +550,31 @@ first hardware run to exercise the wait hit precisely that
 `DONATION` changes applied, eighteen seconds apart, while the gate reported four failures. The
 self-test that covers the settle now runs the real wait rather than a silent stub, because a stub
 that prints nothing cannot see this class at all.
+
+The same leg then asserts that the change reached the dashboard's `#185` per-worker history, and
+that readback needed a settle of its own
+([#1471](https://github.com/p2pool-starter-stack/pithead/issues/1471)). The two surfaces converge
+at different moments, and the harness used to argue that they did not. The argument's first half
+holds: the reconcile step does run before the enriched-feed merge, on the same poll. Its second
+half does not, because both of those read a rig file that RigForge writes at the *start* of a
+control-apply, before it has decided the outcome at all. The terminal status goes to a second file
+at the end, after the apply, an xmrig restart and a bounded wait for the miner to come back, and
+the reconciler cannot move the row off `accepted` until it has read that one. Settling on the
+config therefore ends at the start of that window rather than after it, and reading the row there
+raced it by up to ninety seconds. The claim survived because two of the three keys that reach that
+assertion, `max_temp_c` and `watchdog_interval_min`, are on RigForge's restart-free fast path, where
+the window is too small to see. The third, `DONATION`, is off that list and takes the full path —
+which is where the ninety-second bound comes from, and where a hardware run would have hit this.
+
+The row is now waited to a terminal status before it is read, on the same ninety-second bound the
+window itself has. Terminal rather than `applied`, which is what keeps the assertion honest in both
+directions: a rig that genuinely rejected a change publishes its terminal row at once, so the leg
+reds on the real status instead of spending the whole bound on a verdict already known, and a row
+that never settles stays `accepted` and reds as well. The one answer the wait must never invent is
+`applied` for a row nobody has confirmed. Terminal is written as the complement of `accepted` and
+"no row yet", not as a list of the six outcomes the rig can report today, so a status added
+upstream reads as terminal and gets named by the assertion rather than timing out and being
+reported as a row that never settled.
 
 ### The abort-safe unwind
 
@@ -661,9 +694,9 @@ each failed assertion and points at these.
 
 `config.json` is the one artifact that is not streamed straight through the redactor. A config is a
 document with an enumerable shape, and the stack already classifies it by PATH:
-`render_masked_config` walks `CONTROL_SECRET_PATHS` plus the three variable-length array cases a
-fixed-path walk cannot reach (`workers.list[].token`, the deprecated `dashboard.workers[].token`,
-and `notifications.webhooks[]`, where the whole URL is the bearer secret). The capture SOURCES the
+`render_masked_config` walks `CONTROL_SECRET_PATHS` plus the two variable-length array cases a
+fixed-path walk cannot reach (`workers.list[].token` and `notifications.webhooks[]`, where the
+whole URL is the bearer secret). The capture SOURCES the
 box's own `./pithead` and calls that function rather than restating the list or the jq program
 here: sourcing is the shipped contract, since the prelude sets `_STACK_SOURCED` and skips the `cd`,
 the traps and `main`. One classification, one place to change it. The masked document then passes
@@ -755,7 +788,19 @@ than that a `<redacted>` marker appeared, since a marker can come from some othe
 same line. Its JSON population is derived from `config.reference.json` rather than
 listed in the file, under a screen deliberately wider than the redactor's own list, so a sensitive
 field added to the schema fails the test by name until someone classifies it as redacted or as a
-stated survivor. It also guards the other direction: a sha256 digest, a non-secret flag value, the
+stated survivor. Arrays are classified on their own account rather than by name
+([#1723](https://github.com/p2pool-starter-stack/pithead/issues/1723)): an empty list yields no
+element for the screen to read, and a list element's path ends in `[]`, which no suffix rule can
+match, so all four of the schema's arrays sat outside that guarantee — three of them carrying
+secrets the masked-config pass covers by path. Checking that pass's own path list against this
+file's classification is what turned up `xvb.standby.source`, which the screen now reaches; the
+check itself is not yet mechanical here. Two of those arrays hold objects, and the row for them
+asserts nothing, because an empty reference gives no element to probe — so that emptiness is now
+read from the schema rather than stated
+([#1748](https://github.com/p2pool-starter-stack/pithead/issues/1748)). Populate one and the row
+fails and asks for a reclassification; before, it went on reporting that the reference carried no
+element, and an element under a name the screen does not carry reddened nothing at all. It also
+guards the other direction: a sha256 digest, a non-secret flag value, the
 reserved IP ranges and a HAProxy timestamp must survive, because an artifact with its image pins or
 its port map stripped is useless for the triage it exists for. That timestamp is not a hypothetical
 near-miss: HAProxy's `DD/Mon/YYYY:HH:MM:SS` reads as an IPv6 address, because a four-digit year
@@ -786,6 +831,28 @@ as survivors. A bare `AUTH` suffix would redact the pair and protect nothing, an
 would take every public endpoint while still missing the webhook key, which ends in `URLS`. Four
 onion addresses are listed apart again, because a shape rule rather than the name rule covers them
 and a name-shaped fixture would report them as leaking.
+`selftest-redact-paths.sh` holds the other classification against this one. The stack masks
+`config.json` by PATH, in `CONTROL_SECRET_PATHS` plus three jq stanzas for the variable-length
+arrays, while `selftest-redact.sh` classifies the same document by a name screen. Two hand-kept
+classifications of one document, and until [#1730](https://github.com/p2pool-starter-stack/pithead/issues/1730) nothing held them against each
+other, so they drifted: `xvb.standby.source` is masked by the product and was in none of the
+self-test's lists, because no suffix in either vocabulary carries the bare word `source`. It was
+found by someone happening to look, which is the thing this file replaces. The check is one-way
+by design — every path the product masks must be classified, never the reverse, because the
+self-test classifies more than the product masks and should: the public endpoints and routing
+ids are what a bundle exists to carry. The population is measured rather than parsed, since a
+read of the `CONTROL_SECRET_PATHS` literal sees twelve fixed paths and misses all three array
+stanzas; the file runs the real masker over a populated fixture and reads back the fifteen paths
+that became `{"__secret__": true}`. A path inside an array is satisfied by its enclosing `[]`
+path being classified, which is what `workers.list[].token` needs. The arming control is the
+load-bearing part: `render_masked_config` warns and returns 0 when its jq fails, so a test
+reading its return code greens over a document that was never written and every containment row
+then passes over an empty population. The file asserts the artifact exists and holds exactly
+the set of paths the fixture populated, named entry for entry, before it reads a single
+verdict. One more thing a populated fixture cannot tell you on its own: a jq assignment
+creates an absent path, so the presence of each populated leaf is checked against the shipped
+schema first — without that row, deleting `xvb.standby` from the reference leaves every other
+row green over a path the product no longer carries.
 `selftest-zmq-probe.sh` drives the ZMTP verdicts from captured and hand-built wire fixtures,
 so every failure class — a silent peer, a non-ZMQ listener, a ZMTP peer that is not a publisher, a
 READY frame carrying a decoy `Socket-Type` value — is reachable with no socket and no stack. It
@@ -808,6 +875,39 @@ sentinel file in that directory is still on disk once the subshell's EXIT trap h
 a working `mktemp` holds the other side, so deleting the sandbox logic outright cannot pass. The
 last case drives the pre-fix expression against the same fixture and requires it to destroy the
 sentinel, so a row that is green because the fixture never armed fails rather than reads as proof.
+
+A second block in that file holds the invariant that keeps the constructor honest. The
+[#1705](https://github.com/p2pool-starter-stack/pithead/issues/1705) invariant reads
+`tests/stack/lib.sh` and the `test-*.sh` domain files, and for a while it named `tests/stack/run.sh`
+and the standalone `test_*.sh` out of itself, because those belonged to other lanes and the
+conversion to the fail-closed constructor stopped at that boundary. A list of names rots in
+silence: a fifth bare `mktemp -d` assignment added to `run.sh` would have sat outside the invariant
+with nothing saying so, and that gap rather than the four known sites is what
+[#1725](https://github.com/p2pool-starter-stack/pithead/issues/1725) was about. The four sites were
+not inert: the hazard is any `"$VAR/sub"` expansion, not a recursive `rm`, and all four had one —
+`run.sh` writes `"$XPTLS/cert.pem"` and `"$XPTLS/key.pem"` and then removes the second, both
+`local d` helpers write `"$d/xmrig-proxy"`, and `test_data_reset.sh` runs `mkdir -p "$WORK/bin"`.
+Under an empty value each is an absolute path at the filesystem root, and `set -u` does not catch
+it because a failed `mktemp -d` leaves the variable set and empty. Those writes fail for an
+unprivileged user and would land under `/` as root; only the trailing `rm -rf "$VAR"` is inert.
+While that gap stood it was pinned to exactly those four, keyed on file and variable name rather
+than line number, because the line numbers the issue cites had already drifted by three when the
+pin was written. The pin reds in both directions: a new bare site fails it, and so does converting
+the four. #1725 converted them, so the second red is the signal the pin was built to give, and the
+by-name exclusion, the pin, and the split between the two halves are gone together. Both halves land
+in one merge, because neither order keeps the branch green on its own: converting first empties the
+pin, and widening first makes the invariant's own match set non-empty against sites that are still
+bare. The glob now covers `lib.sh`, `run.sh` and both test-file spellings, which is every suite file
+under `tests/stack`; the one file outside it, `fixtures/rauc-info/capture.sh`, is a capture helper
+the suite does not source and is named in the code rather than left implied. What replaces the pin
+is a file-set control: the invariant asserts that each of its four spellings — `lib.sh`, `run.sh`,
+`test-*.sh` and `test_*.sh` — matches at least one file before it reads an absence of matches as
+evidence, and refuses rather than records when one does not, because a glob that quietly stopped
+matching would report the same clean result as a fully converted tree. Counting matches per spelling
+rather than naming files is what lets the refusal say which spelling failed. The first form asserted
+`test_data_reset.sh` by name, which put one lane's filename inside another lane's assertion and gave
+the same red whether that file had been renamed or the whole spelling had drained away
+([#1796](https://github.com/p2pool-starter-stack/pithead/issues/1796)).
 
 ---
 

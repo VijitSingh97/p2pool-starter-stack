@@ -59,21 +59,25 @@ wizard_mint_token() {
 # Consume one wizard submission: validate the candidate with the same parser setup/apply use; on
 # success install it as ./config.json and mark the spool applied (the wizard page polls for it).
 # On failure surface a short error into the spool for the form. rc: 0 applied, 1 rejected, 2 none.
-firstboot_consume_spool() { # <spool-dir>
+firstboot_consume_spool() ( # <spool-dir>
     local spool="$1" cand="$1/config.json" err
-    [ -f "$cand" ] || return 2
+    local snap rc=0
+    snap=$(wizard_spool_request "$spool" config.json) || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+    trap 'wizard_spool_clean "${snap%/*}"' EXIT
+    cand="$snap"
     # CONFIG_FILE is readonly after sourcing; validate the candidate in a fresh process via the
     # PITHEAD_CONFIG_FILE override (the same parser setup/apply run, against the same file).
     if err=$(PITHEAD_CONFIG_FILE="$cand" bash -c "source '${BASH_SOURCE[0]}' && parse_and_validate_config" 2>&1); then
-        cp "$cand" "$PWD/config.json"
-        rm -f "$cand"
-        touch "$spool/applied"
+        install -m 600 "$cand" "$PWD/config.json" || return 1
+        rm -f "$spool/config.json"
+        wizard_spool_publish "$spool" applied true
         return 0
     fi
-    printf '%s' "$err" | tail -n 2 | tr -d '[:cntrl:]' | tail -c 240 >"$spool/error.txt"
-    rm -f "$cand"
+    printf '%s' "$err" | tail -n 2 | tr -d '[:cntrl:]' | tail -c 240 | wizard_spool_publish "$spool" error.txt cat
+    rm -f "$spool/config.json"
     return 1
-}
+)
 
 # --- the machine role (one stick, three machines) -------------------------------------------
 # What a machine IS is the wizard's first question: a Pithead coordinator, a coordinator that
@@ -85,6 +89,9 @@ firstboot_consume_spool() { # <spool-dir>
 
 record_machine_role() { # <pithead|both|rig>
     printf '%s\n' "$1" >"$PWD/machine-role" 2>/dev/null || true
+    # A role change replaces the role's data with it (#1318): rig.json — and the control token in
+    # it — belongs to the rig role only, so a machine accepted as a coordinator leaves none behind.
+    [ "$1" = rig ] || rm -f "$PWD/rig.json"
 }
 
 # The wizard's response to a failed (setup), as one step so it can be driven directly (#1059).
@@ -174,14 +181,12 @@ machine_role_from_config() { # <config-file>
 # way the disk inventory travels. Fail open: no answer publishes only this machine's name, and
 # the pool field opens empty. PITHEAD_RIG_PROBE overrides the target for tests.
 publish_rig_defaults() { # <spool-dir>
-    local probe="${PITHEAD_RIG_PROBE:-pithead.local:3333}" tmp="$1/.rig-defaults.json.$$" pool=""
+    local probe="${PITHEAD_RIG_PROBE:-pithead.local:3333}" pool=""
     if timeout 3 bash -c "</dev/tcp/${probe%:*}/${probe##*:}" 2>/dev/null; then
         pool="$probe"
     fi
     jq -n --arg pool "$pool" --arg worker "$(hostname)" \
-        '{worker: $worker} + (if $pool == "" then {} else {pool: $pool} end)' >"$tmp" 2>/dev/null || : >"$tmp"
-    chown 1000:1000 "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$1/rig-defaults.json"
+        '{worker: $worker} + (if $pool == "" then {} else {pool: $pool} end)' | wizard_spool_publish "$1" rig-defaults.json cat
 }
 
 # Consume one rig-role submission: shape-check the pool address, dial it BEFORE anything
@@ -189,31 +194,46 @@ publish_rig_defaults() { # <spool-dir>
 # land the accepted answers as $PWD/rig.json, host-side and outside the spool (the same trust
 # move firstboot_consume_spool makes: what got validated is what gets used, whatever the
 # container writes afterwards). rc: 0 accepted, 1 rejected, 2 none.
-firstboot_consume_rig() { # <spool-dir>
+firstboot_consume_rig() ( # <spool-dir>
     local spool="$1" req="$1/rig-request.json" pool worker host port
-    [ -f "$req" ] || return 2
+    local snap rc=0
+    snap=$(wizard_spool_request "$spool" rig-request.json) || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+    trap 'rm -f "${snap%/*}/rig.json"; wizard_spool_clean "${snap%/*}"' EXIT
+    req="$snap"
     pool=$(jq -r '.pool // ""' "$req" 2>/dev/null | tr -d '[:cntrl:]')
     worker=$(jq -r '.worker // ""' "$req" 2>/dev/null | tr -d '[:cntrl:]')
     host="${pool%:*}"
     port="${pool##*:}"
-    if [ -z "$host" ] || [ "$host" = "$pool" ] || ! [[ "$port" =~ ^[0-9]+$ ]]; then
-        printf 'the pool address must look like host:port — a Pithead answers on port 3333' >"$spool/error.txt"
-        rm -f "$req"
+    host="${host#\[}"
+    host="${host%\]}"
+    if [ "$host" = "$pool" ] || ! is_valid_host "$host" || ! is_valid_port "$port"; then
+        printf 'the pool address must look like host:port — a Pithead answers on port 3333' | wizard_spool_publish "$spool" error.txt cat
+        rm -f "$spool/rig-request.json"
         return 1
     fi
-    if ! timeout 5 bash -c "</dev/tcp/$host/$port" 2>/dev/null; then
-        printf 'cannot reach a pool at %s:%s — check the address, and that the Pithead is up' "$host" "$port" >"$spool/error.txt"
-        rm -f "$req"
+    if ! timeout 5 bash -c '</dev/tcp/"$1"/"$2"' _ "$host" "$port" 2>/dev/null; then
+        printf 'cannot reach a pool at %s:%s — check the address, and that the Pithead is up' "$host" "$port" | wizard_spool_publish "$spool" error.txt cat
+        rm -f "$spool/rig-request.json"
         return 1
     fi
-    if ! jq --arg w "${worker:-$(hostname)}" '{pool: .pool, worker: $w}
-        + (if (.stratum_password // "") == "" then {} else {stratum_password: .stratum_password} end)' \
-        "$req" >"$PWD/rig.json" 2>/dev/null; then
-        rm -f "$req" "$PWD/rig.json"
-        printf 'could not record the rig settings — submit again' >"$spool/error.txt"
+    # The control token (#1836) survives a "Set up again" that keeps the role AND the worker name
+    # (#1318): the coordinator adopted THIS worker with THIS token. Any other change mints a new one.
+    local keep_tok=""
+    [ "$(jq -r '.worker // ""' "$PWD/rig.json" 2>/dev/null)" = "${worker:-$(hostname)}" ] &&
+        keep_tok=$(jq -r '.access_token // ""' "$PWD/rig.json" 2>/dev/null)
+    if ! (
+        umask 077
+        jq --arg w "${worker:-$(hostname)}" --arg t "$keep_tok" '{pool: .pool, worker: $w}
+        + (if (.stratum_password // "") == "" then {} else {stratum_password: .stratum_password} end)
+        + (if $t == "" then {} else {access_token: $t} end)' \
+            "$req" >"${snap%/*}/rig.json" 2>/dev/null && mv -fT "${snap%/*}/rig.json" "$PWD/rig.json"
+    ); then
+        rm -f "$spool/rig-request.json" "$PWD/rig.json"
+        printf 'could not record the rig settings — submit again' | wizard_spool_publish "$spool" error.txt cat
         return 1
     fi
     chmod 600 "$PWD/rig.json" 2>/dev/null || true
-    rm -f "$req"
+    rm -f "$spool/rig-request.json"
     return 0
-}
+)

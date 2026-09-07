@@ -737,7 +737,7 @@ test('WorkersTable surfaces the per-rig api-unreadable and reject badges, and th
     // The single fixture pins both workers to pool=p2pool, api_ok=null, reject_flag=null, so these
     // three problem-rig signals — the whole point of the pool/api/rejected columns — never render.
     const s = clone();
-    s.workers[0].api_ok = false; // xmrig API unreadable -> "api ⚠"
+    Object.assign(s.workers[0], { api_ok: false, adopted: true }); // adopted rig, dead feed
     s.workers[0].reject_flag = { text: '90% rejected', title: 'high reject rate' };
     s.workers[0].pool = 'xvb'; // purple XvB badge
     s.workers[1].pool = 'somethingelse'; // unrecognised -> Unknown (bad) badge
@@ -822,8 +822,8 @@ test('ComponentHealth shows a Tor-only summary, the topology nodes, and the egre
     assert.match(html, /Stack Topology & Egress/);
     assert.match(html, /🛡️/); // safe shield, not the warning triangle
     assert.match(html, /All egress via Tor/);
-    // the StackTopology SVG renders its node labels...
-    assert.match(html, /Mining rigs/);
+    assert.match(html, /External rigs/);
+    assert.doesNotMatch(html, /Built-in miner/);
     assert.match(html, /monerod/);
     // ...and the per-component egress drawer lists each component.
     assert.match(html, /All connections \(per component\)/);

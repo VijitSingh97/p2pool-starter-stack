@@ -24,8 +24,26 @@ check_stratum_exposure() {
     pub="$(host_public_ips)"
     pub="${pub//$'\n'/, }"
     if [ -n "$pub" ]; then
+        # setup's console warn NAMES the address, and keeps naming it: that is the operator's own
+        # terminal on their own host, and the address is what makes the finding actionable there.
+        # The DOCTOR verdict has a second audience since #1736 -- control_diag_doctor runs
+        # `doctor --json` and ships every recorded message to the dashboard over the network -- so
+        # the doctor arms carry the finding WITHOUT the value (#1772). The redactor on that path
+        # does not close it: bundle_redact_log (07-support-bundle.sh) keys on argv position, the
+        # onion shape and the Monero shape, and has no IP rule at all. tests/integration/lib.sh's
+        # redact() does have one (#1609), but that twin guards CI artifact uploads, not the browser.
         msg="This host appears to have a public IP ($pub). The stratum port $port is unauthenticated by default and cleartext — firewall it to your LAN, set p2pool.stratum_bind to a LAN IP / 127.0.0.1, and/or require a p2pool.stratum_password. See $DOCS_URL/docs/workers.md#firewall."
-        if [ "$mode" = doctor ]; then dr_warn "$msg"; else warn "$msg"; fi
+        if [ "$mode" = doctor ]; then
+            # The appliance arm names only what an appliance operator can actually reach. Blocking
+            # the port at their own router is theirs. The two config remedies are not: neither
+            # STRATUM_BIND nor STRATUM_PASSWORD is in CONTROL_DASHBOARD_EDITABLE_KEYS or
+            # CONTROL_DASHBOARD_CONFIRM_KEYS (42-control-policy-and-host-checks.sh), where the
+            # stratum password is named as deliberately host-only. So it states the diagnosis,
+            # gives the one route that exists, and stops -- #1213's rule at #1772's site.
+            dr_warn_surface "This host appears to have a public IP. The stratum port $port is unauthenticated by default and cleartext — firewall it to your LAN, set p2pool.stratum_bind to a LAN IP / 127.0.0.1, and/or require a p2pool.stratum_password. See $DOCS_URL/docs/workers.md#firewall." "This machine appears to have a public IP, and the stratum port $port is unauthenticated and cleartext by default — anything on the internet can reach it. Block that port at your router, so that only your own network can. Narrowing the listen address or requiring a stratum password is not editable from the dashboard: changing either needs console access to this machine."
+        else
+            warn "$msg"
+        fi
     else
         [ "$mode" = doctor ] && dr_ok "No public IP on host interfaces — stratum :$port isn't directly internet-exposed."
     fi
@@ -64,17 +82,17 @@ check_control_units() {
     if [[ "$_name" =~ ^pithead-v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ -L "$_parent/current" ]; then
         _live=$(cd "$_parent/current" 2>/dev/null && pwd -P)
         if [ -n "$_live" ] && [ "$_live" != "$here" ]; then
-            dr_info "This is not the live install — '$_parent/current' points at $_live. Run doctor there to check its control channel."
+            dr_info "This is not the live install — '$_parent/current' points at $_live. Run doctor there to check its control channel." # appliance-unreachable: the DIY versioned layout only -- the guard above needs basename pithead-vX.Y.Z AND a sibling `current` symlink, and the appliance's /opt/pithead install creates neither
             return 0
         fi
     fi
     if [ -z "$owner" ]; then
-        dr_fail "The control channel is enabled but no runner units are installed — the dashboard's config changes and one-click upgrades will never run, with no error shown. Fix: run './pithead apply' from this directory."
+        dr_fail_surface "The control channel is enabled but no runner units are installed — the dashboard's config changes and one-click upgrades will never run, with no error shown. Fix: run './pithead apply' from this directory." "The control channel is enabled but no runner units are installed — config changes and one-click upgrades made here will never run, with no error shown. The installed system provides these units, so this system copy is faulty."
     elif [ "$owner" != "$here" ]; then
-        dr_fail "The control runner units point at $owner, but this install is $here — the dashboard writes its requests here and nothing reads them, so config changes and one-click upgrades silently never run. Fix: run './pithead apply' from this directory."
+        dr_fail_surface "The control runner units point at $owner, but this install is $here — the dashboard writes its requests here and nothing reads them, so config changes and one-click upgrades silently never run. Fix: run './pithead apply' from this directory." "The control runner units point at $owner, but this install is $here — requests are written here and nothing reads them, so config changes and one-click upgrades silently never run. The installed system sets this up, so this system copy is faulty."
     elif [ -n "$spool" ] &&
         ! grep -qsF "PathExistsGlob=$spool/requests/*.json" "$unit_dir/pithead-control.path"; then
-        dr_fail "The control runner watches a different spool than this install writes to ($spool) — requests are never picked up, with no error shown. Fix: run './pithead apply' from this directory."
+        dr_fail_surface "The control runner watches a different spool than this install writes to ($spool) — requests are never picked up, with no error shown. Fix: run './pithead apply' from this directory." "The control runner watches a different spool than this install writes to ($spool) — requests are never picked up, with no error shown. The installed system sets this up, so this system copy is faulty."
     else
         dr_ok "Control runner units target this install."
     fi
@@ -160,7 +178,7 @@ check_appliance_cert() {
     local crt
     crt="$(appliance_tls_dir)/wizard.crt"
     if [ ! -s "$crt" ]; then
-        dr_info "No dashboard certificate at $crt yet — run './pithead apply' to mint one."
+        dr_info_surface "No dashboard certificate at $crt yet — run './pithead apply' to mint one." "No dashboard certificate yet — this machine mints one whenever it renders its web configuration."
         return 0
     fi
     if ! command -v openssl >/dev/null 2>&1; then
@@ -206,7 +224,7 @@ check_appliance_cert() {
     esac
 
     # Everything else appliance_site_names() adds beyond the base — always empty when
-    # dashboard.host is pinned (appliance_site_names' own auto-expansion guard), so a pin never
+    # dashboard.host is a DNS/IP pin (not a label), so such a pin never
     # even reaches the engine-dependent leniency below: there is nothing here it would need to
     # excuse. This is the only category that can contain a compose-bridge gateway.
     local tok extras=""
@@ -251,7 +269,7 @@ check_appliance_cert() {
     fi
 
     if [ -n "$missing" ]; then
-        dr_fail "The dashboard certificate does not cover: $missing — Caddy serves those names without a certificate for them. Run './pithead apply' to re-mint."
+        dr_fail_surface "The dashboard certificate does not cover: $missing — Caddy serves those names without a certificate for them. Run './pithead apply' to re-mint." "The dashboard certificate does not cover: $missing — those names are served without a certificate for them. This machine re-mints the certificate whenever it renders its web configuration, so saving any change from the dashboard renews it."
     else
         dr_ok "The dashboard certificate covers every name Caddy serves."
     fi
@@ -262,8 +280,8 @@ check_appliance_cert() {
     if openssl x509 -in "$crt" -noout -checkend 2592000 >/dev/null 2>&1; then
         dr_ok "The dashboard certificate does not expire within 30 days ($enddate)."
     elif openssl x509 -in "$crt" -noout -checkend 0 >/dev/null 2>&1; then
-        dr_fail "The dashboard certificate expires within 30 days ($enddate). Run './pithead apply' to re-mint."
+        dr_fail_surface "The dashboard certificate expires within 30 days ($enddate). Run './pithead apply' to re-mint." "The dashboard certificate expires within 30 days ($enddate). This machine only re-mints it when the set of names it answers to changes, so it will not renew on its own; replacing it needs console access."
     else
-        dr_fail "The dashboard certificate has EXPIRED ($enddate) — browsers will refuse it. Run './pithead apply' to re-mint."
+        dr_fail_surface "The dashboard certificate has EXPIRED ($enddate) — browsers will refuse it. Run './pithead apply' to re-mint." "The dashboard certificate has EXPIRED ($enddate) — browsers will refuse it. This machine only re-mints it when the set of names it answers to changes, so it will not renew on its own; replacing it needs console access."
     fi
 }

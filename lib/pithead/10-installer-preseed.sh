@@ -53,15 +53,13 @@ data_wipe_note() {
 # spool never hands machine 2 machine 1's note. Skipped on removable boot media, where
 # PRESEED_DIR is the STICK's own ESP and would describe the stick, not this machine.
 publish_data_wipe_note() { # <spool-dir>
-    local tmp="$1/.data-wiped.json.$$" note
+    local note
     if boot_is_removable; then
         note="{}"
     else
         note=$(data_wipe_note) || note="{}"
     fi
-    printf '%s' "$note" >"$tmp" 2>/dev/null || : >"$tmp"
-    chown 1000:1000 "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$1/data-wiped.json"
+    wizard_spool_publish "$1" data-wiped.json printf '%s' "$note"
 }
 
 # The restore pre-seed (#909): an installer boot that accepted a backup archive stages it —
@@ -164,12 +162,7 @@ installer_mode_available() {
 # able to name a target the host did not offer — that is the same boundary the #33 control
 # channel draws, and here the action erases a disk.
 publish_disk_inventory() { # <spool-dir>
-    # Atomic: the wizard reads this file between our writes, and a truncate-then-write would
-    # hand it an empty inventory mid-write — rendering a disk picker with no disks.
-    local tmp="$1/.disks.tsv.$$"
-    "$(install_bin)" --list >"$tmp" 2>/dev/null || : >"$tmp"
-    chown 1000:1000 "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$1/disks.tsv"
+    wizard_spool_publish "$1" disks.tsv "$(install_bin)" --list
 }
 
 # The strip a previous install's config passes through before any of it may be SHOWN (#794):
@@ -178,12 +171,30 @@ publish_disk_inventory() { # <spool-dir>
 # the fixed paths cannot reach), alert credentials, the ssh key. Wallet addresses, node modes
 # and hosts, the pool tier stay: those are the answers the operator came back for, and none of
 # them is a secret. Errs toward stripping more — a lost convenience beats a leaked credential.
+#
+# The two ENABLEMENTS go with the login, and that is the half this was missing (#1846). The
+# validator fails closed on dashboard.control.enabled and on dashboard.onion.enabled whenever
+# the password is empty — deliberately, since both are reachable control surfaces. Deleting the
+# login while leaving either switch on therefore publishes a pre-fill that CANNOT be submitted:
+# the page offers it back, "Generate a strong password for me" leaves the password empty because
+# the HOST generates one only AFTER the candidate has validated, and the first validation refuses
+# the operator's own answers. Dropping control.enabled costs nothing — apply_appliance_defaults
+# puts it back on any appliance whose password is non-empty. onion.enabled the operator re-ticks,
+# which is the same trade the paragraph above already makes.
 # rc non-zero when the file is not a usable config object; callers treat that as "no pre-fill".
+#
+# .dashboard.workers STAYS in the del list although 2.0.0 removed that alias (#1832), and this is
+# the one site where that distinction is load-bearing: prefill_from_previous_install reads a
+# FOREIGN disk's config.json directly, so it never passes through parse_and_validate_config and
+# the 1.x migration NEVER runs on it. A machine reinstalled from a pre-2.0 disk would otherwise
+# publish its per-rig API tokens onto the setup page. A redaction predicate is not alias
+# acceptance — the same ruling os/overlay/pithead-media-config:163 already carries.
 strip_config_secrets() { # <config-file> -> stripped JSON on stdout
     jq -e --argjson paths "$CONTROL_SECRET_PATHS" '
         delpaths($paths)
         | del(.dashboard.auth, .dashboard.workers, .workers, .telegram,
-              .healthchecks, .notifications, .ssh, .tari.spend_public_key)' "$1" 2>/dev/null
+              .healthchecks, .notifications, .ssh, .tari.spend_public_key,
+              .dashboard.control.enabled, .dashboard.onion.enabled)' "$1" 2>/dev/null
 }
 
 # Reinstall pre-fill (#794). When the offered targets include exactly one disk that already
@@ -195,8 +206,8 @@ strip_config_secrets() { # <config-file> -> stripped JSON on stdout
 # anything) and pure convenience: every failure path returns 1 and the page simply opens
 # blank — nothing here may block an install. rc 0 = a pre-fill was published.
 prefill_from_previous_install() { # <spool-dir>
-    local spool="$1" disk part mnt cfg tmp rc=1
-    disk=$(awk -F'\t' '$5 == "pithead-with-data" {print $1}' "$spool/disks.tsv" 2>/dev/null)
+    local spool="$1" disk part mnt cfg rc=1
+    disk=$(wizard_spool_read "$spool" disks.tsv | awk -F'\t' '$5 == "pithead-with-data" {print $1}')
     # Two candidates would make the pre-fill a guess about WHICH machine's answers; offer none.
     [ -n "$disk" ] && [ "$(printf '%s\n' "$disk" | wc -l)" -eq 1 ] || return 1
     part=$(lsblk -lnpo NAME,PARTLABEL "/dev/$disk" 2>/dev/null | awk '$2 == "data" {print $1; exit}')
@@ -207,7 +218,6 @@ prefill_from_previous_install() { # <spool-dir>
     # runs against its content.
     if mount -t ext4 -o ro,nosuid,nodev,noexec "$part" "$mnt" 2>/dev/null; then
         cfg="$mnt/pithead/config.json"
-        tmp="$spool/.last-attempt.json.$$"
         # The -L guards close a symlink escape: a crafted disk could point pithead/ or
         # config.json at a file on the RUNNING host, and jq follows symlinks — the read-only
         # mount keeps both components stable under the checks. The size cap bounds what an
@@ -215,11 +225,9 @@ prefill_from_previous_install() { # <spool-dir>
         # it needs) rejects everything else.
         if [ ! -L "$mnt/pithead" ] && [ ! -L "$cfg" ] &&
             [ -f "$cfg" ] && [ "$(wc -c <"$cfg" 2>/dev/null || echo 0)" -le 1048576 ] &&
-            [ -s "$cfg" ] && strip_config_secrets "$cfg" >"$tmp"; then
-            chown 1000:1000 "$tmp" 2>/dev/null || true
-            mv -f "$tmp" "$spool/last-attempt.json" && rc=0
+            [ -s "$cfg" ] && wizard_spool_publish "$spool" last-attempt.json strip_config_secrets "$cfg"; then
+            rc=0
         fi
-        rm -f "$tmp"
         umount "$mnt" 2>/dev/null || umount -l "$mnt" 2>/dev/null || true
     fi
     rmdir "$mnt" 2>/dev/null || true
@@ -295,24 +303,34 @@ preflight_remote_nodes() { # <config-file>
 # the wizard's combined submit; both fields are re-validated HERE because they arrive through
 # a web form — the disk against the inventory this host published, the wipe mode against the
 # fixed set. The container asks, the host decides.
-consume_install_request() { # <spool-dir>
+consume_install_request() ( # <spool-dir> [required-wipe]
     local spool="$1" req="$1/install-request" target wipe err
-    [ -f "$req" ] || return 2
+    local snap rc=0
+    snap=$(wizard_spool_request "$spool" install-request) || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+    trap 'wizard_spool_clean "${snap%/*}"' EXIT
+    req="$snap"
     target=$(cut -f1 <"$req" | tr -dc 'a-zA-Z0-9_-')
     wipe=$(cut -f2 <"$req" | tr -dc 'a-z')
-    rm -f "$req"
+    rm -f "$spool/install-request"
     case "$wipe" in keep | data | all) ;; *) wipe="keep" ;; esac
+    # The bare-reinstall door may only preserve data, even if the page replaces its request
+    # after that door's readiness check. Enforce the policy on THIS consumed snapshot.
+    if [ -n "${2:-}" ] && [ "$wipe" != "$2" ]; then
+        wizard_spool_publish "$spool" error.txt printf '%s' 'The install request changed — submit the settings again.'
+        return 1
+    fi
     if ! "$(install_bin)" --list 2>/dev/null | cut -f1 | grep -qx "$target"; then
-        printf 'not an offered target: %s' "$target" >"$spool/error.txt"
+        printf 'not an offered target: %s' "$target" | wizard_spool_publish "$spool" error.txt cat
         return 1
     fi
     log "Installing to /dev/$target (data: $wipe) ..."
     if err=$("$(install_bin)" --target "/dev/$target" --wipe "$wipe" --yes 2>&1); then
-        touch "$spool/installed"
+        wizard_spool_publish "$spool" installed true
         log "Installed to /dev/$target."
         return 0
     fi
-    printf '%s' "$err" | tail -n 2 | tr -d '[:cntrl:]' | tail -c 240 >"$spool/error.txt"
+    printf '%s' "$err" | tail -n 2 | tr -d '[:cntrl:]' | tail -c 240 | wizard_spool_publish "$spool" error.txt cat
     warn "Install to /dev/$target failed."
     return 1
-}
+)

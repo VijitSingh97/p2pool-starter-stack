@@ -1,0 +1,46 @@
+#!/bin/bash
+# Keep the version stored for each A/B slot beside RAUC's boot state in grubenv.
+set -uo pipefail
+
+GRUBENV=${PITHEAD_GRUBENV:-/boot/efi/grub/grubenv}
+CMDLINE=${PITHEAD_CMDLINE:-/proc/cmdline}
+VERSION_FILE=${PITHEAD_VERSION_FILE:-/opt/pithead/VERSION}
+
+valid_version() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; }
+booted_slot() { tr ' ' '\n' <"$CMDLINE" 2>/dev/null | sed -n 's/^rauc\.slot=\([AB]\)$/\1/p'; }
+grub_value() { grub-editenv "$GRUBENV" list 2>/dev/null | sed -n "s/^$1=//p" | head -1; }
+write_slot_version() { # <A|B> <version-or-empty>
+    case "$1" in A | B) ;; *) return 1 ;; esac
+    [ -z "$2" ] || valid_version "$2" || return 1
+    grub-editenv "$GRUBENV" set "$1_VERSION=$2"
+}
+
+record_booted() {
+    local slot version
+    slot=$(booted_slot)
+    version=$(tr -d '[:space:]' <"$VERSION_FILE" 2>/dev/null)
+    [ -n "$slot" ] && valid_version "$version" || return 1
+    write_slot_version "$slot" "$version"
+}
+
+record_installed() { # <bundle-version>; RAUC has already put the target first in ORDER
+    local version="$1" running target order
+    valid_version "$version" || return 1
+    running=$(booted_slot)
+    order=$(grub_value ORDER)
+    order=${order#\"}
+    order=${order%\"}
+    target=${order%% *}
+    [ -n "$running" ] && [ "$target" != "$running" ] || return 1
+    write_slot_version "$target" "$version"
+}
+
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
+case "${1:-}" in
+record-booted) record_booted ;;
+record-installed) record_installed "${2:-}" ;;
+*)
+    echo "usage: pithead-boot-version record-booted | record-installed VERSION" >&2
+    exit 2
+    ;;
+esac

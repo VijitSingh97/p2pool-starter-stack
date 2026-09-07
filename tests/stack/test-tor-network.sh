@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 : "${STACK_SUITE:?is unset: this file is a tests/stack/run.sh fragment, not a script — run tests/stack/run.sh}"
-# Tor-network domain (#1105 Phase 1, develop-v2 lane): the Tor-only egress boundary and the
+# Tor-network domain (#1105 Phase 1, appliance lane): the Tor-only egress boundary and the
 # Tor<->clearnet transport switch — tor_egress_rules + render_tor_egress_nft (both the legacy
 # iptables/DOCKER-USER path and the v2 nftables/podman path, including the IPv6 backstop and its
 # refusal when the bridge can't be resolved, #855/#858), apply/remove_tor_egress_firewall end to
@@ -739,13 +739,11 @@ assert_eq "provision_tor skips a remote node's onion and leaves it a placeholder
 assert_eq "provision_tor waits for the local node only in a mixed setup (#103)" \
     "$(prov_probe local remote)" "p2pool,monero,|monero.onion|placeholder|p2pool.onion"
 
-# provision_node_onions: the remote → local switch. A stack first set up in remote mode has no
-# address for that node, so apply/upgrade recreate tor against the committed profiles, capture the
-# freshly minted hostname, and re-render .env BEFORE the node container starts against it. It must
-# cost nothing (no docker, no render) once every local node's address is in hand.
+# provision_node_onions: recreate tor and capture a newly local node's onion before it starts.
 node_onion_probe() { # <MONERO_MODE> <MONERO_ONION> <TARI_MODE> <TARI_ONION> -> "<docker calls>|<asked>|<MONERO_ONION>|<TARI_ONION>|<renders>"
     (
         cd "$ONP" || exit
+        [ "${5:-}" != source ] || { mkdir -p dashboard && : >dashboard/Dockerfile; }
         # shellcheck disable=SC1090
         source "$STACK"
         set +e
@@ -774,7 +772,9 @@ assert_eq "provision_node_onions is a free no-op once every local node has its o
 assert_eq "provision_node_onions ignores a remote node with no onion (#103)" \
     "$(node_onion_probe remote placeholder remote placeholder)" "||placeholder|placeholder|"
 assert_eq "provision_node_onions mints + captures the onion of a node that just went local (#103)" \
-    "$(node_onion_probe local placeholder remote placeholder)" "compose up -d tor |monero,|monero.onion|placeholder|x"
+    "$(node_onion_probe local placeholder remote placeholder)" "compose up --no-build -d tor |monero,|monero.onion|placeholder|x"
 assert_eq "provision_node_onions treats an empty address as missing, and re-renders once (#103)" \
-    "$(node_onion_probe local '' local '')" "compose up -d tor |monero,tari,|monero.onion|tari.onion|x"
+    "$(node_onion_probe local '' local '')" "compose up --no-build -d tor |monero,tari,|monero.onion|tari.onion|x"
+assert_eq "source compose up preserves development builds (#1967)" \
+    "$(node_onion_probe local placeholder remote placeholder source)" "compose up -d tor |monero,|monero.onion|placeholder|x"
 unset ONP prov_probe node_onion_probe

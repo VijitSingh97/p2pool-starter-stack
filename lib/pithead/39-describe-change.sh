@@ -1,5 +1,4 @@
-# Describe a changed env key for the apply preview. Prints "FLAG\tmessage" where FLAG is
-# DEST (disruptive — apply should confirm) or INFO. Always returns 0 (safe in $()).
+# Describe a changed env key for the apply preview. Prints "FLAG\tmessage"; always returns 0.
 describe_change() {
     local key="$1" old="$2" new="$3" flag="INFO" msg
     case "$key" in
@@ -149,8 +148,8 @@ describe_change() {
     P2POOL_FLAGS | P2POOL_PORT)
         msg="P2Pool sidechain changing ($key: '$old' → '$new') — p2pool re-syncs the new sidechain and your PPLNS window resets."
         ;;
-    MONERO_NODE_HOST | MONERO_RPC_PORT | MONERO_ZMQ_PORT)
-        msg="Monero node endpoint ($key): $old → $new."
+    MONERO_NODE_HOST | MONERO_RPC_PORT | MONERO_ZMQ_PORT | TARI_GRPC_ADDRESS)
+        flag=CONFIRM msg="${key%%_*} node endpoint ($key): ${old:-unset} → $new — the stack points its RPC client THERE and trusts the chain data, block templates and share heights that address returns. Confirm-gated, not free-commit, because it moves TRUST rather than disk; the host probes the new endpoint before accepting it, and putting the old address back reverses it."
         ;;
     MONERO_NODE_USERNAME | MONERO_NODE_PASSWORD)
         msg="Monero node RPC credential updated ($key)."
@@ -340,6 +339,7 @@ describe_change() {
         # Secret — never echo the token value into the change preview / logs.
         msg="ntfy access token updated — the dashboard container is recreated."
         ;;
+    XMRIG_API_TOKEN | XVB_STANDBY_SOURCE) msg="Secret configuration value updated — the dashboard container is recreated." ;;
     NOTIFY_TOR)
         if [ "$new" == "true" ]; then
             msg="Webhook/ntfy alerts back on Tor — endpoints see a Tor exit, not this host's IP; the dashboard container is recreated."

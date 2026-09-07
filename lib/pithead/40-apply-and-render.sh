@@ -64,6 +64,7 @@ render_derived() {
     load_preserved_state
     ensure_directories
     resolve_dashboard_host # non-interactive
+    reconcile_appliance_hostname
     DEPLOYMENT_COMPLETED=true
     render_env "$ENV_FILE"
     provision_node_onions
@@ -75,6 +76,29 @@ render_derived() {
     provision_console_login
     render_local_miner_config
     log "Derived configuration regenerated from config.json."
+}
+
+# #1265, the remedy half: doctor's prescription for a certificate the box's addresses outran is
+# `./pithead apply`, and apply never reached the mint on an unchanged config — the mint lives in
+# generate_caddyfile, which only the changed branch called, so the exact command doctor printed
+# did nothing in exactly the state it was printed for. On an appliance the unchanged branch now
+# re-renders the Caddyfile (the mint inside it is idempotent by SAN-set comparison, so an
+# unchanged address list keeps the operator's trusted certificate) and restarts Caddy only when
+# the certificate or the Caddyfile actually moved — the same file comparison the changed branch
+# makes, never a key list. A DIY host runs Caddy's own CA and takes the old path untouched. The
+# caller holds the mutation lock. A function so it is driven at tier 1 with a stubbed render.
+apply_refresh_appliance_tls() { # -> prints one line when it restarted Caddy
+    is_appliance || return 0
+    local crt cert_before cert_after caddy_before caddy_after
+    crt="$(appliance_tls_dir)/wizard.crt"
+    cert_before=$(sha256sum "$crt" 2>/dev/null | cut -d' ' -f1)
+    caddy_before=$(cat Caddyfile 2>/dev/null)
+    generate_caddyfile
+    cert_after=$(sha256sum "$crt" 2>/dev/null | cut -d' ' -f1)
+    caddy_after=$(cat Caddyfile 2>/dev/null)
+    [ "$cert_before" != "$cert_after" ] || [ "$caddy_before" != "$caddy_after" ] || return 0
+    log "The dashboard certificate or the Caddyfile changed for this machine's current addresses — restarting caddy so it serves them."
+    docker compose restart caddy
 }
 
 apply() {
@@ -221,6 +245,8 @@ apply() {
             # Idempotent and sudo-free when the units already match.
             mutation_lock_acquire apply
             provision_control_runner
+            reconcile_appliance_hostname
+            apply_refresh_appliance_tls # #1265: the mint doctor sends the operator here for
             log "No configuration changes detected. Nothing to apply."
             mutation_lock_release
             return 0
@@ -265,6 +291,7 @@ apply() {
         warn "Fix the cause shown above, then re-run '$0 apply' (it will retry the recreate) — or '$0 up'."
         exit 1 # leave $apply_marker in place so the retry re-attempts the recreate
     fi
+    reconcile_appliance_hostname
     # Caddy mounts the Caddyfile read-only, so a content change alone won't recreate it.
     if [ "$caddy_changed" -eq 1 ]; then
         docker compose restart caddy

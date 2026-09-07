@@ -144,9 +144,15 @@ echo "== every tests/stack sandbox is built through mk_tmpdir, not a bare assign
 # guarded expression, never as a bare `VAR=$(mktemp -d)` whose failure leaves VAR set-but-empty
 # for a later `rm -rf "$VAR/store"` to expand against /store.
 #
-# tests/stack/run.sh and the standalone tests/stack/test_*.sh are NOT covered and still carry the
-# old form. They belong to other lanes, so #1705's conversion stopped at the grant boundary. They
-# are excluded by name rather than by silence, so that this row says what it does not check.
+# #1705's conversion stopped at a grant boundary: tests/stack/run.sh and the standalone
+# tests/stack/test_*.sh belonged to another lane and kept the old form, so this row named them out
+# of itself and a second row PINNED that excluded population against the four known sites, keeping
+# the exclusion from rotting. #1725 converted those four, so both halves are gone: the glob below
+# covers every file the constructor reaches, and the pin has nothing left to hold. That pin reddens
+# on exactly this change, which is why the two halves cannot merge one at a time — they land here
+# together or the row is red in between. The glob is lib.sh, run.sh and both test-file spellings,
+# which today is every .sh under tests/stack except fixtures/rauc-info/capture.sh — a capture
+# helper the suite does not source, named here so the one file outside is stated, not implied.
 BARE='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="?\$\(mktemp -d\)"?[[:space:]]*$'
 STACK_DIR="$HERE/../stack"
 
@@ -160,11 +166,52 @@ else
         "it matched nothing, so the absence checked below proves nothing"
 fi
 
-found=$(grep -El "$BARE" "$STACK_DIR/lib.sh" "$STACK_DIR"/test-*.sh 2>/dev/null | tr '\n' ' ')
-if [ -z "$found" ]; then
-    it_pass "no bare mktemp -d assignment survives in lib.sh or the test-*.sh domain files"
+# Every entry goes through the same existence filter, the two fixed names included. Seeding those
+# in unconditionally would make the check below a tautology — it would read back the list it had
+# just been handed, and a stack directory missing run.sh entirely would still report it as covered.
+#
+# The set is built per SPELLING, not per filename. The deleted pin was not only a pin: it was the
+# only thing proving this row read real files, and with it gone a file set that resolved to nothing
+# would report the same clean absence as a fully converted tree. So the set is measured before the
+# absence below is read as evidence, and this refuses rather than records — a vacuous invariant row
+# is worse than no row, it reads as proof. Counting each spelling's matches is what lets the refusal
+# name the spelling that failed. The first form asserted three filenames instead, which put another
+# lane's test_data_reset.sh inside this lane's assertion and emitted the same red whether that one
+# file had been renamed or the whole test_*.sh spelling had drained away — two failures, one
+# message (#1796).
+#
+# The spellings are quoted in the list deliberately: unquoted, test-*.sh and test_*.sh would glob
+# against the working directory at this line rather than against $STACK_DIR below, and the control
+# would quietly stop meaning what it says.
+COVERED=()
+missing=""
+for spelling in "lib.sh" "run.sh" "test-*.sh" "test_*.sh"; do
+    n=0
+    # shellcheck disable=SC2086  # $spelling is a glob; quoting it would defeat the match
+    for f in "$STACK_DIR"/$spelling; do
+        [ -f "$f" ] || continue
+        COVERED+=("$f")
+        n=$((n + 1))
+    done
+    [ "$n" -gt 0 ] || missing="$missing $spelling"
+done
+
+# All four spellings matching means COVERED holds at least four entries, so the empty-expansion
+# guard the grep below needs is implied by this refusal rather than asserted separately beside it.
+if [ -z "$missing" ]; then
+    it_pass "the invariant's file set resolves for every spelling (control arms)"
 else
-    it_fail "no bare mktemp -d assignment survives in lib.sh or the test-*.sh domain files" \
+    it_fail "the invariant's file set resolves for every spelling" \
+        "the absence below would be vacuous — ${#COVERED[@]} files, unmatched:$missing"
+    echo "selftest-stack-sandbox: $IT_PASS passed, $IT_FAIL failed"
+    exit 1
+fi
+
+found=$(grep -El "$BARE" "${COVERED[@]}" 2>/dev/null | tr '\n' ' ')
+if [ -z "$found" ]; then
+    it_pass "no bare mktemp -d assignment survives in any tests/stack suite file"
+else
+    it_fail "no bare mktemp -d assignment survives in any tests/stack suite file" \
         "still bare in: $found"
 fi
 

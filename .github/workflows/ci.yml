@@ -17,10 +17,10 @@ on:
   #                 tracking issue rather than reddening, because "a shipped image has a fixable
   #                 CVE" asks for a patch release, which is a decision a person makes.
   #
-  # NEITHER FIRES FROM THIS FILE — `schedule:` is read from the DEFAULT branch only, so both run
-  # from `develop`'s copy and this cron block is inert. It is here so the twins stay level, and so
-  # `make lint-trivy-parity` (this lane only) covers sweep-shipped's trivy step at all. Change the
-  # cadence on `develop`, and prove it fired with `gh run list --json event`.
+  # THIS cron block is the one that fires: `schedule:` is read from the DEFAULT branch only, and
+  # `develop` is it. `make lint-trivy-parity` covers sweep-shipped's trivy step. Change the cadence
+  # here, and prove it fired with `gh run list --json event` — a schedule that never runs looks
+  # exactly like one that ran and found nothing (#1162).
   schedule:
     - cron: "0 5 * * 1" # Mondays 05:00 UTC
 
@@ -55,14 +55,14 @@ jobs:
         # Curl the pinned installer (same posture as hadolint below); avoids a mutable-tag action.
         run: |
           export UV_INSTALL_DIR="$HOME/.local/bin"   # deterministic install dir (runners may set CARGO_HOME)
-          curl -LsSf https://astral.sh/uv/0.10.10/install.sh | sh
+          curl -LsSf https://astral.sh/uv/0.10.10/install.sh -o /tmp/uv-install.sh; sh /tmp/uv-install.sh # download then run, never a pipe: the pipeline's status is sh's, which is 0 on empty input, so a failed download passed this step (#1788)
           echo "$UV_INSTALL_DIR" >> "$GITHUB_PATH"
       - name: Dashboard tests + coverage gate (emits coverage.xml)
         run: make test-dashboard
       - name: "Patch-coverage gate — changed lines >=90% (diff-cover vs the PR's own base, #286)"
         # GITHUB_BASE_REF is set on pull_request runs; push runs fall back to develop. Grading a PR
         # against develop instead of its base branch charges it the base branch's whole coverage
-        # debt (a bash-only PR into the appliance branch failed on wizard.py lines it never touched).
+        # debt (a bash-only appliance PR once failed on wizard.py lines it never touched).
         run: |
           git fetch --no-tags origin develop "${GITHUB_BASE_REF:-develop}"
           make test-patch-coverage
@@ -223,7 +223,7 @@ jobs:
         # against the rebuild's is the whole reason both exist, and two trivy releases apart is
         # enough to make them disagree for reasons that have nothing to do with the images. If the
         # step above ever loses its `version:`, this comparison stops meaning anything, and on
-        # develop no lint will say so (`make lint-trivy-parity` is develop-v2's).
+        # nothing but `make lint-trivy-parity` will say so.
         #
         # trivy pulls the digest from the registry itself — nothing is built here.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -364,7 +364,7 @@ jobs:
       - name: Install uv (pinned)
         run: |
           export UV_INSTALL_DIR="$HOME/.local/bin"   # deterministic install dir (runners may set CARGO_HOME)
-          curl -LsSf https://astral.sh/uv/0.10.10/install.sh | sh
+          curl -LsSf https://astral.sh/uv/0.10.10/install.sh -o /tmp/uv-install.sh; sh /tmp/uv-install.sh # never a pipe — see the dashboard job's copy (#1788)
           echo "$UV_INSTALL_DIR" >> "$GITHUB_PATH"
       - name: ruff check + format --check (config in dashboard/pyproject.toml + root ruff.toml)
         # Single source of truth: the Makefile `lint-py` target, which runs ruff via uv from the
@@ -406,7 +406,7 @@ jobs:
       - name: Install uv (pinned)
         run: |
           export UV_INSTALL_DIR="$HOME/.local/bin"
-          curl -LsSf https://astral.sh/uv/0.10.10/install.sh | sh
+          curl -LsSf https://astral.sh/uv/0.10.10/install.sh -o /tmp/uv-install.sh; sh /tmp/uv-install.sh # never a pipe — see the dashboard job's copy (#1788)
           echo "$UV_INSTALL_DIR" >> "$GITHUB_PATH"
       - name: Audit workflows (injection, token scope, self-hosted-runner risks)
         run: uvx zizmor@1.25.2 --offline .github/workflows/
@@ -415,7 +415,7 @@ jobs:
     name: Shell tests (shellcheck + pithead suite)
     if: github.event_name != 'schedule' # scheduled runs are the CVE sweep — build-images only (#833)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25 # 11-15 min is this job's honest range on the appliance lane (73 runs: 633-902 s, 21 within 60 s of the old 900 s cap) and two runs were cancelled AT it (#1789)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -423,10 +423,10 @@ jobs:
       - name: "Install shellcheck + shfmt (pinned + sha256-verified, #286)"
         # Direct upstream-release downloads with a sha256 check (RigForge convention) instead of the
         # runner's preinstalled shellcheck / apt — reproducible, and immune to the apt-mirror
-        # flakiness of #64. shellcheck's version comes from the Makefile (#1679); shfmt's is hand-kept.
+        # flakiness of #64. Both versions come from the Makefile — shellcheck's since #1679, shfmt's since #1688.
         run: |
-          curl -fsSL -o /tmp/shfmt \
-            https://github.com/mvdan/sh/releases/download/v3.13.1/shfmt_v3.13.1_linux_amd64
+          SF=$(make -s print-shfmt-version) # the Makefile is the pin; `make lint-sh` below refuses any other version (#1688)
+          curl -fsSL -o /tmp/shfmt "https://github.com/mvdan/sh/releases/download/v$SF/shfmt_v${SF}_linux_amd64"
           echo "fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1  /tmp/shfmt" | sha256sum -c -
           sudo install -m 0755 /tmp/shfmt /usr/local/bin/shfmt
           SC=$(make -s print-shellcheck-version) # the Makefile is the pin; `make lint-sh` below refuses any other version (#1679)
@@ -496,6 +496,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0  # lint-file-budget's ratchet needs origin/develop to exist, or it skips (#1452, #1608)
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "20"
@@ -505,8 +506,8 @@ jobs:
       - name: Install uv (pinned)
         run: |
           export UV_INSTALL_DIR="$HOME/.local/bin"
-          curl -LsSf https://astral.sh/uv/0.10.10/install.sh | sh
+          curl -LsSf https://astral.sh/uv/0.10.10/install.sh -o /tmp/uv-install.sh; sh /tmp/uv-install.sh # never a pipe — see the dashboard job's copy (#1788)
           echo "$UV_INSTALL_DIR" >> "$GITHUB_PATH"
-      - name: Lint JS/CSS (Biome), YAML, Markdown, proto (buf), TOML (taplo), docs voice, operator strings, topology classes, file budget
-        # Single source of truth: the Makefile targets. Tools run via npx/uvx/docker (preinstalled).
-        run: make lint-js lint-yaml lint-md lint-proto lint-toml lint-docs-voice lint-operator-strings lint-topology lint-file-budget lint-trivy-parity
+      - name: Lint docs voice, operator strings, topology classes, file budget, pithead/trivy parity, then JS/CSS (Biome), YAML, Markdown, proto (buf), TOML (taplo)
+        # Single source of truth: the Makefile targets. REPO-LOCAL GATES FIRST (#1746): local checks run before network-backed surface linters.
+        run: make lint-docs-voice lint-operator-strings lint-topology lint-file-budget lint-pithead-parity lint-trivy-parity lint-js lint-yaml lint-md lint-proto lint-toml

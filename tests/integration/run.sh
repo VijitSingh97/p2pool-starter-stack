@@ -54,6 +54,8 @@ RUN_RIGFORGE=0
 RUN_RIGFORGE_CONTROL=0
 RUN_SUBNET=0
 RIG_HOST=""
+RIG_NAME=""
+RIGFORGE_BOOTSTRAP_VERSION=""
 RIG_CONTROL_PORT="8082"
 SAFETY_BACKUP=0
 SAFETY_ARCHIVE=""
@@ -142,30 +144,12 @@ MATRIX:
   --rigforge             also run the RigForge integration phase (#185/#235/#260): assert the
                          dashboard consumed a REAL rigforge rig's enriched feed and Worker Inspect
                          reads it. Non-destructive; self-skips if no rigforge rig is connected.
-  --rigforge-control     also run the RigForge control phase (#513/#514/#516/#517/#1002b/#1236), local
-                         mode only: with dashboard.control ON and workers.list[] populated for the
-                         borrowed rig (masked-token descriptor, #440/#506 — the box's pre-existing
-                         dashboard.workers[] legacy descriptor is honored as-is if that's what the
-                         baseline already carries), assert the enriched read path survives populated
-                         descriptors (#514) and the rig is editable (#508/#513), drive a reversible
-                         Worker Inspect edit end-to-end to the rig's control API on max_temp_c (#513),
-                         DONATION and watchdog_interval_min (#1236, read back from the rig's own
-                         reported config), and pools (#1002b, needs IT_RIG_POOLS_PROBE); reflect a
-                         rig-side edit back into the dashboard (#516), and record an auto-rollback
-                         (#517). autotune and watchdog are deliberately never driven — see
-                         docs/dev/integration-testing.md. Also drives the one-click RigForge upgrade
-                         (#1002a/#1237): when the dashboard offers this rig a newer release, POST it
-                         through /api/control/worker-upgrade and assert a REAL upgrade — the intent
-                         leaves the dashboard for the host runner, reaches an `applied` terminal, and
-                         the rig comes back reporting the new version; the already-up-to-date noop
-                         shortcut is then asserted on top of a precondition this run established.
-                         Not opt-in (it used to be, behind a flag no caller set); when the dashboard
-                         offers no newer release the leg self-skips with a classified reason.
-                         DESTRUCTIVE-then-restored. Needs a real rig
-                         with its control API opted in; each leg self-skips loudly without its
-                         prerequisites.
+  --rigforge-control     run the real RigForge control, reversible-write, and upgrade legs.
+                         DESTRUCTIVE-then-restored; local mode and an opted-in real rig required.
   --rig-host <h>         the borrowed rig's LAN host/IP for control dials — needed to inject a
                          workers.list[] descriptor when the box's baseline lacks one (#513/#514/#506).
+  --rig-name <name>      exact borrowed rig NAME from its protected RigForge config.
+  --rigforge-bootstrap-version <tag>  explicitly bootstrap that rig before feed-dependent checks.
   --rig-control-port <p> the rig's writable control API port (default: 8082, #185).
   --subnet               also run the moved-subnet phase (#201/#180), local mode only: bring the
                          stack DOWN then UP on a non-default network.subnet (10.84.0.0/24) — the one
@@ -304,6 +288,14 @@ parse_args() {
             RIG_HOST="$2"
             shift 2
             ;;
+        --rig-name)
+            RIG_NAME="$2"
+            shift 2
+            ;;
+        --rigforge-bootstrap-version)
+            RIGFORGE_BOOTSTRAP_VERSION="$2"
+            shift 2
+            ;;
         --rig-control-port)
             RIG_CONTROL_PORT="$2"
             shift 2
@@ -341,6 +333,18 @@ parse_args() {
 
     if [ "$IT_MODE" = "ssh" ] && [ -z "$IT_SSH_DEST" ]; then
         it_err "Provide --host <user@host> or --local. See --help."
+        exit 2
+    fi
+    [[ -z "$RIG_NAME" || "$RIG_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || {
+        it_err "--rig-name contains unsupported characters: $RIG_NAME"
+        exit 2
+    }
+    [[ -z "$RIGFORGE_BOOTSTRAP_VERSION" || "$RIGFORGE_BOOTSTRAP_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+        it_err "--rigforge-bootstrap-version must be a vX.Y.Z tag."
+        exit 2
+    }
+    if [ -n "$RIGFORGE_BOOTSTRAP_VERSION" ] && [ -z "$RIG_NAME" ]; then
+        it_err "--rigforge-bootstrap-version requires --rig-name."
         exit 2
     fi
 }
@@ -942,7 +946,7 @@ assert_xvb_over_tor() {
 # wiring api_state (which hits the app directly on 127.0.0.1:8000) can't prove: the route a real
 # scraper uses, behind the proxy and its basic_auth (#8). Only the bcrypt HASH of the dashboard
 # password lives in .env, so when a login is set the plaintext must come via IT_DASHBOARD_PASSWORD
-# (it stays out of logs/artifacts; it does ride the remote curl argv on the operator's own box) —
+# (it travels to curl as stdin configuration, outside shell/SSH/curl argv) —
 # without it the check skips rather than false-FAILs on the 401 Caddy returns by design.
 assert_metrics_via_caddy() {
     local host secure scheme port curl_auth="" body
@@ -967,10 +971,10 @@ assert_metrics_via_caddy() {
             it_skip_leg "/metrics via Caddy" "dashboard login is set — export IT_DASHBOARD_PASSWORD to test through it"
             return 0
         fi
-        curl_auth="-u $(quote_arg "$(env_on_box DASHBOARD_AUTH_USER):$IT_DASHBOARD_PASSWORD")"
+        curl_auth="$(printf 'user = %s\n' "$(printf '%s:%s' "$(env_on_box DASHBOARD_AUTH_USER)" "$IT_DASHBOARD_PASSWORD" | jq -Rs .)")"
     fi
     # -k: the LAN cert is Caddy's internal CA (tls internal); trust isn't what this asserts.
-    body="$(rx "curl -ksS --max-time 15 --resolve $(quote_arg "$host:$port:127.0.0.1") $curl_auth $(quote_arg "$scheme://$host/metrics")" 2>/dev/null)"
+    body="$(printf '%s\n' "$curl_auth" | rx "curl -ksS --max-time 15 -K - --resolve $(quote_arg "$host:$port:127.0.0.1") $(quote_arg "$scheme://$host/metrics")" --stdin 2>/dev/null)"
     if metrics_has_pithead_sample "$body"; then
         it_pass "/metrics serves pithead_ samples through Caddy (#379)"
     else
@@ -1255,14 +1259,9 @@ run_lifecycle() {
     fi
 }
 
-# Predicate: status reports a problem (non-zero) — used to detect node-down deterministically.
 _pred_status_down() { ! pithead status >/dev/null 2>&1; }
-
 # --- Fault-injection phase (--fault-injection) ------------------------------
-# Deliberately break monerod three ways and assert pithead's status verdicts plus the
-# dashboard's failover, then restore. Local mode only (needs a local monerod to break).
-# These are destructive-then-restored and slow (healthcheck + node-health debounce), so the
-# phase is opt-in.
+# Break local monerod three ways, assert status/failover, then restore; opt-in because debounces are slow.
 _monerod_is() { # _monerod_is <state> [<health>]
     local s
     s="$(service_state monerod)"
@@ -1272,6 +1271,11 @@ _pred_monerod_missing() { _monerod_is missing; }
 _pred_monerod_unhealthy() { _monerod_is running unhealthy; }
 _pred_monerod_healthy() { _monerod_is running healthy; }
 _pred_proxy_stopped() { [ "$(svc_state_of "$(service_state xmrig-proxy)")" != "running" ]; }
+_pred_failover_armed() {
+    local st
+    st="$(api_state)"
+    [ "$(jq_get "$st" '.monero_sync.reachable')" = "true" ] && [ "$(jq_get "$st" '.miner_released')" = "true" ] && [ "$(jq_get "$st" '.workers_rejected')" = "false" ] && [ "$(svc_state_of "$(service_state xmrig-proxy)")" = "running" ]
+}
 _pred_tor_stopped() { [ "$(svc_state_of "$(service_state tor)")" != "running" ]; }
 _pred_tor_healthy() {
     local s
@@ -1280,13 +1284,18 @@ _pred_tor_healthy() {
 }
 
 fault_node_down() {
+    if wait_for 180 5 "dashboard to observe monerod before failover fault" _pred_failover_armed; then
+        it_pass "node-down failover armed from a live monerod observation"
+    else
+        it_fail "node-down failover armed before fault" "dashboard never reported reachable monerod with the miner released and proxy admitted — fault not injected"
+        return
+    fi
     it_step "fault: stop monerod (required node down)…"
     rx "docker compose stop monerod" >/dev/null 2>&1
     wait_for 60 5 "status to report a problem" _pred_status_down || true
     pithead status >/dev/null 2>&1
     assert_rc "status non-zero when monerod is down" "$?" "1"
-    # The dashboard rejects workers (stops xmrig-proxy) after its node-health debounce so they
-    # fail over to backup pools (#31).
+    # After the node-health debounce, stopping xmrig-proxy sends workers to backup pools (#31).
     wait_for 180 10 "xmrig-proxy stopped by failover" _pred_proxy_stopped || true
     assert_eq "xmrig-proxy stopped for failover" "$(svc_state_of "$(service_state xmrig-proxy)")" "exited"
     it_step "recover: start monerod…"
@@ -1753,7 +1762,7 @@ run_hardening() {
         uuid_ok="$(_uuid4)"
         ok_cfg="$(printf '%s' "$ctrl_config" | jq -c '.dashboard.check_for_updates=false')"
         _spool_write "$cdir/requests/$uuid_ok.json" \
-            "$(jq -nc --argjson c "$ok_cfg" --arg id "$uuid_ok" '{id:$id,action:"preview",actor:"itest",config:$c}')"
+            "$(printf '%s' "$ok_cfg" | jq -c --arg id "$uuid_ok" '{id:$id,action:"preview",actor:"itest",config:.}')"
         # Wait for THIS preview to reach "previewed" before committing — mirrors production, where the
         # preview HTTP handler awaits its result and only then does the browser POST the commit. It also
         # confirms the runner CLAIMED the request (drained requests/), so the commit write below is a
@@ -1773,13 +1782,13 @@ run_hardening() {
             "$(rx "cat $(quote_arg "$cdir/audit/control.log") 2>/dev/null")" '"action":"commit"'
 
         # 3b. A SENSITIVE change (wallet swap) MUST be refused host-side, .env untouched — the
-        #     default-deny gate, exercised through the real spool rather than a unit test.
+        #     Use a checksum-valid fixture so this reaches approval, not address validation.
         local uuid_bad bad_cfg wallet_before
         uuid_bad="$(_uuid4)"
         wallet_before="$(env_on_box MONERO_WALLET_ADDRESS)"
-        bad_cfg="$(printf '%s' "$ctrl_config" | jq -c '.monero.wallet_address="4TESTWALLETdoNotUseHandsffGateRejectSensitiveKeyDefautDenyProbeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"')"
+        bad_cfg="$(printf '%s' "$ctrl_config" | jq -c '.monero.wallet_address="44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A"')"
         _spool_write "$cdir/requests/$uuid_bad.json" \
-            "$(jq -nc --argjson c "$bad_cfg" --arg id "$uuid_bad" '{id:$id,action:"preview",actor:"itest",config:$c}')"
+            "$(printf '%s' "$bad_cfg" | jq -c --arg id "$uuid_bad" '{id:$id,action:"preview",actor:"itest",config:.}')"
         st="$(_wait_control_status "$cdir" "$uuid_bad" "" 60 || echo timeout)"
         assert_eq "sensitive (wallet) spool preview staged host-side (#33)" "$st" "previewed"
         _spool_write "$cdir/requests/$uuid_bad.json" \
@@ -1939,29 +1948,23 @@ summary() {
 }
 
 # --- RigForge integration phase (--rigforge) --------------------------------
-# The v1.5 dashboard <-> RigForge integration, validated against a REAL rig (the borrowed loaner) —
-# the one thing the tier-2 contract test (fakes/test_contract.py, #209) can't prove: that a real
-# RigForge v1.8.0 producer serves the enriched feed in the shape the dashboard consumes, and that the
-# LIVE dashboard reads it. Self-gates: if no worker exposes a rigforge enriched block (no real rig, or
-# its sister API is off), it warns and skips — it never fails the gate on a bench without a rigforge
-# rig. Non-destructive: it reads /api/state + /api/worker and checks the write path's fail-closed
-# guards; it does NOT push a config change to the borrowed rig (that stage->apply->RESTART->rollback
-# flow restarts a shared loaner and needs the rig's own control API opted in, so it's a manual runbook
-# step). Runs under the shared-bench flock like the rest of main() (rig_lock is already held).
-run_rigforge_integration() {
+# self-skips when the bench has no RigForge feed.
+run_rigforge_integration() { # [rig-name]
     # shellcheck disable=SC2034  # read by lib.sh:it_fail to label captured failures
     IT_CURRENT_SCENARIO="rigforge-integration"
     echo ""
     it_log "── RigForge integration phase (#185/#235/#260) ─────"
-    local st rig
+    local st rig="${1:-}"
     st="$(api_state)"
     if [ -z "$st" ]; then
-        it_skip_phase "rigforge-integration" "/api/state unreachable"
+        if [ -n "$rig" ]; then it_fail "dashboard state reachable for selected rig" "/api/state unreachable"; else it_skip_phase "rigforge-integration" "/api/state unreachable"; fi
         return 0
     fi
-    # A worker whose enriched rigforge block is present (version populated) = a real RigForge rig
-    # whose sister API the dashboard reached and parse_rigforge parsed (#235).
-    rig="$(printf '%s' "$st" | jq -r 'first(.workers[]? | select(.rigforge != null and .rigforge.version != null) | .name) // empty' 2>/dev/null)"
+    [ -n "$rig" ] || rig="$(printf '%s' "$st" | jq -r 'first(.workers[]? | select(.rigforge != null and .rigforge.version != null) | .name) // empty' 2>/dev/null)"
+    if [ -n "$rig" ] && ! printf '%s' "$st" | jq -e --arg n "$rig" 'any(.workers[]?; .name==$n and .rigforge.version != null)' >/dev/null 2>&1; then
+        it_fail "dashboard consumed the selected RigForge rig's enriched feed" "worker '$rig' has no enriched feed"
+        return 0
+    fi
     if [ -z "$rig" ]; then
         it_skip_phase "rigforge-integration" "no worker exposes a RigForge enriched feed (a real rigforge rig with api:enabled on :8081?); the parse contract is covered by the tier-2 test" "covered"
         return 0
@@ -2138,37 +2141,30 @@ run_subnet_scenario() {
 }
 
 # --- RigForge control phase (--rigforge-control) ----------------------------
-# POST a Worker Inspect config change to the LIVE dashboard's worker-apply route and echo the terminal
-# result JSON. Drives the full loop the tier-2 fake can't: dashboard -> host runner -> rig control API
-# -> back. The route needs the X-Pithead-Control CSRF header; the rig token stays host-side (#440), so
-# nothing secret rides this call. max-time exceeds the runner's own dial + status-poll budget so the
-# handler always returns a terminal-ish result rather than a 202 pending.
+# Drive Worker Inspect through the live dashboard-to-rig control path.
 _worker_apply() { # <worker> <changes-json>  -> echoes the dashboard result JSON
     local body
     body="$(jq -nc --arg w "$1" --argjson c "$2" '{worker:$w,changes:$c}')"
     rx "curl -fsS --max-time 60 -X POST -H 'Content-Type: application/json' -H 'X-Pithead-Control: 1' --data $(quote_arg "$body") http://127.0.0.1:8000/api/control/worker-apply" 2>/dev/null
 }
 
-# The v1.5 dashboard <-> RigForge WRITE surfaces that only a real rig with its control API opted in can
-# prove — the exact paths #508 (masked-token descriptor dropped -> not editable) and the v1.5.2
-# regression (masked sentinel stringified into the Bearer header -> :8081 probe 401) shipped through
-# because no live test drove them (#513/#514/#516/#517). With dashboard.control ON and the borrowed
-# rig pinned in workers.list[] (#506; its token seen only as the {"__secret__":true} sentinel inside
-# the container), this:
-#   #514  asserts the enriched READ path survives a populated masked descriptor (api_ok + rigforge feed)
-#   #513  asserts the rig is editable and drives a reversible Worker Inspect edit through to the rig
-#   #516  reflects a rig-side edit back into the dashboard's enriched feed + verifies the masked prefill
-#   #517  records an auto-rollback (rigforge#236) end-to-end from the dashboard
-# DESTRUCTIVE-then-restored (enables control + pins the descriptor, reverted at the end). Local mode
-# only; each leg self-skips LOUDLY without its prerequisites so a bench without the rig never fails.
-#
-# Descriptor shape (#506): workers.list[] is PRIMARY and the shape this leg injects by default (the
-# fresh-inject path a borrowed bench rig usually takes, since it has no standing baseline descriptor).
-# If the box's baseline already pins the rig under the deprecated dashboard.workers[] fallback instead
-# (a box not yet migrated), that baseline is honored as-is rather than force-migrated — a cheap,
-# no-extra-apply way this leg also exercises the legacy fallback, which must keep working through
-# v1.9. Every read below therefore resolves whichever shape is actually populated, exactly matching
-# pithead's own `.workers.list // .dashboard.workers` precedence.
+_restore_rig_control_baseline() {
+    if ! push_config "$BASELINE_CONFIG"; then
+        it_fail "write baseline after RigForge control" "could not restore config.json"
+        return 1
+    fi
+    if ! pithead apply -y >"$OUT_DIR/rigforge-control.restore.log" 2>&1; then
+        it_fail "restore baseline after RigForge control" "see $OUT_DIR/rigforge-control.restore.log"
+        return 1
+    fi
+    if ! wait_status_ok 240; then
+        it_fail "baseline healthy after RigForge control restore" "status did not recover"
+        return 1
+    fi
+}
+
+# Real RigForge write coverage (#513/#514/#516/#517), destructive then restored. The only descriptor
+# shape is workers.list[]; explicit borrowed-rig inputs make missing setup a failure.
 run_rigforge_control() {
     # shellcheck disable=SC2034  # read by lib.sh:it_fail to label captured failures
     IT_CURRENT_SCENARIO="rigforge-control"
@@ -2184,35 +2180,35 @@ run_rigforge_control() {
         return 0
     fi
 
-    # A real RigForge rig must be connected + parsed into the feed (same gate as run_rigforge_integration).
-    local st rig
+    local st rig supplied=0
     st="$(api_state)"
-    rig="$(printf '%s' "$st" | jq -r 'first(.workers[]? | select(.rigforge != null and .rigforge.version != null) | .name) // empty' 2>/dev/null)"
+    rig="$RIG_NAME"
+    if [ -n "$rig" ]; then
+        supplied=1
+    else
+        rig="$(printf '%s' "$st" | jq -r 'first(.workers[]? | select(.rigforge != null and .rigforge.version != null) | .name) // empty' 2>/dev/null)"
+    fi
     if [ -z "$rig" ]; then
         it_skip_phase "rigforge-control" "no worker exposes a RigForge enriched feed — the write paths need a real rig with its :8081 API on (#513/#514/#516/#517)"
         return 0
     fi
 
-    # The write path resolves the rig's host + token from workers.list[] (#506), or the deprecated
-    # dashboard.workers[] fallback if that's what the box's baseline already carries. Use the
-    # baseline's descriptor if it already pins this rig's host (the live-box case, whichever shape);
-    # otherwise inject one into workers.list[] from --rig-host + IT_RIG_TOKEN (local-only, so the token
-    # never leaves the bench). No source for either -> skip: we won't drive an edit we can't address,
-    # nor mutate what we can't restore.
     local have_host inject=0
-    have_host="$(printf '%s' "$BASELINE_CONFIG" | jq -r --arg n "$rig" 'first((.workers.list // .dashboard.workers // [])[] | select(.name==$n) | .host) // empty' 2>/dev/null)"
+    have_host="$(printf '%s' "$BASELINE_CONFIG" | jq -r --arg n "$rig" 'first((.workers.list // [])[] | select(.name==$n) | .host) // empty' 2>/dev/null)"
     if [ -z "$have_host" ]; then
         if [ -n "$RIG_HOST" ] && [ -n "${IT_RIG_TOKEN:-}" ]; then
             inject=1
         else
-            it_skip_phase "rigforge-control" "rig '$rig' has no workers.list[] (or legacy dashboard.workers[]) descriptor and no --rig-host + IT_RIG_TOKEN to inject one (#513/#514/#516/#517)"
-            return 0
+            if [ "$supplied" = 1 ]; then
+                it_fail "supplied rig has host/token descriptor inputs" "'$rig' lacks a descriptor and --rig-host + IT_RIG_TOKEN"
+            else
+                it_skip_phase "rigforge-control" "rig '$rig' has no workers.list[] descriptor and no --rig-host + IT_RIG_TOKEN to inject one (#513/#514/#516/#517)"
+            fi
+            return "$supplied"
         fi
     fi
 
-    # Build the control-on config: enable the channel and ensure a login (control refuses without
-    # one). Only mint a login when the box has none — an existing password hash is preserved across
-    # apply, so we never clobber a real one. The token rides --arg so it never hits a log or argv.
+    # Enable control while preserving any existing login.
     local ctrl_config
     ctrl_config="$(printf '%s' "$BASELINE_CONFIG" | jq '.dashboard.control.enabled = true')"
     if [ -z "$(env_on_box DASHBOARD_AUTH_HASH_B64)" ]; then
@@ -2223,41 +2219,56 @@ run_rigforge_control() {
             it_fail "--rig-control-port is a port number" "got [$RIG_CONTROL_PORT]"
             return 0
         fi
-        # Inject into workers.list[] (#506), the primary shape — never dashboard.workers[], since
-        # pithead hard-refuses a config that sets both (validate_worker_endpoints). del() drops any
-        # stray legacy key first so a baseline that predates the migration doesn't trip that refusal;
-        # the baseline is restored verbatim at the end regardless.
-        ctrl_config="$(printf '%s' "$ctrl_config" | jq \
-            --arg n "$rig" --arg h "$RIG_HOST" --argjson cp "$RIG_CONTROL_PORT" --arg tok "${IT_RIG_TOKEN:-}" '
+        ctrl_config="$(printf '%s' "$ctrl_config" | IT_RIG_TOKEN="${IT_RIG_TOKEN:-}" jq \
+            --arg n "$rig" --arg h "$RIG_HOST" --argjson cp "$RIG_CONTROL_PORT" '
             del(.dashboard.workers)
-            | .workers.list = ((.workers.list // []) | map(select(.name != $n)) + [{name:$n, host:$h, control_port:$cp, token:$tok}])')"
+            | .workers.list = ((.workers.list // []) | map(select(.name != $n)) + [{name:$n, host:$h, port:8081, control_port:$cp, token:env.IT_RIG_TOKEN}])')"
         it_step "injecting a workers.list[] descriptor for '$rig' at $RIG_HOST:$RIG_CONTROL_PORT (token masked in-container)"
     fi
 
     local fails_before="$IT_FAIL"
     push_config "$ctrl_config"
-    it_step "apply with dashboard.control on + the rig pinned in workers.list[] (or its baseline legacy dashboard.workers[])…"
+    it_step "apply with dashboard.control on + the rig pinned in workers.list[]…"
     if ! pithead apply -y >"$OUT_DIR/rigforge-control.apply.log" 2>&1; then
         it_fail "apply (control on + rig descriptor) succeeded" "see $OUT_DIR/rigforge-control.apply.log"
-        push_config "$BASELINE_CONFIG"
-        pithead apply -y >/dev/null 2>&1 || true
-        return 0
+        _restore_rig_control_baseline || true
+        return 1
     fi
     wait_status_ok 240 || true
-    # Let the recreated dashboard re-poll the rig so its enriched feed + descriptor state are fresh.
-    wait_for 120 5 "dashboard to re-read the rig after the control apply" _pred_rig_present "$rig" || true
+    if [ -n "$RIGFORGE_BOOTSTRAP_VERSION" ]; then
+        if ! rigforge_bootstrap "$rig" "$RIGFORGE_BOOTSTRAP_VERSION"; then
+            _restore_rig_control_baseline || true
+            return 1
+        fi
+    fi
+    if ! wait_for 120 5 "dashboard to re-read the selected rig after control setup" _pred_rig_present "$rig"; then
+        if [ "$supplied" = 1 ]; then
+            it_fail "supplied rig exposes its enriched feed after control setup" "worker '$rig' never appeared"
+        else
+            it_skip_phase "rigforge-control" "worker '$rig' no longer exposes an enriched feed"
+        fi
+        _restore_rig_control_baseline || true
+        return 1
+    fi
 
-    # ---- #514: the enriched READ path survives a populated (masked) descriptor ----
-    # With a token in workers.list[] (or its baseline legacy dashboard.workers[]), the container reads it ONLY as {"__secret__":true}. The
-    # v1.5.2 regression stringified that sentinel into `Authorization: Bearer {'__secret__': True}`
-    # and every :8081 probe 401'd -> api_ok=false, feed gone. Assert both still resolve.
+    if [ "$RUN_RIGFORGE" = 1 ]; then
+        local read_fails="$IT_FAIL"
+        run_rigforge_integration "$rig"
+        # shellcheck disable=SC2034  # read by lib.sh:it_fail after the nested phase changes it
+        IT_CURRENT_SCENARIO="rigforge-control"
+        if [ "$IT_FAIL" -gt "$read_fails" ]; then
+            _restore_rig_control_baseline || true
+            return 1
+        fi
+    fi
+
+    # A populated masked descriptor must preserve the enriched read path (#514).
     st="$(api_state)"
     assert_eq "rig api_ok true with a populated masked descriptor (#514, v1.5.2 regression)" \
         "$(printf '%s' "$st" | jq -r --arg n "$rig" 'first(.workers[]? | select(.name==$n) | .api_ok) // empty' 2>/dev/null)" "true"
     assert_ne "rigforge feed still resolves with the token masked (#514)" \
         "$(printf '%s' "$st" | jq -r --arg n "$rig" 'first(.workers[]? | select(.name==$n) | .rigforge.version) // empty' 2>/dev/null)" ""
 
-    # ---- #513: the rig is editable, and a reversible Worker Inspect edit lands on the rig ----
     local detail
     detail="$(_worker_detail "$rig" || true)"
     assert_eq "Worker Inspect reports the rig editable with a descriptor (#508/#513)" \
@@ -2281,9 +2292,9 @@ run_rigforge_control() {
         IFS='|' read -r status ckeys change_id <<<"$(_settle_worker_apply_maxt "$rig" "$new_maxt" "$res")"
         assert_eq "Worker Inspect edit applied on the rig (#513)" "$status" "applied"
         assert_contains "the rig's /status confirms max_temp_c changed (#513)" "$ckeys" "max_temp_c"
-        # Matched by change_id, not "the newest row" — #579/#604's reconciler (rigforge-apply-settle.sh).
-        assert_eq "worker-apply recorded in the per-worker history (#185)" \
-            "$(_worker_detail "$rig" | jq -r --arg c "$change_id" 'first(.history[]? | select(.change_id==$c)) | .status // empty' 2>/dev/null)" "applied"
+        # By change_id, not "the newest row", and WAITED to terminal: the rig publishes its config
+        # before it decides the outcome, so reading the row straight after the settle raced it (#1471).
+        assert_eq "worker-apply recorded in the per-worker history (#185/#1471)" "$(_settle_history_row "$rig" "$change_id")" "applied"
         it_step "reverting max_temp_c $new_maxt -> $orig_maxt…"
         res="$(_worker_apply "$rig" "{\"max_temp_c\":$orig_maxt}")"
         IFS='|' read -r status _ _ <<<"$(_settle_worker_apply_maxt "$rig" "$orig_maxt" "$res")"
@@ -2291,32 +2302,24 @@ run_rigforge_control() {
         [ "$status" = "applied" ] && rig_key_clear dash "$rig" max_temp_c # (#1379)
     fi
 
-    # ---- #1236/#1002b: the other writable keys, and the ones we deliberately refuse ----
     # Lives in rigforge-writable-keys.sh: the legs read each original from the rig's OWN reported
     # config (.rig_config, #1235/rigforge#253) rather than from a record of what we last pushed, and
     # the three keys not driven there carry their reasons with them.
     run_rigforge_writable_keys "$rig"
     run_rigforge_pools "$rig"
 
-    # ---- #516: a rig-side edit reflects in the dashboard's enriched feed + the masked prefill ----
     run_rigforge_reverse "$rig" "$orig_maxt"
 
-    # ---- #517: an auto-rollback (rigforge#236) is recorded end-to-end from the dashboard ----
     run_rigforge_rollback "$rig"
 
-    # ---- #1002a/#1237: the one-click upgrade path, real when the rig is behind latest ----
-    # No longer opt-in. The flag it used to sit behind was set by no caller, so the gate's only
-    # upgrade coverage never ran; the leg now runs every time and says which branch it took.
-    run_rigforge_upgrade "$rig"
+    [ -n "$RIGFORGE_BOOTSTRAP_VERSION" ] || run_rigforge_upgrade "$rig"
 
     [ "$IT_FAIL" -gt "$fails_before" ] && capture_artifacts "rigforge-control" "$OUT_DIR"
 
     # Restore: baseline config drops the injected descriptor + turns control back off (the end-of-run
     # restore_baseline would too; doing it here keeps the box clean even if a later phase is added).
     it_step "restoring baseline (control off, descriptor dropped)…"
-    push_config "$BASELINE_CONFIG"
-    pithead apply -y >/dev/null 2>&1 || it_warn "restore apply returned non-zero — check the box"
-    wait_status_ok 240 || true
+    _restore_rig_control_baseline
 }
 
 # Predicate: the rig is present in the live feed with its enriched block parsed.
@@ -2338,26 +2341,23 @@ run_rigforge_reverse() { # <rig-name> <orig-max_temp_c-or-empty>
 
     # Prefill leg (always runs): the masked prefill copy (#440) must carry the descriptor host and
     # mask the token to the sentinel — the exact surface #508 broke. render_masked_config re-runs on
-    # every apply, so a hand-edit to config.json shows up in the editor form. Reads/writes dual-resolve
-    # workers.list[] (#506) vs. its baseline legacy dashboard.workers[] fallback, since run_rigforge_control
-    # only migrates to workers.list[] on a fresh inject — an already-descriptored baseline keeps
-    # whichever shape it arrived in (see the shape note on run_rigforge_control above).
+    # every apply, so a hand-edit to config.json shows up in the editor form. Reads and the watts
+    # write below resolve workers.list[] alone: the dashboard.workers[] fallback was removed in 2.0.0
+    # (#1832), and the apply above has already migrated a pre-2.0 baseline into workers.list[].
     cdir="$(env_on_box CONTROL_DIR)"
     if [ -n "$cdir" ]; then
         masked="$(rx "cat $(quote_arg "$cdir/masked/config.json") 2>/dev/null")"
         assert_ne "masked prefill carries the rig descriptor host (#516/#440)" \
-            "$(printf '%s' "$masked" | jq -r --arg n "$rig" 'first((.workers.list // .dashboard.workers // [])[] | select(.name==$n) | .host) // empty' 2>/dev/null)" ""
+            "$(printf '%s' "$masked" | jq -r --arg n "$rig" 'first((.workers.list // [])[] | select(.name==$n) | .host) // empty' 2>/dev/null)" ""
         assert_eq "masked prefill masks the per-worker token to the sentinel (#516/#440)" \
-            "$(printf '%s' "$masked" | jq -r --arg n "$rig" 'first((.workers.list // .dashboard.workers // [])[] | select(.name==$n) | .token."__secret__") // empty' 2>/dev/null)" "true"
+            "$(printf '%s' "$masked" | jq -r --arg n "$rig" 'first((.workers.list // [])[] | select(.name==$n) | .token."__secret__") // empty' 2>/dev/null)" "true"
         # A benign hand-edit to config.json must surface in the freshly re-rendered prefill (#516).
         local probe_watts=123
         push_config "$(printf '%s' "$(rx 'cat config.json')" | jq --arg n "$rig" --argjson w "$probe_watts" \
-            'if ((.workers.list // []) | any(.name == $n))
-             then (.workers.list[] | select(.name==$n) | .watts) = $w
-             else (.dashboard.workers[] | select(.name==$n) | .watts) = $w end')"
+            '(.workers.list[] | select(.name==$n) | .watts) = $w')"
         pithead apply -y >/dev/null 2>&1 || true
         assert_eq "config.json hand-edit shows up in the masked prefill (#516 render_masked_config claim)" \
-            "$(rx "cat $(quote_arg "$cdir/masked/config.json") 2>/dev/null" | jq -r --arg n "$rig" 'first((.workers.list // .dashboard.workers // [])[] | select(.name==$n) | .watts) // empty' 2>/dev/null)" "$probe_watts"
+            "$(rx "cat $(quote_arg "$cdir/masked/config.json") 2>/dev/null" | jq -r --arg n "$rig" 'first((.workers.list // [])[] | select(.name==$n) | .watts) // empty' 2>/dev/null)" "$probe_watts"
     else
         it_skip_leg "masked prefill (#516)" "CONTROL_DIR not set"
     fi
@@ -2396,14 +2396,14 @@ run_rigforge_reverse() { # <rig-name> <orig-max_temp_c-or-empty>
 # POST a change straight to the rig's control API from the bench (the same dial the host runner makes,
 # minus the dashboard) and echo the rig's change_id. Needs IT_RIG_TOKEN + RIG_HOST. Used only by #516.
 _rig_control_apply() { # <changes-json> -> echoes change_id
-    rx "curl -fsS --max-time 15 -X POST -H $(quote_arg "Authorization: Bearer ${IT_RIG_TOKEN:-}") -H 'Content-Type: application/json' --data $(quote_arg "$1") $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/apply")" 2>/dev/null | jq -r '.change_id // empty' 2>/dev/null
+    printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "${IT_RIG_TOKEN:-}" | jq -Rs .)" | rx "curl -fsS --max-time 15 -K - -X POST -H 'Content-Type: application/json' --data $(quote_arg "$1") $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/apply")" --stdin 2>/dev/null | jq -r '.change_id // empty' 2>/dev/null
 }
 
 # Poll the rig's /status for <change_id> reaching <want-status>. Returns 0 on match within the window.
 _rig_control_await() { # <change_id> <want-status> [timeout-s=30]
     local id="$1" want="$2" deadline=$((SECONDS + ${3:-30})) sbody
     while [ "$SECONDS" -lt "$deadline" ]; do
-        sbody="$(rx "curl -fsS --max-time 10 -H $(quote_arg "Authorization: Bearer ${IT_RIG_TOKEN:-}") $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/status")" 2>/dev/null)"
+        sbody="$(printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "${IT_RIG_TOKEN:-}" | jq -Rs .)" | rx "curl -fsS --max-time 10 -K - $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/status")" --stdin 2>/dev/null)"
         if [ "$(printf '%s' "$sbody" | jq -r '.change_id // empty' 2>/dev/null)" = "$id" ] &&
             [ "$(printf '%s' "$sbody" | jq -r '.status // empty' 2>/dev/null)" = "$want" ]; then
             return 0
@@ -2526,19 +2526,19 @@ main() {
         done < <(scenario_matrix)
     fi
 
-    # RigForge integration (#185/#235/#260) first — it's read-only and wants the freshly-mined
-    # state with the borrowed rig connected, before the destructive phases churn the stack.
-    [ "$RUN_RIGFORGE" = "1" ] && run_rigforge_integration
-    # rigforge-control mutates config + dials the rig; run it with the read-only rigforge phase's rig
-    # still connected, before the node-breaking phases churn the stack.
-    [ "$RUN_RIGFORGE_CONTROL" = "1" ] && run_rigforge_control
-    [ "$RUN_LIFECYCLE" = "1" ] && run_lifecycle
-    [ "$RUN_FAULTS" = "1" ] && run_fault_injection
-    [ "$RUN_AUTH_FAIL_CLOSED" = "1" ] && run_auth_fail_closed
-    [ "$RUN_HARDENING" = "1" ] && run_hardening
+    local rig_control_ok=1
+    if [ "$RUN_RIGFORGE_CONTROL" = "1" ]; then
+        run_rigforge_control || rig_control_ok=0
+    elif [ "$RUN_RIGFORGE" = "1" ]; then
+        run_rigforge_integration
+    fi
+    [ "$rig_control_ok" = 1 ] && [ "$RUN_LIFECYCLE" = "1" ] && run_lifecycle
+    [ "$rig_control_ok" = 1 ] && [ "$RUN_FAULTS" = "1" ] && run_fault_injection
+    [ "$rig_control_ok" = 1 ] && [ "$RUN_AUTH_FAIL_CLOSED" = "1" ] && run_auth_fail_closed
+    [ "$rig_control_ok" = 1 ] && [ "$RUN_HARDENING" = "1" ] && run_hardening
     # Subnet last among the destructive phases: it does a full down/up, so it re-establishes the
     # baseline stack cleanly before the end-of-run restore.
-    [ "$RUN_SUBNET" = "1" ] && run_subnet_scenario
+    [ "$rig_control_ok" = 1 ] && [ "$RUN_SUBNET" = "1" ] && run_subnet_scenario
 
     # Failure → roll the box back to the safety backup; success → leave it (restore_baseline
     # just puts config.json back to where we found it). Then drop the generated archive.

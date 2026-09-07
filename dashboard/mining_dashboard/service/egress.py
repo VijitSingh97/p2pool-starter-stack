@@ -1,5 +1,5 @@
 """Egress posture (#170) — for each stack component, its outbound connections and their network
-route (Tor / clearnet / LAN / local / unknown / inactive), plus a privacy roll-up.
+route (Tor / clearnet / incoming / LAN / local / unknown / inactive), plus a privacy roll-up.
 
 Routes are *derived from the live config*, never hardcoded, so the panel can't drift from reality or
 lie after a regression — the #160 audit's lesson (``--onion-address`` *looked* like Tor but wasn't).
@@ -30,9 +30,12 @@ from mining_dashboard.config import config
 from mining_dashboard.service.topology_graph import (  # noqa: F401  (re-exported)
     CLEARNET,
     INACTIVE,
+    INCOMING,
     LOCAL,
     TOPOLOGY_NODES,
     TOR,
+    edge,
+    ext_node,
     node_route,
     topology_nodes,
 )
@@ -108,6 +111,7 @@ def compute_egress_posture(
     notify_tor=True,
     notify_sinks_private=False,
     xvb_standby_source="",
+    tor_auto_heal=False,
 ):
     """Pure derivation of the egress posture from config knobs. Returns ``{components, summary}``."""
     xvb = _xvb_route(xvb_enabled, xvb_tor)
@@ -185,6 +189,8 @@ def compute_egress_posture(
                 # any non-private source rides Tor (like every read above); only a private-IP-literal
                 # primary is a LAN hop (local). Never clearnet, so it can't leak the backup's IP.
                 {"to": "XvB standby pull (backup ← primary)", "route": standby},
+                # Tor egress probe (#424) — opt-in via tor.auto_heal, socks5h, so never a leak.
+                {"to": "Tor egress probe", "route": TOR if tor_auto_heal else INACTIVE},
             ],
         },
         {
@@ -240,34 +246,22 @@ def egress_posture_from_config():
         telegram_enabled=config.TELEGRAM_ENABLED,
         price_feed_enabled=config.DASHBOARD_ENERGY["price_feed"],
         xvb_standby_source=config.XVB_STANDBY_SOURCE,
-        **_notify_knobs(),
+        **_shared_knobs(),
     )
 
 
-def _notify_knobs():
-    """The #380 alert-sink knobs, shared by both from-config builders."""
+def _shared_knobs():
+    """The knobs both from-config builders read: the #380 alert sinks and the #424 Tor probe."""
     urls = [*config.NOTIFY_WEBHOOK_URLS, config.NTFY_URL]
     return {
         "notify_sinks_enabled": any(u.strip() for u in urls if u),
         "notify_tor": config.NOTIFY_TOR,
         "notify_sinks_private": _sinks_all_private(urls),
+        "tor_auto_heal": config.TOR_AUTO_HEAL,
     }
 
 
 # --- Stack topology (#170, trust-boundary view) ----------------------------------------
-# The egress list above answers "is anything leaking?"; the topology answers "how is the whole
-# stack wired?" — every component and the route of each link (ingress, egress, internal). Same
-# config-derived routes, so the two views can never disagree (the summary is shared verbatim).
-
-
-def _edge(src, dst, route, label, kind):
-    return {"from": src, "to": dst, "route": route, "label": label, "kind": kind}
-
-
-def _ext(route):
-    # Where a component's external link lands in the diagram: a Tor-routed link terminates at the
-    # `tor` hub; a clearnet link goes STRAIGHT to the internet node, so a leak visibly bypasses Tor.
-    return "internet" if route == CLEARNET else "tor"
 
 
 def compute_topology(
@@ -279,10 +273,6 @@ def compute_topology(
     monero_clearnet_sync,
     tari_clearnet_sync,
     monero_route,
-    # Defaulted, unlike monero_route: the egress posture has no Tari RPC conn to route, so the
-    # two functions do not take identical knobs and the shared sweep fixtures splat into both.
-    # topology_from_config passes it, and test_topology_graph asserts that it does rather than
-    # trusting the signature to.
     tari_route=LOCAL,
     healthchecks_enabled,
     telegram_enabled,
@@ -291,10 +281,12 @@ def compute_topology(
     notify_tor=True,
     notify_sinks_private=False,
     xvb_standby_source="",
+    tor_auto_heal=False,
+    local_miner_enabled=False,
 ):
     """Pure derivation of the stack topology. Returns ``{nodes, edges, summary}``.
 
-    ``kind`` is one of ``ingress`` (inbound from your LAN), ``egress`` (outbound), ``p2p``
+    ``kind`` is one of ``ingress`` (an incoming connection), ``egress`` (outbound), ``p2p``
     (bidirectional — egress *and* onion ingress for the P2P daemons), or ``internal`` (host-only
     plumbing, hidden until expanded). The summary is shared verbatim with the egress list.
     """
@@ -313,6 +305,7 @@ def compute_topology(
         notify_tor=notify_tor,
         notify_sinks_private=notify_sinks_private,
         xvb_standby_source=xvb_standby_source,
+        tor_auto_heal=tor_auto_heal,
     )
     xvb = _xvb_route(xvb_enabled, xvb_tor)
     sinks = _notify_route(notify_sinks_enabled, notify_tor, notify_sinks_private)
@@ -320,20 +313,21 @@ def compute_topology(
     sidechain = CLEARNET if p2pool_clearnet else TOR
 
     edges = [
-        # Ingress from your LAN — the only listeners actually exposed to the network.
-        _edge("rigs", "xmrig-proxy", LOCAL, f"stratum :{config.STRATUM_PORT}", "ingress"),
-        _edge("browser", "caddy", LOCAL, "https :443", "ingress"),
+        # Incoming clients. Their source network and the listener's bind are not classified here.
+        edge("rigs", "xmrig-proxy", INCOMING, f"stratum :{config.STRATUM_PORT}", "ingress"),
+        edge("browser", "caddy", INCOMING, "https :443", "ingress"),
         # Daemon P2P: bidirectional (outbound peers + inbound via Tor onion services).
-        _edge("p2pool", _ext(sidechain), sidechain, "sidechain P2P", "p2p"),
-        _edge("monerod", "tor", TOR, "Monero P2P + tx", "p2p"),
-        _edge("tari", "tor", TOR, "Tari P2P", "p2p"),
+        edge("p2pool", ext_node(sidechain), sidechain, "sidechain P2P", "p2p"),
+        edge("monerod", "tor", TOR, "Monero P2P + tx", "p2p"),
+        edge("tari", "tor", TOR, "Tari P2P", "p2p"),
         # App-level egress.
-        _edge("xmrig-proxy", _ext(xvb), xvb, "XvB donation", "egress"),
-        _edge("dashboard", "tor", TOR, "update check", "egress"),
+        edge("xmrig-proxy", ext_node(xvb), xvb, "XvB donation", "egress"),
+        edge("dashboard", "tor", TOR, "update check", "egress"),
         # XvB stats fetch — unconditionally Tor (#163/#701); xvb.tor only gates the donation dial.
-        _edge("dashboard", "tor", TOR if xvb_enabled else INACTIVE, "XvB stats", "egress"),
+        edge("dashboard", "tor", TOR if xvb_enabled else INACTIVE, "XvB stats", "egress"),
+        edge("dashboard", "tor", TOR if tor_auto_heal else INACTIVE, "Tor egress probe", "egress"),
         # Healthchecks.io ping — always over Tor when a URL is set (#79).
-        _edge(
+        edge(
             "dashboard",
             "tor",
             TOR if healthchecks_enabled else INACTIVE,
@@ -341,7 +335,7 @@ def compute_topology(
             "egress",
         ),
         # Telegram bot (alerts + command long-poll) — always over Tor when on (#121/#340).
-        _edge(
+        edge(
             "dashboard",
             "tor",
             TOR if telegram_enabled else INACTIVE,
@@ -349,7 +343,7 @@ def compute_topology(
             "egress",
         ),
         # XMR/XTM price feed (#520) — always over Tor when opted in (energy.price_feed).
-        _edge(
+        edge(
             "dashboard",
             "tor",
             TOR if price_feed_enabled else INACTIVE,
@@ -360,7 +354,7 @@ def compute_topology(
         # node — a LAN appliance isn't in the diagram — so it draws no edge; the shared summary
         # still reflects it (as no leak), and the egress list shows the ``local`` route.
         *(
-            [_edge("dashboard", _ext(sinks), sinks, "alert sinks", "egress")]
+            [edge("dashboard", ext_node(sinks), sinks, "alert sinks", "egress")]
             if sinks != LOCAL
             else []
         ),
@@ -368,39 +362,45 @@ def compute_topology(
         # LAN hop with no placeable node (like the alert-sink LAN carve-out), so it draws no edge.
         # The route is never clearnet, so it can never bypass the hub to the internet node.
         *(
-            [_edge("dashboard", _ext(standby), standby, "XvB standby", "egress")]
+            [edge("dashboard", ext_node(standby), standby, "XvB standby", "egress")]
             if standby != LOCAL
             else []
         ),
         # The Tor hub to the network: SOCKS egress for every daemon + onion-service ingress.
-        _edge("tor", "internet", TOR, "SOCKS + onion circuits", "p2p"),
+        edge("tor", "internet", TOR, "SOCKS + onion circuits", "p2p"),
         # Internal mesh (hidden until expanded).
-        _edge("xmrig-proxy", "p2pool", LOCAL, "upstream pool", "internal"),
-        _edge("p2pool", "monerod", monero_route, "RPC / ZMQ", "internal"),
-        _edge("p2pool", "tari", tari_route, "gRPC merge-mine", "internal"),
-        _edge("caddy", "dashboard", LOCAL, "reverse-proxy :8000", "internal"),
-        _edge("dashboard", "monerod", monero_route, "get_info RPC", "internal"),
-        _edge("dashboard", "xmrig-proxy", LOCAL, "proxy API", "internal"),
-        _edge("dashboard", "tari", tari_route, "gRPC", "internal"),
-        _edge("dashboard", "docker", LOCAL, "container API", "internal"),
+        edge("xmrig-proxy", "p2pool", LOCAL, "upstream pool", "internal"),
+        edge("p2pool", "monerod", monero_route, "RPC / ZMQ", "internal"),
+        edge("p2pool", "tari", tari_route, "gRPC merge-mine", "internal"),
+        edge("caddy", "dashboard", LOCAL, "reverse-proxy :8000", "internal"),
+        edge("dashboard", "monerod", monero_route, "get_info RPC", "internal"),
+        edge("dashboard", "xmrig-proxy", LOCAL, "proxy API", "internal"),
+        edge("dashboard", "tari", tari_route, "gRPC", "internal"),
+        edge("dashboard", "docker", LOCAL, "container API", "internal"),
     ]
+    if local_miner_enabled:
+        edges.append(edge("local-miner", "xmrig-proxy", LOCAL, "local stratum", "ingress"))
     # Optional clearnet initial-sync paths (#183) bypass the Tor hub straight to the internet.
     if monero_clearnet_sync:
-        edges.append(_edge("monerod", "internet", CLEARNET, "clearnet IBD", "egress"))
+        edges.append(edge("monerod", "internet", CLEARNET, "clearnet IBD", "egress"))
     if tari_clearnet_sync:
-        edges.append(_edge("tari", "internet", CLEARNET, "clearnet IBD", "egress"))
+        edges.append(edge("tari", "internet", CLEARNET, "clearnet IBD", "egress"))
 
     # Tag clearnet links as a real leak vs firewall-blocked — same rule as the egress list. Only the
     # host-networked dashboard escapes the #270 container firewall, so its clearnet links truly leak.
-    for edge in edges:
-        if edge["route"] != CLEARNET:
+    for link in edges:
+        if link["route"] != CLEARNET:
             continue
-        if edge["from"] != "dashboard" and firewall:
-            edge["blocked_by_firewall"] = True
+        if link["from"] != "dashboard" and firewall:
+            link["blocked_by_firewall"] = True
         else:
-            edge["leak"] = True
+            link["leak"] = True
 
-    nodes = topology_nodes(monero_route=monero_route, tari_route=tari_route)
+    nodes = topology_nodes(
+        monero_route=monero_route,
+        tari_route=tari_route,
+        local_miner_enabled=local_miner_enabled,
+    )
     return {"nodes": nodes, "edges": edges, "summary": posture["summary"]}
 
 
@@ -419,5 +419,6 @@ def topology_from_config():
         telegram_enabled=config.TELEGRAM_ENABLED,
         price_feed_enabled=config.DASHBOARD_ENERGY["price_feed"],
         xvb_standby_source=config.XVB_STANDBY_SOURCE,
-        **_notify_knobs(),
+        local_miner_enabled=config.local_miner_enabled(),
+        **_shared_knobs(),
     )
