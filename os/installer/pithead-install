@@ -256,7 +256,7 @@ main() {
     # point of pre-seeding — would stay behind on the stick.
     local seed
     for seed in pithead-config.json pithead-token.txt pithead-rig.json \
-        pithead-restore.enc pithead-restore-pass; do
+        pithead-restore.enc pithead-restore-pass pithead-setup-wizard; do
         [ -f "/boot/efi/$seed" ] && install -m 600 "/boot/efi/$seed" "$mnt/boot/efi/$seed"
     done
 
