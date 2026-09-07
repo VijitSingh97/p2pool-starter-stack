@@ -25,7 +25,6 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-control-upgrade-lock.sh" && domain_ra
 # shellcheck source=tests/stack/test-release-signing.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-release-signing.sh" && domain_ran test-release-signing.sh "$_d0" "$?" || domain_ran test-release-signing.sh "$_d0" "$?"
 
-# ---------------------------------------------------------------------------
 # shellcheck source=tests/stack/test-dashboard.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-dashboard.sh" && domain_ran test-dashboard.sh "$_d0" "$?" || domain_ran test-dashboard.sh "$_d0" "$?"
 
@@ -51,7 +50,6 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-release.sh" && domain_ran test-releas
 # shellcheck source=tests/stack/test-unit-helpers.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-unit-helpers.sh" && domain_ran test-unit-helpers.sh "$_d0" "$?" || domain_ran test-unit-helpers.sh "$_d0" "$?"
 
-# ---------------------------------------------------------------------------
 # shellcheck source=tests/stack/test-cli.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-cli.sh" && domain_ran test-cli.sh "$_d0" "$?" || domain_ran test-cli.sh "$_d0" "$?"
 
@@ -61,21 +59,19 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-config.sh" && domain_ran test-config.
 # shellcheck source=tests/stack/test-render-quadlet.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-render-quadlet.sh" && domain_ran test-render-quadlet.sh "$_d0" "$?" || domain_ran test-render-quadlet.sh "$_d0" "$?"
 
-# ---------------------------------------------------------------------------
 # shellcheck source=tests/stack/test-doctor-appliance.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-doctor-appliance.sh" && domain_ran test-doctor-appliance.sh "$_d0" "$?" || domain_ran test-doctor-appliance.sh "$_d0" "$?"
 
 # shellcheck source=tests/stack/test-appliance-setup.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-setup.sh" && domain_ran test-appliance-setup.sh "$_d0" "$?" || domain_ran test-appliance-setup.sh "$_d0" "$?"
 
-# ---------------------------------------------------------------------------
 # shellcheck source=tests/stack/test-backup.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-backup.sh" && domain_ran test-backup.sh "$_d0" "$?" || domain_ran test-backup.sh "$_d0" "$?"
 _d0=$((PASS + FAIL)) && source "$HERE/test-backup-recovery.sh" && domain_ran test-backup-recovery.sh "$_d0" "$?" || domain_ran test-backup-recovery.sh "$_d0" "$?"
 _d0=$((PASS + FAIL)) && source "$HERE/test-cli-restore-hardening.sh" && domain_ran test-cli-restore-hardening.sh "$_d0" "$?" || domain_ran test-cli-restore-hardening.sh "$_d0" "$?"
 # shellcheck source=tests/stack/test-install-verify.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-install-verify.sh" && domain_ran test-install-verify.sh "$_d0" "$?" || domain_ran test-install-verify.sh "$_d0" "$?"
-# ---------------------------------------------------------------------------
+
 # shellcheck source=tests/stack/test-secrets.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-secrets.sh" && domain_ran test-secrets.sh "$_d0" "$?" || domain_ran test-secrets.sh "$_d0" "$?"
 
@@ -86,6 +82,8 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-rig-worker.sh" && domain_ran test-rig
 _d0=$((PASS + FAIL)) && source "$HERE/test-control-status-vocabulary.sh" && domain_ran test-control-status-vocabulary.sh "$_d0" "$?" || domain_ran test-control-status-vocabulary.sh "$_d0" "$?"
 # shellcheck source=tests/stack/test-monero-tari.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-monero-tari.sh" && domain_ran test-monero-tari.sh "$_d0" "$?" || domain_ran test-monero-tari.sh "$_d0" "$?"
+# shellcheck source=tests/stack/test-recovery-address-gates.sh disable=SC2015
+_d0=$((PASS + FAIL)) && source "$HERE/test-recovery-address-gates.sh" && domain_ran test-recovery-address-gates.sh "$_d0" "$?" || domain_ran test-recovery-address-gates.sh "$_d0" "$?"
 # shellcheck source=tests/stack/test-p2pool-tari-off.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-p2pool-tari-off.sh" && domain_ran test-p2pool-tari-off.sh "$_d0" "$?" || domain_ran test-p2pool-tari-off.sh "$_d0" "$?"
 # shellcheck source=tests/stack/test-tari-mode-off.sh disable=SC2015
@@ -235,6 +233,9 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-cert-advisory.sh" && domain
 
 # shellcheck source=tests/stack/test-appliance-boot-release.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-boot-release.sh" && domain_ran test-appliance-boot-release.sh "$_d0" "$?" || domain_ran test-appliance-boot-release.sh "$_d0" "$?"
+
+# shellcheck source=tests/stack/test-appliance-build-compose-source.sh disable=SC2015
+_d0=$((PASS + FAIL)) && source "$HERE/test-appliance-build-compose-source.sh" && domain_ran test-appliance-build-compose-source.sh "$_d0" "$?" || domain_ran test-appliance-build-compose-source.sh "$_d0" "$?"
 
 # shellcheck source=tests/stack/test-appliance-os-update.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-os-update.sh" && domain_ran test-appliance-os-update.sh "$_d0" "$?" || domain_ran test-appliance-os-update.sh "$_d0" "$?"

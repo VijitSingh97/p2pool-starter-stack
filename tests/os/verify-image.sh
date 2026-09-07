@@ -31,7 +31,9 @@ rigforge_ref_matches() { # <image-root> <dockerfile> — 0 iff the recorded ref 
     pin=$(sed -n 's/^ARG RIGFORGE_REF=\([^ ]*\).*/\1/p' "$2" 2>/dev/null)
     [ -n "$rec" ] && [ "$rec" = "$pin" ]
 }
-# Sourcing defines the helper and runs nothing, so the self-test drives the REAL comparison.
+# shellcheck source=tests/os/verify-image-artifact-helpers.sh
+. "$SCRIPT_DIR/verify-image-artifact-helpers.sh"
+# Sourcing defines the helpers and runs nothing, so the self-tests drive the REAL comparisons.
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then return 0; fi
 
 IMAGE="${1:-}"
@@ -147,6 +149,8 @@ chk "data-reset unit enabled (local-fs transaction)" 'test -L "$ROOT/etc/systemd
 chk "data-reset script present and executable" 'test -x "$ROOT/usr/local/sbin/pithead-data-reset"'
 chk "data-reset ordered before /data mounts (a mounted partition cannot be reformatted)" \
     'grep -q "^Before=data.mount local-fs.target" "$ROOT/etc/systemd/system/pithead-data-reset.service"'
+chk "data-reset's repair tools are baked (e2fsck + mkfs.ext4, #1069 W11)" \
+    'data_reset_repair_tools_present "$ROOT"'
 # Hugepages: the sysctl the Dockerfile calls load-bearing for the memory caps.
 chk "hugepage reservation baked (RandomX dataset must land in hugetlbfs)" 'grep -q "vm.nr_hugepages=3072" "$ROOT/etc/sysctl.d/99-pithead-hugepages.conf"'
 # The low-RAM sizing that corrects that sysctl at boot: without it a small machine gets the
@@ -268,7 +272,12 @@ fi
 if [ -f ./pithead ] && [ -f dashboard/mining_dashboard/wizard.py ]; then
     echo "==> the artifact matches the tree it was built from"
     chk "shipped pithead is the tree's pithead" 'cmp -s "$ROOT/opt/pithead/pithead" ./pithead'
-    chk "shipped compose file matches" 'cmp -s "$ROOT/opt/pithead/docker-compose.yml" ./docker-compose.yml'
+    # The compose file is staged from the STACK_VERSION tag when that tag exists (#1215), so the
+    # tree is the wrong reference then. The stamp says which; compose_reference refuses the rest.
+    COMPOSE_REF=$(mktemp)
+    chk "shipped compose file matches its stamped source ($(cat "$ROOT/opt/pithead/COMPOSE_SOURCE" 2>/dev/null || echo missing))" \
+        'compose_reference "$ROOT" "$COMPOSE_REF" && cmp -s "$ROOT/opt/pithead/docker-compose.yml" "$COMPOSE_REF"'
+    rm -f "$COMPOSE_REF"
     chk "shipped config reference matches" 'cmp -s "$ROOT/opt/pithead/config.reference.json" ./config.reference.json'
 
     # The wizard is the part that shipped stale, and it lives inside a container archive rather

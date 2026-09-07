@@ -407,26 +407,25 @@ assert_eq "pool tier change landed in config.json" "$(jq -r '.p2pool.pool' "$C/c
 # teeth — WITHOUT the probe that same commit applies — and case 3 is what stops a probe that
 # refuses everything from reading as a pass.
 cp "$C/config.json" "$C/nep-keep.json"
-# A kernel-chosen port: two lanes may run this suite at once, so a fixed one would collide. The
-# Tari leg of the probe is a bare TCP connect, so an accept()ing socket is all it needs to pass.
+# A kernel-chosen port: two lanes may run this suite at once, so a fixed one would collide.
 python3 -c 'import socket, sys, time
-s = socket.socket()
-s.bind(("127.0.0.1", 0))
-s.listen(8)
-sys.stdout.write("%d\n" % s.getsockname()[1])
+r = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); r.connect(("192.0.2.1", 9))
+s = socket.socket(); s.bind(("0.0.0.0", 0)); s.listen(8)
+sys.stdout.write("%s %d\n" % (r.getsockname()[0], s.getsockname()[1]))
 sys.stdout.flush()
 time.sleep(120)' >"$C/nep.port" &
 nep_pid=$!
 nep_port_ready() { [ -s "$C/nep.port" ]; }
 wait_while_alive "$nep_pid" nep_port_ready
-nep_live=$(tr -dc '0-9' <"$C/nep.port")
-timeout 5 bash -c "</dev/tcp/127.0.0.1/$nep_live" 2>/dev/null
+read -r nep_host nep_live <"$C/nep.port"
+printf '#!/usr/bin/env bash\n[ "$1" = ahosts ] && [ "$2" = "%s" ] || exit 2\nprintf "%%s STREAM %%s\\n" "$2" "$2"\n' "$nep_host" >"$C/bin/getent" && chmod +x "$C/bin/getent"
+timeout 5 bash -c "</dev/tcp/$nep_host/$nep_live" 2>/dev/null
 assert_rc "the fixture's own port really accepts (control on the fixture, not on the gate)" "$?" "0"
 # Baseline: Tari on a REMOTE node that is NOT up. Monero stays local, so only the Tari leg is ever
 # dialled, and `apply` itself never probes — the wizard and this gate are the only callers.
-jq '.tari.mode="remote" | .tari.remote={host:"127.0.0.1",grpc_port:1}' "$C/config.json" >"$C/cand.json" && mv "$C/cand.json" "$C/config.json"
+jq --arg h "$nep_host" '.tari.mode="remote" | .tari.remote={host:$h,grpc_port:1}' "$C/config.json" >"$C/cand.json" && mv "$C/cand.json" "$C/config.json"
 (cd "$C" && DOCKER_LOG="$CTRL_LOG" PATH="$C/bin:$PATH" ./pithead apply -y >/dev/null 2>&1)
-assert_contains "remote-Tari baseline applied" "$(cat "$C/.env")" "TARI_GRPC_ADDRESS=127.0.0.1:1"
+assert_contains "remote-Tari baseline applied" "$(cat "$C/.env")" "TARI_GRPC_ADDRESS=$nep_host:1"
 # 1. No token: the endpoint IS committable now, but only behind the typed confirmation.
 jq '.tari.remote.grpc_port=2' "$C/config.json" >"$C/cand.json"
 gate_try "$C/cand.json"
@@ -435,7 +434,7 @@ assert_contains "the token-less refusal asks for the confirmation" "$(jq -r '.er
 # 2. Token + an endpoint nothing answers on: the PROBE refuses. Without it this commit applies.
 gate_try "$C/cand.json" APPLY
 assert_eq "an unreachable node endpoint is refused even with the token" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "rejected"
-assert_contains "the refusal comes from the reachability probe" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "cannot use"
+assert_contains "the refusal comes from the reachability probe" "$(jq -r '.error' "$RESULTS/$UUID5.json" 2>/dev/null)" "cannot reach"
 assert_eq "config.json keeps the old endpoint" "$(jq -r '.tari.remote.grpc_port' "$C/config.json")" "1"
 # 3. Token + an endpoint that answers: committed. #1888's whole point — changeable on a live machine.
 jq --argjson p "$nep_live" '.tari.remote.grpc_port=$p' "$C/config.json" >"$C/cand.json"
@@ -443,6 +442,7 @@ gate_try "$C/cand.json" APPLY
 assert_eq "a reachable node endpoint commits with the token" "$(jq -r '.status' "$RESULTS/$UUID5.json" 2>/dev/null)" "applied"
 assert_eq "the new endpoint landed in config.json" "$(jq -r '.tari.remote.grpc_port' "$C/config.json")" "$nep_live"
 kill "$nep_pid" 2>/dev/null
+rm -f "$C/bin/getent"
 cp "$C/nep-keep.json" "$C/config.json"
 (cd "$C" && DOCKER_LOG="$CTRL_LOG" PATH="$C/bin:$PATH" ./pithead apply -y >/dev/null 2>&1)
-unset nep_pid nep_live
+unset nep_pid nep_live nep_host
