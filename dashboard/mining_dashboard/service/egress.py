@@ -262,9 +262,6 @@ def _shared_knobs():
 
 
 # --- Stack topology (#170, trust-boundary view) ----------------------------------------
-# The egress list above answers "is anything leaking?"; the topology answers "how is the whole
-# stack wired?" — every component and the route of each link (ingress, egress, internal). Same
-# config-derived routes, so the two views can never disagree (the summary is shared verbatim).
 
 
 def compute_topology(
@@ -276,10 +273,6 @@ def compute_topology(
     monero_clearnet_sync,
     tari_clearnet_sync,
     monero_route,
-    # Defaulted, unlike monero_route: the egress posture has no Tari RPC conn to route, so the
-    # two functions do not take identical knobs and the shared sweep fixtures splat into both.
-    # topology_from_config passes it, and test_topology_graph asserts that it does rather than
-    # trusting the signature to.
     tari_route=LOCAL,
     healthchecks_enabled,
     telegram_enabled,
@@ -289,6 +282,7 @@ def compute_topology(
     notify_sinks_private=False,
     xvb_standby_source="",
     tor_auto_heal=False,
+    local_miner_enabled=False,
 ):
     """Pure derivation of the stack topology. Returns ``{nodes, edges, summary}``.
 
@@ -384,6 +378,8 @@ def compute_topology(
         edge("dashboard", "tari", tari_route, "gRPC", "internal"),
         edge("dashboard", "docker", LOCAL, "container API", "internal"),
     ]
+    if local_miner_enabled:
+        edges.append(edge("local-miner", "xmrig-proxy", LOCAL, "local stratum", "ingress"))
     # Optional clearnet initial-sync paths (#183) bypass the Tor hub straight to the internet.
     if monero_clearnet_sync:
         edges.append(edge("monerod", "internet", CLEARNET, "clearnet IBD", "egress"))
@@ -400,7 +396,11 @@ def compute_topology(
         else:
             link["leak"] = True
 
-    nodes = topology_nodes(monero_route=monero_route, tari_route=tari_route)
+    nodes = topology_nodes(
+        monero_route=monero_route,
+        tari_route=tari_route,
+        local_miner_enabled=local_miner_enabled,
+    )
     return {"nodes": nodes, "edges": edges, "summary": posture["summary"]}
 
 
@@ -419,5 +419,6 @@ def topology_from_config():
         telegram_enabled=config.TELEGRAM_ENABLED,
         price_feed_enabled=config.DASHBOARD_ENERGY["price_feed"],
         xvb_standby_source=config.XVB_STANDBY_SOURCE,
+        local_miner_enabled=config.local_miner_enabled(),
         **_shared_knobs(),
     )
