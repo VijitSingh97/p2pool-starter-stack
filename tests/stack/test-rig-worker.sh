@@ -451,7 +451,7 @@ cp "$WU/config.json" "$stale_dir/config.json"
 printf '%s' "v9.9.9" >"$stale_dir/staged/.rigforge-latest-tag"
 cat >"$stale_dir/bin/curl" <<EOF
 #!/usr/bin/env bash
-out="" url=""
+out="" url=""; cat >/dev/null
 while [ \$# -gt 0 ]; do
     case "\$1" in
     -o) out="\$2"; shift 2 ;;
@@ -491,7 +491,7 @@ cp "$WU/config.json" "$to_dir/config.json"
 printf '%s' "v9.9.9" >"$to_dir/staged/.rigforge-latest-tag"
 cat >"$to_dir/bin/curl" <<'EOF'
 #!/usr/bin/env bash
-out="" url=""
+out="" url=""; cat >/dev/null
 while [ $# -gt 0 ]; do
     case "$1" in
     -o) out="$2"; shift 2 ;;
@@ -523,7 +523,7 @@ mkdir -p "$gh_dir/staged" "$gh_dir/results" "$gh_dir/audit" "$gh_dir/bin"
 cp "$WU/config.json" "$gh_dir/config.json"
 cat >"$gh_dir/bin/curl" <<'EOF'
 #!/usr/bin/env bash
-out="" url=""
+out="" url=""; cat >/dev/null
 while [ $# -gt 0 ]; do
     case "$1" in
     -o) out="$2"; shift 2 ;;
@@ -592,7 +592,7 @@ printf '%s' "v9.9.9" >"$refuse_dir/staged/.rigforge-latest-tag"
 wu_long_err="$(printf 'A%.0s' $(seq 1 500))OVERFLOW-TAIL"
 cat >"$refuse_dir/bin/curl" <<EOF
 #!/usr/bin/env bash
-out="" url=""
+out="" url=""; cat >/dev/null
 while [ \$# -gt 0 ]; do
     case "\$1" in
     -o) out="\$2"; shift 2 ;;
