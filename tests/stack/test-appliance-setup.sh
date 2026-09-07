@@ -158,6 +158,14 @@ printf 'DBDATA-ORIG\n' >"$RS/data/dashboard/dashboard.db"
 
 # Expected-member policy is shared by the wizard and carried-archive doors (#1971).
 # These are ordinary fixture files. The added note is outside the backup item list.
+run_sourced "$RS" restore_setup_members "${RS#/}/config.json"
+assert_rc "member policy accepts a mapped configuration file" "$?" 0
+run_sourced "$RS" restore_setup_members "${RS#/}/data/tor/"
+assert_rc "member policy accepts a mapped data directory" "$?" 0
+run_sourced "$RS" restore_setup_members "${RS#/}/config.json/"
+assert_rc "member policy refuses a directory in place of configuration" "$?" 1
+run_sourced "$RS" restore_setup_members "${RS#/}/data/tor"
+assert_rc "member policy refuses a file in place of a data directory" "$?" 1
 RPSEED="$RS/preseed"
 mkdir "$RPSEED"
 cp "$rarchive" "$RPSEED/pithead-restore.enc"

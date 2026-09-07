@@ -2048,16 +2048,19 @@ restore_setup_items() {
 }
 
 restore_setup_members() { # <tar name listing>
-    local member item accepted
+    local member item accepted directory
     while IFS= read -r member; do
         case "$member" in '' | /* | *\\* | . | ./* | */./* | */. | *//* | ../* | */../* | */..) return 1 ;; esac
+        directory=0
+        [[ "$member" = */ ]] && directory=1
         member="${member%/}"
         accepted=0
         while IFS= read -r item; do
             item="${item#/}"
             if [[ "$item" = */ ]]; then
-                [[ "$member" = "${item%/}" || "$member" = "$item"* ]] && accepted=1
-            elif [ "$member" = "$item" ]; then
+                [[ "$member" = "$item"* ]] && accepted=1
+                [[ "$member" = "${item%/}" && "$directory" = 1 ]] && accepted=1
+            elif [ "$member" = "$item" ] && [ "$directory" = 0 ]; then
                 accepted=1
             fi
         done < <(restore_setup_items)
@@ -2136,8 +2139,8 @@ restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
         rnames=$(tar -tzf "$archive" 2>/dev/null)
         rlinks=$(tar -tvzf "$archive" 2>/dev/null)
     fi
-    if printf '%s\n' "$rnames" | grep -qE '^/|(^|/)\.\.(/|$)' ||
-        printf '%s\n' "$rlinks" | grep -qvE '^[-d]'; then
+    if printf '%s\n' "$rnames" | grep -E '^/|(^|/)\.\.(/|$)' >/dev/null ||
+        printf '%s\n' "$rlinks" | grep -vE '^[-d]' >/dev/null; then
         printf 'archive contains unsafe paths or links — refusing to restore' >"$errf"
         return 1
     fi
