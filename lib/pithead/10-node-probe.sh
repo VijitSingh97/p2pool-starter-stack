@@ -74,7 +74,7 @@ zmq_endpoint_is_publisher() { # <host> <port>
         exec 3<>/dev/tcp/"$0"/"$1" 2>/dev/null || exit 1
         { printf "\xff\x00\x00\x00\x00\x00\x00\x00\x00\x7f\x03\x01NULL"; head -c 48 /dev/zero; } >&3
         g=$(head -c 64 <&3 | od -An -v -tx1 | tr -d " \n")
-        [ ${#g} -eq 128 ] && [ "${g:0:2}" = ff ] && [ "${g:18:2}" = 7f ] && [ $((16#${g:20:2})) -ge 3 ] || { printf "%s\n" "$g"; exit 2; }
+        [ ${#g} -eq 128 ] && [ "${g:0:2}" = ff ] && [ "${g:18:2}" = 7f ] && [ $((16#${g:20:2})) -ge 3 ] && [ "${g:24:8}" = 4e554c4c ] && [ "${g:64:2}" = 00 ] || { printf "%s\n" "$g"; exit 2; }
         printf "\x04\x19\x05READY\x0bSocket-Type\x00\x00\x00\x03SUB" >&3
         h=$(head -c 2 <&3 | od -An -v -tx1 | tr -d " \n")
         [ ${#h} -eq 4 ] && [ $((16#${h:0:2} & 2)) -eq 0 ] || exit 2
