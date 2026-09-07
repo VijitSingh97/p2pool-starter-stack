@@ -85,7 +85,17 @@ test("doctor rows preserve the host's status/message contract and failure-first 
   const rows = doctorRows(DOCTOR_DOC);
   assert.deepEqual(rows.map((row) => row.status), ["fail", "fail", "warn", "ok", "ok", "ok"]);
   for (const row of rows) assert.deepEqual(Object.keys(row).sort(), ["message", "status"]);
-  assert.match(rows[0].message, /restart monerod/);
+  assert.deepEqual(
+    rows.map((row) => row.message),
+    [
+      "monerod is not answering — restart monerod.",
+      "p2pool is down — inspect its recent log.",
+      "Tor egress firewall is missing — run apply.",
+      "Dashboard answers through Caddy.",
+      "Free RAM: 8192 MiB available.",
+      "System clock is NTP-synchronized.",
+    ],
+  );
   assert.equal(doctorSummary(DOCTOR_DOC), "2 failing, 1 warning, 3 ok");
 });
 
@@ -235,6 +245,41 @@ test("a service log remains per-service, uses contextual waiting copy, and escap
   const facts = vnodeFacts(done);
   assert.ok(facts.text.includes("<token>\nready"));
   assert.ok(!facts.tags.includes("token"));
+});
+
+test("a terminal log refusal and an empty-log note keep the host's exact explanation", () => {
+  const refused = renderToString(
+    inst(
+      { enabled: true },
+      {
+        logs: {
+          tor: {
+            phase: "failed",
+            result: {
+              status: "rejected",
+              error: "not a service this dashboard may read logs for.",
+            },
+          },
+        },
+      },
+    ).render(),
+  );
+  assert.match(refused, /not a service this dashboard may read logs for\./);
+
+  const empty = renderToString(
+    inst(
+      { enabled: true },
+      {
+        logs: {
+          tor: {
+            phase: "done",
+            result: { status: "applied", lines: "", note: "No log output — tor is not running." },
+          },
+        },
+      },
+    ).render(),
+  );
+  assert.match(empty, /No log output — tor is not running\./);
 });
 
 test("two service log disclosures keep both results", async () => {
