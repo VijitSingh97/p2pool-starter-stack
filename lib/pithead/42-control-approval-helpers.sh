@@ -2,7 +2,11 @@
 control_changed_config_paths() { # <staged-file>
     jq -rn --slurpfile ref "$REFERENCE_CONFIG" --slurpfile live "$CONFIG_FILE" --slurpfile staged "$1" '
         def merged($x): $ref[0] * $x;
-        def leaves($x): [$x | paths(scalars) | select(.[0:2] != ["workers", "list"])];
+        # Scalar arrays are one configuration setting. Collapse their numeric indexes so audit
+        # reconciliation uses the same dotted path as the dashboard config flattener.
+        def leaves($x): [$x | paths(scalars)
+            | select(.[0:2] != ["workers", "list"])
+            | map(select(type == "string"))];
         (leaves(merged($live[0])) + leaves(merged($staged[0])) | unique)[] as $p
         | select((merged($live[0]) | getpath($p)) != (merged($staged[0]) | getpath($p)))
         | $p | map(tostring) | join(".")' 2>/dev/null
