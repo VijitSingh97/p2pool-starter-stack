@@ -2222,7 +2222,7 @@ run_rigforge_control() {
         ctrl_config="$(printf '%s' "$ctrl_config" | IT_RIG_TOKEN="${IT_RIG_TOKEN:-}" jq \
             --arg n "$rig" --arg h "$RIG_HOST" --argjson cp "$RIG_CONTROL_PORT" '
             del(.dashboard.workers)
-            | .workers.list = ((.workers.list // []) | map(select(.name != $n)) + [{name:$n, host:$h, control_port:$cp, token:env.IT_RIG_TOKEN}])')"
+            | .workers.list = ((.workers.list // []) | map(select(.name != $n)) + [{name:$n, host:$h, port:8081, control_port:$cp, token:env.IT_RIG_TOKEN}])')"
         it_step "injecting a workers.list[] descriptor for '$rig' at $RIG_HOST:$RIG_CONTROL_PORT (token masked in-container)"
     fi
 
