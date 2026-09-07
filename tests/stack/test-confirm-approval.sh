@@ -222,6 +222,8 @@ mk_tmpdir PROV
 touch "$PROV/setup-wizard"
 if (
     cd "$PROV" || exit
+    # Generated CLI path comes from the shared harness.
+    # shellcheck disable=SC1090
     source "$STACK"
     control_audit_provisioned() { return 1; }
     control_consume_provisioning_marker "$PROV/setup-wizard"
@@ -234,6 +236,8 @@ fi
     bad "audit failure retains installer provenance marker" "marker was deleted"
 (
     cd "$PROV" || exit
+    # Generated CLI path comes from the shared harness.
+    # shellcheck disable=SC1090
     source "$STACK"
     control_audit_provisioned() { printf 'recorded\n' >"$PROV/audit-call"; }
     control_consume_provisioning_marker "$PROV/setup-wizard"
