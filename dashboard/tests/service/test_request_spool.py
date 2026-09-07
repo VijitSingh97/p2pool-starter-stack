@@ -82,6 +82,16 @@ class TestWrite:
             request_spool.write({"id": "abc", "action": "diag-doctor"})
         assert list(spool.iterdir()) == []
 
+    def test_failed_publication_preserves_error_when_temp_is_already_gone(self, spool, monkeypatch):
+        def remove_then_fail(src, _dst):
+            os.unlink(src)
+            raise OSError("replace failed after removal")
+
+        monkeypatch.setattr(os, "replace", remove_then_fail)
+        with pytest.raises(OSError, match="replace failed after removal"):
+            request_spool.write({"id": "abc", "action": "diag-doctor"})
+        assert list(spool.iterdir()) == []
+
     def test_an_unwritable_spool_raises_rather_than_dropping_the_request(self, monkeypatch):
         monkeypatch.setattr(request_spool.config, "CONTROL_REQUESTS_DIR", "/nonexistent/requests")
         with pytest.raises(OSError):

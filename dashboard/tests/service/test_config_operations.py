@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from mining_dashboard.service import control_service
+from mining_dashboard.service import config_operations, control_service
 
 
 @pytest.fixture
@@ -25,6 +25,14 @@ def config_paths(tmp_path, monkeypatch):
     ref.write_text(json.dumps(reference))
     monkeypatch.setattr(control_service.config, "HOST_CONFIG_PATH", str(host))
     monkeypatch.setattr(control_service.config, "HOST_REFERENCE_PATH", str(ref))
+
+
+def test_editor_metadata_is_not_a_schema_leaf():
+    assert list(
+        config_operations.leaf_paths(
+            {"_approval_keys": ["monero.wallet_address"], "p2pool": {"pool": "mini"}}
+        )
+    ) == ["p2pool.pool"]
 
 
 def test_sensitive_fields_require_approval_while_password_stays_physical_only(config_paths):
