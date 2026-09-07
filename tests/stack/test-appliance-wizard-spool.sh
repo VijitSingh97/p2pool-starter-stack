@@ -85,7 +85,7 @@ WS_NEW_MACHINE='
     stage_wizard_spool() { :; }; prefill_from_previous_install() { return 1; }
     load_baked_images() { exit 7; }; firstboot_wizard
 '
-for ws_file in last-attempt.json install-attempt.json auth-mode config-changes.json; do
+for ws_file in last-attempt.json install-attempt.json auth-mode config-changes.json setup-failed; do
     printf old-machine >"$WSS/spool/$ws_file"
 done
 # firstboot's canonical spool is data/firstboot; retain the same inode for the fixture.
@@ -93,22 +93,22 @@ mkdir "$WSS/data"
 mv "$WSS/spool" "$WSS/data/firstboot"
 PITHEAD_PRESEED_DIR="$WSS/preseed" run_sourced "$WSS" eval "$WS_NEW_MACHINE" >/dev/null 2>&1
 assert_rc "new machine reaches the image-loading boundary" "$?" 7
-WS_LEFT=$(find "$WSS/data/firstboot" -maxdepth 1 \( -name last-attempt.json -o -name install-attempt.json -o -name auth-mode -o -name config-changes.json \) | wc -l)
+WS_LEFT=$(find "$WSS/data/firstboot" -maxdepth 1 \( -name last-attempt.json -o -name install-attempt.json -o -name auth-mode -o -name config-changes.json -o -name setup-failed \) | wc -l)
 assert_eq "new machine starts without old configuration or recovery metadata" "$WS_LEFT" 0
-for ws_file in last-attempt.json install-attempt.json auth-mode config-changes.json; do
+for ws_file in last-attempt.json install-attempt.json auth-mode config-changes.json setup-failed; do
     printf this-machine >"$WSS/data/firstboot/$ws_file"
 done
 cp "$ROOT/config.reference.json" "$WSS/config.reference.json"
 run_sourced "$WSS" eval 'publish_rig_defaults() { :; }; publish_saved_role() { :; }; publish_data_wipe_note() { :; }; installer_mode_available() { return 1; }; wizard_mint_cert() { :; }; stage_wizard_spool "$WSS/data/firstboot"' >/dev/null
 assert_rc "retry re-staging succeeds" "$?" 0
-WS_LEFT=$(find "$WSS/data/firstboot" -maxdepth 1 \( -name last-attempt.json -o -name install-attempt.json -o -name auth-mode -o -name config-changes.json \) | wc -l)
-assert_eq "retry keeps all four recovery files" "$WS_LEFT" 4
+WS_LEFT=$(find "$WSS/data/firstboot" -maxdepth 1 \( -name last-attempt.json -o -name install-attempt.json -o -name auth-mode -o -name config-changes.json -o -name setup-failed \) | wc -l)
+assert_eq "retry keeps all recovery files" "$WS_LEFT" 5
 assert_eq "retry preserves this machine's auth choice" "$(cat "$WSS/data/firstboot/auth-mode")" this-machine
 run_sourced "$WSS" eval 'publish_rig_defaults() { return 1; }; stage_wizard_spool "$WSS/data/firstboot"' >/dev/null
 assert_rc "retry staging propagates a failed derived-file publication" "$?" 1
 PITHEAD_PRESEED_DIR="$WSS/preseed" run_sourced "$WSS" eval "$WS_NEW_MACHINE" >/dev/null 2>&1
 assert_rc "the next machine reaches the same loading boundary" "$?" 7
-WS_LEFT=$(find "$WSS/data/firstboot" -maxdepth 1 \( -name last-attempt.json -o -name install-attempt.json -o -name auth-mode -o -name config-changes.json \) | wc -l)
+WS_LEFT=$(find "$WSS/data/firstboot" -maxdepth 1 \( -name last-attempt.json -o -name install-attempt.json -o -name auth-mode -o -name config-changes.json -o -name setup-failed \) | wc -l)
 assert_eq "the next machine cannot inherit the prior machine's recovery metadata" "$WS_LEFT" 0
 mv "$WSS/data/firstboot" "$WSS/spool"
 unset WS_NEW_MACHINE WS_LEFT ws_file
@@ -128,7 +128,7 @@ wizard_spool_publish "$spool" wizard.key printf fixture-key
 [ "$(page cat "$spool/wizard.key")" = fixture-key ]
 ! page rm -f "$spool/wizard.key" 2>/dev/null
 ! page sh -c 'printf altered >"$1"' _ "$spool/wizard.key" 2>/dev/null
-for file in error.txt last-attempt.json installing; do
+for file in error.txt last-attempt.json installing setup-failed; do
     wizard_spool_publish "$spool" "$file" printf retry-fixture
     [ "$(stat -c '%u:%g:%a' "$spool/$file")" = 1000:1000:600 ]
     page rm "$spool/$file"

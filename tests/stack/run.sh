@@ -205,10 +205,10 @@ _d0=$((PASS + FAIL)) && source "$HERE/test-wizard-setup.sh" && domain_ran test-w
 
 # shellcheck source=tests/stack/test-control-provisioning.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-control-provisioning.sh" && domain_ran test-control-provisioning.sh "$_d0" "$?" || domain_ran test-control-provisioning.sh "$_d0" "$?"
-
 # shellcheck source=tests/stack/test-appliance-identity.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-identity.sh" && domain_ran test-appliance-identity.sh "$_d0" "$?" || domain_ran test-appliance-identity.sh "$_d0" "$?"
-
+# shellcheck source=tests/stack/test-appliance-hostname.sh disable=SC2015
+_d0=$((PASS + FAIL)) && source "$HERE/test-appliance-hostname.sh" && domain_ran test-appliance-hostname.sh "$_d0" "$?" || domain_ran test-appliance-hostname.sh "$_d0" "$?"
 # shellcheck source=tests/stack/test-appliance-defaults.sh disable=SC2015
 _d0=$((PASS + FAIL)) && source "$HERE/test-appliance-defaults.sh" && domain_ran test-appliance-defaults.sh "$_d0" "$?" || domain_ran test-appliance-defaults.sh "$_d0" "$?"
 

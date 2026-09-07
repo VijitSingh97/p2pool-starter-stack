@@ -64,6 +64,7 @@ render_derived() {
     load_preserved_state
     ensure_directories
     resolve_dashboard_host # non-interactive
+    reconcile_appliance_hostname
     DEPLOYMENT_COMPLETED=true
     render_env "$ENV_FILE"
     provision_node_onions
@@ -244,6 +245,7 @@ apply() {
             # Idempotent and sudo-free when the units already match.
             mutation_lock_acquire apply
             provision_control_runner
+            reconcile_appliance_hostname
             apply_refresh_appliance_tls # #1265: the mint doctor sends the operator here for
             log "No configuration changes detected. Nothing to apply."
             mutation_lock_release
@@ -289,6 +291,7 @@ apply() {
         warn "Fix the cause shown above, then re-run '$0 apply' (it will retry the recreate) — or '$0 up'."
         exit 1 # leave $apply_marker in place so the retry re-attempts the recreate
     fi
+    reconcile_appliance_hostname
     # Caddy mounts the Caddyfile read-only, so a content change alone won't recreate it.
     if [ "$caddy_changed" -eq 1 ]; then
         docker compose restart caddy
