@@ -38,9 +38,10 @@ NODE_ROUTES = (LOCAL, LAN, CLEARNET, UNKNOWN)
 # Nodes bracket the host components with the external actors they actually talk to. ``internal``
 # nodes (the socket proxies) only appear when the operator expands the internal mesh.
 TOPOLOGY_NODES = [
-    {"id": "rigs", "label": "Mining rigs", "zone": ZONE_CLIENTS},
+    {"id": "rigs", "label": "External rigs", "zone": ZONE_CLIENTS},
     {"id": "browser", "label": "Browser", "zone": ZONE_CLIENTS},
     {"id": "xmrig-proxy", "label": "xmrig-proxy", "zone": ZONE_HOST},
+    {"id": "local-miner", "label": "Built-in miner", "zone": ZONE_HOST},
     {"id": "caddy", "label": "caddy", "zone": ZONE_HOST},
     {"id": "dashboard", "label": "dashboard", "zone": ZONE_HOST},
     {"id": "p2pool", "label": "p2pool", "zone": ZONE_HOST},
@@ -93,7 +94,7 @@ def node_route(address, *, is_local):
     return LAN if (ip.is_private or ip.is_loopback or ip.is_link_local) else CLEARNET
 
 
-def topology_nodes(*, monero_route, tari_route):
+def topology_nodes(*, monero_route, tari_route, local_miner_enabled=False):
     """``TOPOLOGY_NODES`` with the two relocatable nodes marked local or remote (#1040).
 
     monerod and tari are the only nodes an operator can run somewhere else; every other node in
@@ -111,4 +112,5 @@ def topology_nodes(*, monero_route, tari_route):
     return [
         {**n, "remote": relocatable[n["id"]] != LOCAL} if n["id"] in relocatable else n
         for n in TOPOLOGY_NODES
+        if local_miner_enabled or n["id"] != "local-miner"
     ]
