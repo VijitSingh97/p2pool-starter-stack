@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GENERATED FILE — do not edit. Built from lib/pithead/*.sh (54 slices, LC_ALL=C name order) by:
+# GENERATED FILE — do not edit. Built from lib/pithead/*.sh (55 slices, LC_ALL=C name order) by:
 #   scripts/build-pithead.sh
 # A drifted copy fails `scripts/build-pithead.sh --check` (make lint-pithead-parity).
 #
@@ -2776,12 +2776,13 @@ firstboot_wizard() {
         fi
         if [ -f "$PWD/config.json" ] && ! setup_again_mode; then
             log "config.json already present (pre-seeded) — skipping the wizard and running setup."
-            # A pre-seeded config that names no password gets one too: skipping the wizard must
-            # not mean skipping the login.
+            # A pre-seeded config that names no password still gets a login.
             ensure_appliance_dashboard_password || true
             apply_appliance_defaults || true
             record_machine_role "$(machine_role_from_config "$PWD/config.json")"
             setup
+            control_consume_provisioning_marker "$PRESEED_DIR/pithead-setup-wizard" ||
+                warn "Provisioning succeeded, but its setup-wizard history marker could not be recorded; it was kept for retry."
             return
         fi
     fi
@@ -3082,10 +3083,7 @@ firstboot_wizard() {
                         continue
                     fi
                     wizard_install_begin "$spool"
-                    # Stage the ACCEPTED config (password already baked) onto the running ESP —
-                    # the installer carries pre-seed files to the target's ESP, and the first
-                    # boot from disk provisions itself headlessly from it. The credentials the
-                    # operator just saved are exactly the ones that machine will serve.
+                    # Stage the accepted config onto the ESP; the installer carries it to the target.
                     # A fleet stick's own pre-seed is set aside first and restored after: the
                     # accepted config carries THIS machine's generated password, and leaving it
                     # on the stick would hand every later machine the first one's secrets.
@@ -3108,11 +3106,12 @@ firstboot_wizard() {
                     else
                         install -m 600 "$PWD/config.json" /boot/efi/pithead-config.json || staged_ok=0
                     fi
+                    install -m 600 /dev/null /boot/efi/pithead-setup-wizard || staged_ok=0
                     if [ "$staged_ok" -ne 1 ]; then
                         rm -f "$spool/installing" "$spool/handoff.json" "$spool/handoff-ack" "$spool/install-request"
                         printf 'Could not stage the configuration for the installed system — nothing was installed.' >"$spool/error.txt"
                         chown 1000:1000 "$spool/error.txt" 2>/dev/null || true
-                        rm -f "$PWD/config.json" /boot/efi/pithead-restore.enc /boot/efi/pithead-restore-pass
+                        rm -f "$PWD/config.json" /boot/efi/pithead-restore.enc /boot/efi/pithead-restore-pass /boot/efi/pithead-setup-wizard
                         rm -rf "$carry"
                         mutation_lock_release
                         continue
@@ -3133,7 +3132,7 @@ firstboot_wizard() {
                     # The carried restore never rides on either: the passphrase beside the
                     # archive makes the pair plaintext-equivalent, and the target has its own
                     # copy now.
-                    rm -f /boot/efi/pithead-restore.enc /boot/efi/pithead-restore-pass
+                    rm -f /boot/efi/pithead-restore.enc /boot/efi/pithead-restore-pass /boot/efi/pithead-setup-wizard
                     rm -rf "$carry"
                     if [ "$irc" -ne 0 ]; then
                         rm -f /boot/efi/pithead-config.json "$spool/installing" "$spool/handoff.json" "$spool/handoff-ack"
@@ -3144,14 +3143,12 @@ firstboot_wizard() {
                     wizard_install_finish "$engine" "Installation complete — switching off now." "It will provision itself with the configuration you just confirmed."
                     return
                 fi
-                # Installed machine, config accepted: record what it IS. The installer path
-                # above never reaches here — its role lands on the TARGET, at its first boot.
+                # Installed machine: its accepted role lands here, not on the installer path.
                 record_machine_role "$(machine_role_from_config "$PWD/config.json")"
                 sleep 2
                 "$engine" rm -f pithead-wizard >/dev/null 2>&1 || true
                 rm -rf "$spool"
-                # Subshell on purpose: error() exits, and a provisioning failure must NOT
-                # dead-end the machine. Without this, config.json exists, the wizard's condition
+                # Subshell on purpose: error() exits. Without this, config.json exists, the wizard's condition
                 # never re-arms, and a box with no shell has no recovery path at all. Output is
                 # teed: the console keeps its live narration, and the tail becomes the reopened
                 # page's error — a refusal that lives only in console scrollback cost a bench
@@ -3166,13 +3163,16 @@ firstboot_wizard() {
                 # away before it can be read.
                 { (setup) 2>&1 | tee "$setup_log"; } || setup_rc=$?
                 if [ "$setup_rc" -eq 0 ]; then
-                    rm -f "$setup_log"
-                    return
+                    if control_audit_provisioned "$PWD/data/control"; then
+                        rm -f "$setup_log"
+                        return
+                    fi
+                    printf '[ERROR] Provisioning finished, but its setup history could not be recorded. Retry to complete setup history safely.\n' >>"$setup_log"
+                    setup_rc=1
                 fi
                 # The machine KEEPS its configuration (#1059) — this used to move it aside, which
                 # on this path can only cost. The reasoning, and why the removal that remains is
-                # conditional, is at wizard_keep_failed_config's definition. Which of the two
-                # failures this was, and whether a copy is taken at all, is wizard_setup_failed's.
+                # conditional, is at wizard_keep_failed_config's definition and wizard_setup_failed.
                 local kept_copy=0
                 if wizard_setup_failed "$setup_rc"; then kept_copy=1; fi
                 mkdir -p "$spool"
@@ -7518,6 +7518,8 @@ render_masked_config() { # <control-dir>
 prepare_control_dirs() {
     mkdir -p "$CONTROL_DIR/requests" "$CONTROL_DIR/staged" "$CONTROL_DIR/results" "$CONTROL_DIR/audit"
     ensure_owner "$CONTROL_DIR/requests" "$APP_UID" "$APP_GID"
+    chmod 700 "$CONTROL_DIR" "$CONTROL_DIR/requests" 2>/dev/null ||
+        sudo chmod 700 "$CONTROL_DIR" "$CONTROL_DIR/requests"
     # Appliance only: seed the OS-update state file the dashboard reads through the results/
     # mount. Its presence is what tells the container "this is an appliance — render the OS
     # update control"; the os-* verbs and pithead-boot keep it current from then on.
@@ -9644,8 +9646,7 @@ setup() {
     fi
 }
 
-# Describe a changed env key for the apply preview. Prints "FLAG\tmessage" where FLAG is
-# DEST (disruptive — apply should confirm) or INFO. Always returns 0 (safe in $()).
+# Describe a changed env key for the apply preview. Prints "FLAG\tmessage"; always returns 0.
 describe_change() {
     local key="$1" old="$2" new="$3" flag="INFO" msg
     case "$key" in
@@ -9986,6 +9987,7 @@ describe_change() {
         # Secret — never echo the token value into the change preview / logs.
         msg="ntfy access token updated — the dashboard container is recreated."
         ;;
+    XMRIG_API_TOKEN | XVB_STANDBY_SOURCE) msg="Secret configuration value updated — the dashboard container is recreated." ;;
     NOTIFY_TOR)
         if [ "$new" == "true" ]; then
             msg="Webhook/ntfy alerts back on Tor — endpoints see a Tor exit, not this host's IP; the dashboard container is recreated."
@@ -10450,6 +10452,267 @@ run_chain() {
     done
 }
 
+# Shared helpers for the control approval envelope and audit provenance (#1959/#1962).
+control_changed_config_paths() { # <staged-file>
+    jq -rn --slurpfile ref "$REFERENCE_CONFIG" --slurpfile live "$CONFIG_FILE" --slurpfile staged "$1" '
+        def merged($x): $ref[0] * $x;
+        # Scalar arrays are one configuration setting. Collapse their numeric indexes so audit
+        # reconciliation uses the same dotted path as the dashboard config flattener.
+        def leaves($x): [$x | paths(scalars)
+            | select(.[0:2] != ["workers", "list"])
+            | map(select(type == "string"))];
+        (leaves(merged($live[0])) + leaves(merged($staged[0])) | unique)[] as $p
+        | select((merged($live[0]) | getpath($p)) != (merged($staged[0]) | getpath($p)))
+        | $p | map(tostring) | join(".")' 2>/dev/null
+}
+
+control_never_path_changed() { # <staged-file>
+    local changed never
+    while IFS= read -r changed; do
+        [ -n "$changed" ] || continue
+        for never in $CONTROL_DASHBOARD_NEVER_PATHS; do
+            case "$changed" in "$never" | "$never".*) return 0 ;; esac
+        done
+    done < <(control_changed_config_paths "$1")
+    return 1
+}
+
+control_telegram_approve() { # <staged-file> <id> <actor> <suffixes-json> <porcelain> <control-dir>
+    local staged="$1" id="$2" actor="$3" suffixes="$4" porcelain="$5" cdir="$6"
+    local token chat allowed confirm_s prefix socks nonce digest now deadline ratef count
+    local pending payload response updates message_id poll_s uid offset="" text values changes tmp
+    token=$(env_get TELEGRAM_BOT_TOKEN)
+    chat=$(env_get TELEGRAM_CHAT_ID)
+    allowed=$(env_get TELEGRAM_CONTROL_ALLOWED_IDS)
+    confirm_s=$(env_get TELEGRAM_CONTROL_CONFIRM_S)
+    printf '%s' "$token" | grep -qE '^[A-Za-z0-9:_-]+$' || {
+        printf 'Telegram approval is unavailable because the bot token is not configured'
+        return 1
+    }
+    [ -n "$chat" ] && [ -n "$allowed" ] || {
+        printf 'Telegram approval is unavailable because its chat or operator allow-list is empty'
+        return 1
+    }
+    printf '%s' "$confirm_s" | grep -qE '^[0-9]+([.][0-9]+)?$' || confirm_s=60
+    confirm_s=${confirm_s%%.*}
+    [ "$confirm_s" -ge 5 ] 2>/dev/null || confirm_s=60
+    [ "$confirm_s" -le 300 ] 2>/dev/null || confirm_s=300
+
+    # Apply the existing ten-prompts/hour budget globally at this host-owned gate. The dashboard
+    # actor is audit context, not a rate-limit identity: a compromised spool writer could vary it.
+    # The dashboard cannot reset or edit this file, and a refused/rate-limited attempt never prompts.
+    now=$(date +%s)
+    ratef="$cdir/audit/approval-prompts"
+    tmp="${ratef}.tmp.$$"
+    if [ -f "$ratef" ]; then
+        (umask 077 && awk -v floor="$((now - 3600))" '$1 >= floor' "$ratef" >"$tmp") || return 1
+    else
+        (umask 077 && : >"$tmp") || return 1
+    fi
+    count=$(awk 'END {print NR+0}' "$tmp")
+    if [ "$count" -ge 10 ]; then
+        rm -f "$tmp"
+        printf 'too many Telegram approval prompts recently — wait before trying again'
+        return 1
+    fi
+    if ! { printf '%s %s\n' "$now" "$actor" >>"$tmp" && mv "$tmp" "$ratef"; }; then
+        rm -f "$tmp"
+        printf 'could not record the Telegram approval prompt budget — refusing the change'
+        return 1
+    fi
+
+    nonce=$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-' || true)
+    printf '%s' "$nonce" | grep -qE '^[0-9a-f]{32}$' || {
+        printf 'could not create a one-time approval token — refusing the change'
+        return 1
+    }
+    digest=$(sha256sum "$staged" 2>/dev/null | awk '{print $1}')
+    [ -n "$digest" ] || return 1
+    deadline=$((now + confirm_s))
+    pending="$cdir/staged/.$id.approval-pending"
+    payload="$cdir/staged/.$id.telegram-request"
+    response="$cdir/staged/.$id.telegram-response"
+    updates="$cdir/staged/.$id.telegram-updates"
+
+    changes=$(printf '%s\n' "$porcelain" | jq -R -s '
+        [split("\n")[] | select(length > 0) | split("\t")
+         | {key:.[1], message:(.[2:] | join("\t"))} | select(.message != "")]') || return 1
+    if ! jq -e --slurpfile live "$CONFIG_FILE" '(.workers.list // []) == ($live[0].workers.list // [])' "$staged" >/dev/null 2>&1; then
+        tmp=$(jq -nr --slurpfile live "$CONFIG_FILE" --slurpfile staged "$staged" '
+            def safe: map(del(.token) + {token:(if (.token // "") == "" then "not set" else "set (redacted)" end)});
+            "Worker descriptors: " + (($live[0].workers.list // [] | safe) | tojson)
+            + " → " + (($staged[0].workers.list // [] | safe) | tojson)')
+        changes=$(jq --arg message "$tmp" '. + [{key:"workers.list",message:$message}]' <<<"$changes")
+    fi
+    if control_changed_config_paths "$staged" | grep -qx 'dashboard.energy.price_feed'; then
+        tmp=$(jq -nr --slurpfile live "$CONFIG_FILE" --slurpfile staged "$staged" '
+            "Electricity price feed: " + (($live[0].dashboard.energy.price_feed // false)|tostring)
+            + " → " + (($staged[0].dashboard.energy.price_feed // false)|tostring)
+            + " (remote price traffic changes)"')
+        changes=$(jq --arg message "$tmp" '. + [{key:"dashboard.energy.price_feed",message:$message}]' <<<"$changes")
+    fi
+    values=$(jq -n --slurpfile live "$CONFIG_FILE" --slurpfile staged "$staged" '
+        [["monero.wallet_address","Monero payout"], ["tari.wallet_address","Tari payout"],
+         ["xvb.url","XvB endpoint"], ["monero.remote.host","Monero node host"],
+         ["monero.remote.rpc_port","Monero RPC port"], ["monero.remote.zmq_port","Monero ZMQ port"],
+         ["tari.remote.host","Tari node host"], ["tari.remote.grpc_port","Tari gRPC port"]]
+        | map(.[0] as $p | ($p / ".") as $path
+          | select(($live[0] | getpath($path)) != ($staged[0] | getpath($path)))
+          | {key:$p,label:.[1],old:($live[0] | getpath($path)),new:($staged[0] | getpath($path))})') || return 1
+    text=$(jq -nr --arg actor "$actor" --argjson changes "$changes" --argjson values "$values" '
+        (["Approve configuration change for dashboard user " + $actor + "?"]
+         + ($changes | map(.key + ": " + .message))
+         + ($values | map(.label + ": " + ((.old // "")|tostring) + " → " + ((.new // "")|tostring)))
+         + ["Denied automatically if not confirmed soon."]) | join("\n")') || return 1
+    # Telegram limits message text to 4096 UTF-8 bytes. Never truncate a security preview: a
+    # too-large change must be split and previewed again so every line remains visible.
+    if [ "$(printf '%s' "$text" | wc -c)" -gt 3900 ]; then
+        printf 'the approval preview is too large for one untruncated Telegram message — split the change'
+        return 1
+    fi
+    (umask 077 && jq -n --arg id "$id" --arg actor "$actor" --arg nonce "$nonce" \
+        --arg digest "$digest" --argjson suffixes "$suffixes" --argjson expiry "$deadline" \
+        '{preview_id:$id,staged_sha256:$digest,actor:$actor,payout_suffixes:$suffixes,expiry:$expiry,nonce:$nonce}' >"$pending") || return 1
+    (umask 077 && jq -n --arg chat "$chat" --arg text "$text" --arg nonce "$nonce" '
+        {chat_id:$chat,text:$text,disable_web_page_preview:true,
+         reply_markup:{inline_keyboard:[[{text:"✅ Approve configuration change",callback_data:("approve-config:"+$nonce)}]]}}' >"$payload") || return 1
+    prefix=$(env_get NETWORK_PREFIX 2>/dev/null) || true
+    [ -n "$prefix" ] || prefix="172.28.0"
+    socks="${prefix}.25:9050"
+    if ! printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$token" |
+        curl -fsS --max-time 20 --max-filesize "$CURL_CAP_SMALL" --socks5-hostname "$socks" \
+            --config - -H 'Content-Type: application/json' --data-binary "@$payload" -o "$response" 2>/dev/null; then
+        rm -f "$pending" "$payload" "$response" "$updates"
+        printf 'could not send the Telegram approval prompt — refusing the change'
+        return 1
+    fi
+    message_id=$(jq -r 'select(.ok == true) | .result.message_id // empty' "$response")
+    [ -n "$message_id" ] || {
+        rm -f "$pending" "$payload" "$response" "$updates"
+        printf 'Telegram did not accept the approval prompt — refusing the change'
+        return 1
+    }
+    if ! { jq --arg mid "$message_id" '. + {message_id:$mid}' "$pending" >"${pending}.tmp" &&
+        mv "${pending}.tmp" "$pending"; }; then
+        rm -f "$pending" "${pending}.tmp" "$payload" "$response" "$updates"
+        printf 'could not bind the Telegram message to its approval record — refusing the change'
+        return 1
+    fi
+
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        poll_s=$((deadline - $(date +%s)))
+        [ "$poll_s" -gt 50 ] && poll_s=50
+        [ "$poll_s" -gt 0 ] || break
+        tmp=$(jq -n --argjson timeout "$poll_s" --argjson allowed '["callback_query"]' \
+            --arg offset "$offset" '{timeout:$timeout,allowed_updates:$allowed,limit:100}
+            | if $offset != "" then .offset=($offset|tonumber) else . end')
+        printf '%s' "$tmp" >"$payload"
+        if ! printf 'url = "https://api.telegram.org/bot%s/getUpdates"\n' "$token" |
+            curl -fsS --max-time "$((poll_s + 10))" --max-filesize "$CURL_CAP_SMALL" --socks5-hostname "$socks" \
+                --config - -H 'Content-Type: application/json' --data-binary "@$payload" -o "$updates" 2>/dev/null; then
+            continue
+        fi
+        offset=$(jq -r '[.result[]?.update_id] | max // empty | . + 1' "$updates")
+        uid=$(jq -r --arg nonce "approve-config:$nonce" --arg chat "$chat" --arg mid "$message_id" --arg text "$text" '
+            .result[]?.callback_query
+            | select(.data == $nonce and (.message.chat.id|tostring) == $chat
+                     and (.message.message_id|tostring) == $mid and .message.text == $text)
+            | (.from.id|tostring)' "$updates" | tail -n 1)
+        [ -n "$uid" ] || continue
+        case " $(printf '%s' "$allowed" | tr ',\t\n' '   ') " in
+        *" $uid "*)
+            [ "$(sha256sum "$staged" 2>/dev/null | awk '{print $1}')" = "$digest" ] || {
+                rm -f "$pending" "$payload" "$response" "$updates"
+                printf 'the staged configuration changed while approval was pending — refusing it'
+                return 1
+            }
+            if ! { jq --arg approver "tg-$uid" '. + {approver:$approver}' "$pending" >"${pending}.approved" &&
+                mv "${pending}.approved" "${staged}.approved"; }; then
+                rm -f "$pending" "${pending}.approved" "$payload" "$response" "$updates"
+                printf 'could not save the verified Telegram approver — refusing the change'
+                return 1
+            fi
+            rm -f "$pending" "$payload" "$response" "$updates"
+            printf 'tg-%s' "$uid"
+            return 0
+            ;;
+        esac
+    done
+    rm -f "$pending" "$payload" "$response" "$updates"
+    printf 'Telegram approval was not confirmed in time by an allow-listed operator'
+    return 1
+}
+
+control_validate_approval() { # <staged-file> <id> <actor> <approval-json> <porcelain> <control-dir>
+    local staged="$1" id="$2" actor="$3" approval="$4" porcelain="$5" cdir="$6"
+    local chain env_key expected supplied suffixes
+    [ -n "$actor" ] || {
+        printf 'sign in before approving this sensitive change'
+        return 1
+    }
+    jq -e '
+        type == "object" and ((.payout_suffixes // {}) | type == "object")
+        and ([keys[] | select(. != "payout_suffixes")] | length == 0)
+        and ([.payout_suffixes | keys[] | select(. != "monero" and . != "tari")] | length == 0)
+        and ([.payout_suffixes[] | select(type != "string")] | length == 0)
+    ' <<<"$approval" >/dev/null 2>&1 || {
+        printf 'sensitive changes need typed payout confirmations followed by host-verified Telegram approval'
+        return 1
+    }
+    suffixes=$(jq -c '.payout_suffixes // {}' <<<"$approval")
+    for chain in monero tari; do
+        env_key="$(printf '%s' "$chain" | tr 'a-z' 'A-Z')_WALLET_ADDRESS"
+        if printf '%s' "$porcelain" | awk -F'\t' -v k="$env_key" '$2 == k {found=1} END {exit !found}'; then
+            expected=$(jq -r --arg c "$chain" '.[$c].wallet_address // "" | if length > 8 then .[-8:] else . end' "$staged")
+            supplied=$(jq -r --arg c "$chain" '.[$c] // ""' <<<"$suffixes")
+            [ -n "$expected" ] && [ "$supplied" = "$expected" ] || {
+                printf 'type the final characters of the new %s payout address exactly' "$chain"
+                return 1
+            }
+        fi
+    done
+    control_telegram_approve "$staged" "$id" "$actor" "$suffixes" "$porcelain" "$cdir"
+}
+
+# Called only by an explicit successful firstboot boundary; absence of a snapshot is not provenance.
+control_audit_provisioned() { # [control-dir]
+    local cdir="${1:-$(env_get CONTROL_DIR)}" id
+    [ -n "$cdir" ] || cdir="$PWD/data/control"
+    mkdir -p "$cdir/audit"
+    id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || true)
+    printf '%s' "$id" | grep -qE '^[0-9a-f-]{36}$' || return 1
+    control_audit "$cdir/audit/control.log" "$id" "setup-wizard" "provision" "applied" ""
+}
+
+control_consume_provisioning_marker() { # <marker>
+    [ -f "$1" ] || return 0
+    control_audit_provisioned "$PWD/data/control" || return 1
+    rm -f "$1"
+}
+
+porcelain_keys() {
+    printf '%s' "$1" | awk -F'\t' 'NF' | cut -f2 | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+control_write_result() { # <results-dir> <id> <json>
+    printf '%s\n' "$3" >"$1/.$2.tmp" && mv "$1/.$2.tmp" "$1/$2.json"
+}
+
+# Values never enter the audit log: keys are the path names re-derived from live and staged files.
+control_audit() { # <audit-file> <id> <actor> <action> <status> [keys] [approver]
+    if [ -f "$1" ] && [ "$(wc -c <"$1" | tr -d ' ')" -gt 524288 ]; then
+        tail -n 2000 "$1" >"$1.tmp" && mv "$1.tmp" "$1"
+    fi
+    printf '{"ts":"%s","id":"%s","actor":"%s","action":"%s","status":"%s","keys":"%s","approver":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$(printf '%s' "$2" | tr -cd 'A-Za-z0-9-')" \
+        "$(printf '%s' "$3" | tr -cd 'A-Za-z0-9._@-')" \
+        "$(printf '%s' "$4" | tr -cd 'a-z-')" \
+        "$(printf '%s' "$5" | tr -cd 'a-z-')" \
+        "$(printf '%s' "${6:-}" | tr -cd 'A-Za-z0-9._ ')" \
+        "$(printf '%s' "${7:-}" | tr -cd 'A-Za-z0-9._@-')" >>"$1"
+}
+
 # --- Dashboard control channel (#33) ---
 # The dashboard container can only ASK: it drops typed JSON intents into $CONTROL_DIR/requests
 # (its single writable spool mount). This host-side runner claims each request, validates it, and
@@ -10485,9 +10748,10 @@ run_chain() {
 # Both checks re-derive the changed keys from the staged config via the SAME dry-run path a preview
 # runs — nothing is trusted from the container's request or its (host-written but container-visible)
 # result file — so a forged "destructive:false" cannot slip a wallet swap or an auth-disable
-# through. Out-of-band approval with deny-on-timeout is #338 (Telegram approve/deny) — it drops in
-# here, replacing the refusal with a real second factor. Until then, these edits must be made from
-# the host CLI. Echoes a reason on stdout when it refuses.
+# through. Sensitive changes now carry an approval envelope bound to the staged preview and the
+# authenticated dashboard actor; payout destinations additionally require the operator to type the
+# final characters of the exact new address. The media-only set below remains outside that policy:
+# no browser approval makes one of those changes committable. Echoes a reason on refusal.
 
 # The env keys committable from the dashboard: operational tuning only, and only keys whose value
 # is derived from a validated enum, boolean, or number — never a free-form string that reaches a
@@ -10571,6 +10835,12 @@ CONTROL_DASHBOARD_CONFIRM_KEYS='MONERO_DATA_DIR TARI_DATA_DIR P2POOL_DATA_DIR DA
 # CONTROL_DASHBOARD_CONFIRM_KEYS above — a key here but not there is unreachable; a node key there
 # but not here would be committable with NO reachability probe, which is the failure that matters.
 CONTROL_NODE_ENDPOINT_KEYS='MONERO_NODE_HOST MONERO_RPC_PORT MONERO_ZMQ_PORT TARI_GRPC_ADDRESS'
+
+# Physical-presence-only configuration, matching pithead-media-config's never-approve boundary:
+# SSH, the approval channel's own identity, dashboard password, and the two tamper alarms. Exact
+# dotted paths/prefixes, space separated. This is checked against config paths before any approval.
+CONTROL_DASHBOARD_NEVER_PATHS='ssh dashboard.auth.password telegram.control.allowed_ids
+    telegram.events.wallet_changed telegram.events.clearnet_exposed'
 
 # True if $1 is EXACTLY a canonical dotted-decimal IPv4 literal — four decimal octets 0-255, none
 # with a leading zero (a bare "0" is fine; "010"/"0177" are not). curl/glibc's numeric-address
@@ -10735,8 +11005,9 @@ _control_host_remedy() {
     fi
 }
 
-control_approval_gate() { # <staged-file> [confirm-token]
-    local staged="$1" confirm="${2:-}" porcelain
+control_approval_gate() { # <staged-file> [confirm-token] <id> <actor> [approval-json] <control-dir>
+    local staged="$1" confirm="${2:-}" id="$3" actor="$4" approval="${5:-null}" cdir="$6" porcelain
+    local approval_required=0 worker_sensitive=0
     # Fail closed if we cannot re-derive the change set (the staged config was validated at
     # preview, so a dry-run failure here means something changed — refuse).
     if ! porcelain=$(PITHEAD_CONFIG_FILE="$staged" "$0" apply --dry-run --porcelain 2>/dev/null); then
@@ -10746,8 +11017,8 @@ control_approval_gate() { # <staged-file> [confirm-token]
     # Two config.json blocks never render to .env — the dashboard reads them straight off its
     # config.json mount (load_worker_endpoints + load_energy_config; these are the ONLY two), so the
     # env-diff allowlist below can't see either. Each config.json-only block must be handled here by
-    # name or a commit could silently change it: the worker descriptors are REFUSED, dashboard.energy
-    # is ALLOWED (#504). Every OTHER config path renders to .env and is gated by the allowlist, so a
+    # name or a commit could silently change it: existing worker descriptor changes require
+    # approval, while dashboard.energy is ordinary (#504). Every OTHER config path renders to .env and is gated by the allowlist, so a
     # change there is caught below — a NEW config.json-only block, though, MUST add its own line.
     #
     # The per-worker descriptors — workers.list[] (#506) — carry per-rig hosts and API tokens
@@ -10756,29 +11027,20 @@ control_approval_gate() { # <staged-file> [confirm-token]
     # outright; 2.0.0 removed it (#1832), so a staged config carrying it is now refused one step
     # later by the closed-schema check below, as an unknown key like any other typo.
     #
-    # workers.list[] gets ONE narrow ADD-ONLY exception (the click-to-adopt flow): a commit may
-    # APPEND a brand-new descriptor to the end of the array, but every entry already live must
-    # reappear byte-for-byte, in the same order — so an adopt commit can add rig #4 without ever
-    # being able to repoint rig #1's host or token. That asymmetry is deliberate: first adoption
-    # gets a human confirming a freshly-observed address (the miner-advertised value is a PREFILL
-    # only), but a REPOINT of an already-trusted descriptor is the #122-class escalation an adopt
-    # confirmation was never designed to cover, so it stays a host edit like any other change here.
-    # Checked as a prefix match: staged.workers.list, cut back to live's own length, must equal
-    # live.workers.list exactly. An empty live list makes every staged entry "new" by definition
-    # (first adoption); a shorter/reordered/edited staged list can never match and is refused.
+    # Every descriptor change is sensitive: an append introduces a new remote host and access token,
+    # while repointing, deleting, or reordering changes an existing trust relationship. Adoption may
+    # still pre-fill the descriptor, but committing it needs the same second identity (#1959).
     if ! jq -e --slurpfile live "$CONFIG_FILE" '
-        ((($live[0].workers.list // []) | length) as $n
-             | (.workers.list // [])[0:$n] == ($live[0].workers.list // []))
+        (.workers.list // []) == ($live[0].workers.list // [])
         ' "$staged" >/dev/null 2>&1; then
-        printf 'this change alters an existing per-worker descriptor (workers.list[], a per-rig host/token) rather than only adding a new one, which is not committable from the dashboard. %s' "$(_control_host_remedy)"
-        return 1
+        worker_sensitive=1
     fi
-    # SSRF floor on what an add-only append may point at (see _control_host_is_internal): every
-    # NEWLY appended entry's host — never an already-live one, already covered above — must clear
-    # this host's own loopback/link-local/internal-bridge reach. Read the live length fresh (not
-    # cached from the check above) so this stays correct however the prefix check above evolves.
+    # SSRF floor on worker hosts (see _control_host_is_internal). For an unchanged list there is
+    # nothing to inspect. For any changed list, validate every staged host so modification and append
+    # cannot smuggle a host inside this machine's own network.
     local live_n new_host
     live_n=$(jq -r --slurpfile live "$CONFIG_FILE" '($live[0].workers.list // []) | length' "$staged" 2>/dev/null) || live_n=0
+    [ "$worker_sensitive" -eq 1 ] && live_n=0
     while IFS= read -r new_host; do
         [ -n "$new_host" ] || continue
         if _control_host_is_internal "$new_host"; then
@@ -10825,20 +11087,21 @@ control_approval_gate() { # <staged-file> [confirm-token]
     # The allowlist now spans BOTH the free-to-commit editable set and the confirm-gated set (#719):
     # a change to any other key still fails closed here. The CONFIRM set only gets PAST this pass —
     # it still has to clear the DEST perimeter and satisfy the typed-confirmation check below.
-    local editable_re bad hit
+    local editable_re bad
     editable_re=$(printf '%s %s' "$CONTROL_DASHBOARD_EDITABLE_KEYS" "$CONTROL_DASHBOARD_CONFIRM_KEYS" | tr -s ' \n' '|')
     bad=$(printf '%s' "$porcelain" | awk -F'\t' 'NF' | cut -f2 | grep -cvxE "$editable_re" || true)
-    if [ "${bad:-0}" -gt 0 ]; then
-        hit=$(printf '%s' "$porcelain" | awk -F'\t' 'NF' | cut -f2 | grep -m1 -vxE "$editable_re" || true)
-        printf 'this change alters a security-sensitive setting (%s) that is not committable from the dashboard. %s' "${hit:-unparseable change row}" "$(_control_host_remedy)"
+    if control_never_path_changed "$staged"; then
+        printf 'this change includes a physical-presence-only setting and cannot be made from the dashboard; use a configuration stick'
         return 1
     fi
-    # Perimeter: any DEST row is refused outright — the confirm-gate never covers a destructive
-    # host-only change. A data-dir MOVE is CONFIRM (below); a prune DISABLE or a TOR data-dir move
-    # still emits DEST and is caught here even though its key is on the confirm allowlist.
-    if printf '%s\n' "$porcelain" | grep -qE $'^DEST\t'; then
-        printf 'this change is destructive and cannot be committed from the dashboard. %s' "$(_control_host_remedy)"
-        return 1
+    [ "${bad:-0}" -gt 0 ] && approval_required=1
+    [ "$worker_sensitive" -eq 1 ] && approval_required=1
+    printf '%s\n' "$porcelain" | grep -qE $'^DEST\t' && approval_required=1
+    # Electricity price feeds are remote control inputs, unlike the local display currency and
+    # fixed-price values beside them. They need the same second identity even though dashboard.energy
+    # is config.json-only and therefore has no porcelain row.
+    if control_changed_config_paths "$staged" | grep -qx 'dashboard.energy.price_feed'; then
+        approval_required=1
     fi
     # Data-dir destination allowlist (#728). #719 made the four *_DATA_DIR moves confirm-gated, so a
     # dashboard operator who types APPLY can now RELOCATE a service's data dir. assert_safe_dir — the
@@ -10886,7 +11149,7 @@ control_approval_gate() { # <staged-file> [confirm-token]
     # is friction that forces the operator to acknowledge an expensive/disruptive op, NOT a security
     # control (the perimeter above is the boundary). control_commit records a confirmed change
     # distinctly in the audit log via the marker file touched here.
-    if printf '%s\n' "$porcelain" | grep -qE $'^CONFIRM\t'; then
+    if printf '%s\n' "$porcelain" | grep -qE $'^(CONFIRM|DEST)\t'; then
         if [ "$confirm" != "APPLY" ]; then
             hit=$(printf '%s\n' "$porcelain" | grep -m1 -E $'^CONFIRM\t' | cut -f3-)
             printf 'this change is disruptive (%s) — type APPLY in the dashboard to confirm.' "${hit:-disruptive change}"
@@ -10894,6 +11157,7 @@ control_approval_gate() { # <staged-file> [confirm-token]
         fi
         touch "${staged}.confirmed" 2>/dev/null || true
     fi
+    # The host-side Telegram verifier writes ${staged}.approved with its bound approval record.
     # Reachability probe (#1888) — the compensating control the confirm tier rests on for these keys
     # (42-): the typed token is friction, but a chain cannot be parked on a node that is not there.
     # Host-side, on the STAGED config, through the same preflight the wizard uses; nothing is
@@ -10908,58 +11172,26 @@ control_approval_gate() { # <staged-file> [confirm-token]
             return 1
         fi
     fi
+    # Ask for the second identity only after every host-only perimeter, typed-confirmation, and
+    # endpoint-reachability check has passed. Invalid requests never consume the prompt budget.
+    if [ "$approval_required" -eq 1 ]; then
+        local approver
+        if ! approver=$(control_validate_approval "$staged" "$id" "$actor" "$approval" "$porcelain" "$cdir"); then
+            [ -n "$approver" ] && printf '%s' "$approver"
+            return 1
+        fi
+    fi
     # Approved: echo the changed key NAMES so the commit's audit entry can record WHAT changed
     # (#349) without a third dry-run. Names only, never values. dashboard.energy (#504) is
-    # config.json-only, so it never appears in the env porcelain — fold a synthetic DASHBOARD_ENERGY
-    # name into the list when that block changed, else an energy-only commit would audit no key.
+    # config.json-only, so it never appears in the env porcelain — include the changed
+    # dashboard.energy.* paths directly, else an energy-only commit would audit no key.
     # Reference defaults merged into both sides (#696), same as the preview leg: the editor
     # round-trips the reference-merged form, and materialized defaults are not a change.
-    local keys
-    keys=$(porcelain_keys "$porcelain")
-    if ! jq -e --slurpfile live "$CONFIG_FILE" --slurpfile ref "$REFERENCE_CONFIG" \
-        '(($ref[0].dashboard.energy // {}) + ($live[0].dashboard.energy // {}))
-         == (($ref[0].dashboard.energy // {}) + (.dashboard.energy // {}))' "$staged" >/dev/null 2>&1; then
-        keys="${keys:+$keys }DASHBOARD_ENERGY"
-    fi
-    printf '%s' "$keys"
+    {
+        control_changed_config_paths "$staged"
+        [ "$worker_sensitive" -eq 1 ] && printf '%s\n' 'workers.list'
+    } | sort -u | tr '\n' ' ' | sed 's/ $//'
     return 0
-}
-
-control_write_result() { # <results-dir> <id> <json>
-    printf '%s\n' "$3" >"$1/.$2.tmp" && mv "$1/.$2.tmp" "$1/$2.json"
-}
-
-# One JSON line per handled request. `keys` (optional 6th arg) is the space-separated list of
-# changed env-key NAMES from the same dry-run porcelain the approval gate re-derives — names only,
-# NEVER values: several allowlist-adjacent keys are secrets host-side, and the audit log is mounted
-# into the (semi-trusted) dashboard container. Every free-form field is charset-stripped at write
-# time (below) so none can forge a second JSON line — `action` in particular can arrive raw from a
-# container-supplied intent on the unknown-action path, so it is NOT a fixed string.
-control_audit() { # <audit-file> <id> <actor> <action> <status> [keys]
-    # Size bound (#349, same posture as #123): once the log passes 512 KiB, keep the newest 2000
-    # entries. Trim-before-append, so the file is complete JSONL at all times and the entry being
-    # written is never the one trimmed.
-    if [ -f "$1" ] && [ "$(wc -c <"$1" | tr -d ' ')" -gt 524288 ]; then
-        tail -n 2000 "$1" >"$1.tmp" && mv "$1.tmp" "$1"
-    fi
-    # Sanitize the free-form fields at the write chokepoint so nothing can forge a second JSON line
-    # into this tamper-evidence log: `action` may arrive straight from a container-supplied intent
-    # on the unknown-action path (a newline + `{...}` would otherwise inject an entry), and `keys`
-    # is defense-in-depth over its upstream guard. `id` is a validated uuid4, `status` is
-    # code-set, and `actor` is regex-whitelisted upstream — but strip them here too, cheaply.
-    printf '{"ts":"%s","id":"%s","actor":"%s","action":"%s","status":"%s","keys":"%s"}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        "$(printf '%s' "$2" | tr -cd 'A-Za-z0-9-')" \
-        "$(printf '%s' "$3" | tr -cd 'A-Za-z0-9._@-')" \
-        "$(printf '%s' "$4" | tr -cd 'a-z-')" \
-        "$(printf '%s' "$5" | tr -cd 'a-z-')" \
-        "$(printf '%s' "${6:-}" | tr -cd 'A-Z0-9_ ')" >>"$1"
-}
-
-# The unique changed env-key names in a dry-run porcelain, one space-separated line (for the
-# audit `keys` field). Key NAMES only — the porcelain MSG column is dropped here.
-porcelain_keys() {
-    printf '%s' "$1" | awk -F'\t' 'NF' | cut -f2 | sort -u | tr '\n' ' ' | sed 's/ $//'
 }
 
 # Preview: stage the candidate config host-side, dry-run it, report the describe_change rows.
@@ -11015,10 +11247,42 @@ control_preview() { # <request-file> <id> <actor> <control-dir>
           else . end' "$file" >"$staged")
     chmod 600 "$staged" 2>/dev/null || true
     if out=$(PITHEAD_CONFIG_FILE="$staged" "$0" apply --dry-run --porcelain 2>"$errf"); then
-        result=$(printf '%s\n' "$out" | jq -R -s '
+        local approval_required=false editable_re
+        editable_re=$(printf '%s %s' "$CONTROL_DASHBOARD_EDITABLE_KEYS" "$CONTROL_DASHBOARD_CONFIRM_KEYS" | tr -s ' \n' '|')
+        if printf '%s' "$out" | awk -F'\t' 'NF' | cut -f2 | grep -qvxE "$editable_re" ||
+            printf '%s\n' "$out" | grep -qE $'^DEST\t'; then
+            approval_required=true
+        fi
+        if ! jq -e --slurpfile live "$CONFIG_FILE" '(.workers.list // []) == ($live[0].workers.list // [])' "$staged" >/dev/null 2>&1; then
+            approval_required=true
+        fi
+        result=$(printf '%s\n' "$out" | jq -R -s --argjson approval_required "$approval_required" \
+            --slurpfile live "$CONFIG_FILE" --slurpfile staged "$staged" '
             [split("\n")[] | select(length > 0) | split("\t") | {flag: .[0], key: .[1], msg: (.[2:] | join("\t"))}]
             | {status: "previewed", changes: .,
-               destructive: (map(.flag == "DEST" or .flag == "CONFIRM") | any), ts: (now | floor)}')
+               destructive: (map(.flag == "DEST" or .flag == "CONFIRM") | any),
+               approval_required: $approval_required,
+               preview_values: ([
+                 ["monero.wallet_address", "Monero payout"],
+                 ["tari.wallet_address", "Tari payout"],
+                 ["xvb.url", "XvB endpoint"],
+                 ["monero.remote.host", "Monero node host"],
+                 ["monero.remote.rpc_port", "Monero RPC port"],
+                 ["monero.remote.zmq_port", "Monero ZMQ port"],
+                 ["tari.remote.host", "Tari node host"],
+                 ["tari.remote.grpc_port", "Tari gRPC port"]
+               ] | map(.[0] as $p | ($p / ".") as $path
+                   | select(($live[0] | getpath($path)) != ($staged[0] | getpath($path)))
+                   | {key:$p, label:.[1], old:($live[0] | getpath($path)), new:($staged[0] | getpath($path))})),
+               payout_confirmations: (reduce ["monero", "tari"][] as $c ({};
+                 (($c + ".wallet_address") / ".") as $p
+                 | if ($live[0] | getpath($p)) != ($staged[0] | getpath($p))
+                   then .[$c] = (($staged[0] | getpath($p) // "") | if length > 8 then .[-8:] else . end)
+                   else . end)),
+               ts: (now | floor)}')
+        if ! jq -e --slurpfile live "$CONFIG_FILE" '(.workers.list // []) == ($live[0].workers.list // [])' "$staged" >/dev/null 2>&1; then
+            result=$(printf '%s' "$result" | jq '.changes += [{flag:"APPROVAL",key:"workers.list",msg:"Worker descriptors (hosts and access tokens) changed — Telegram approval is required."}] | .approval_required = true')
+        fi
         # #504: dashboard.energy is config.json-only (never rendered to .env), so an energy-only
         # edit produces no porcelain row. Surface it as a normal committable INFO change so the UI
         # arms Apply and the commit lands it in config.json. The approval gate allowlists exactly
@@ -11032,6 +11296,9 @@ control_preview() { # <request-file> <id> <actor> <control-dir>
             '(($ref[0].dashboard.energy // {}) + ($live[0].dashboard.energy // {}))
              == (($ref[0].dashboard.energy // {}) + (.dashboard.energy // {}))' "$staged" >/dev/null 2>&1; then
             result=$(printf '%s' "$result" | jq '.changes += [{flag:"INFO",key:"dashboard.energy",msg:"Energy calculator settings (dashboard.energy) — electricity price / currency / XMR price updated."}]')
+        fi
+        if control_changed_config_paths "$staged" | grep -qx 'dashboard.energy.price_feed'; then
+            result=$(printf '%s' "$result" | jq '.changes += [{flag:"APPROVAL",key:"dashboard.energy.price_feed",msg:"Electricity price feed endpoint changed — the host will contact this remote source for operating-cost data."}] | .approval_required = true')
         fi
         control_write_result "$cdir/results" "$id" "$result"
         control_audit "$cdir/audit/control.log" "$id" "$actor" "preview" "previewed" "$(porcelain_keys "$out")"
@@ -11072,8 +11339,8 @@ control_reown_operator_files() {
 
 # Commit: apply the HOST-SIDE staged copy from the matching preview. A tampered second request
 # can't swap the config — commit carries only the id; the config it applies is the one previewed.
-control_commit() { # <id> <actor> <control-dir> [confirm-token]
-    local id="$1" actor="$2" cdir="$3" confirm="${4:-}"
+control_commit() { # <id> <actor> <control-dir> [confirm-token] [approval-json]
+    local id="$1" actor="$2" cdir="$3" confirm="${4:-}" approval="${5:-null}"
     local staged="$cdir/staged/$id.json" logf="$cdir/staged/.$id.log" rc=0
     if [ ! -f "$staged" ]; then
         control_write_result "$cdir/results" "$id" "$(jq -n '{status:"rejected",error:"no staged intent for this id — preview first",ts:(now|floor)}')"
@@ -11088,23 +11355,28 @@ control_commit() { # <id> <actor> <control-dir> [confirm-token]
     fi
     # On refusal the gate's stdout is the reason; on approval it is the changed key names, which
     # the audit entries below record — WHAT changed, by name only (#349).
-    local gate_out keys=""
-    if ! gate_out=$(control_approval_gate "$staged" "$confirm"); then
+    local gate_out audit_keys=""
+    if ! gate_out=$(control_approval_gate "$staged" "$confirm" "$id" "$actor" "$approval" "$cdir"); then
         [ -n "$gate_out" ] || gate_out="approval denied"
         control_write_result "$cdir/results" "$id" "$(jq -n --arg e "$gate_out" '{status:"rejected",error:$e,ts:(now|floor)}')"
-        rm -f "$staged" "${staged}.confirmed"
+        rm -f "$staged" "${staged}.confirmed" "${staged}.approved"
         control_audit "$cdir/audit/control.log" "$id" "$actor" "commit" "rejected"
         return 0
     fi
-    keys="$gate_out"
+    audit_keys="$gate_out"
     # A confirm-gated destructive change (#719) is logged AS SUCH — the gate touches this marker
     # when a typed confirmation carried an in-scope CONFIRM row past the perimeter. The distinct
     # `commit-confirmed` action separates a dashboard-confirmed disruptive apply from an ordinary
     # (INFO-only) dashboard commit in the tamper-evidence log. Host-CLI applies never reach this log.
-    local audit_action="commit"
+    local audit_action="commit" approver=""
     if [ -f "${staged}.confirmed" ]; then
         audit_action="commit-confirmed"
         rm -f "${staged}.confirmed"
+    fi
+    if [ -f "${staged}.approved" ]; then
+        audit_action="commit-approved"
+        approver=$(jq -r '.approver // empty' "${staged}.approved" 2>/dev/null)
+        rm -f "${staged}.approved"
     fi
     # Keep a pre-change backup; on failure it is named in the result and left in place. The
     # `apply -y` below re-renders the pre-masked prefill copy (#440), so the dashboard's editor
@@ -11115,14 +11387,14 @@ control_commit() { # <id> <actor> <control-dir> [confirm-token]
     if [ "$rc" -eq 0 ]; then
         control_reown_operator_files # the root apply wrote .env/Caddyfile as root — give them back (#33)
         control_write_result "$cdir/results" "$id" "$(jq -n '{status:"applied",ts:(now|floor)}')"
-        control_audit "$cdir/audit/control.log" "$id" "$actor" "$audit_action" "applied" "$keys"
+        control_audit "$cdir/audit/control.log" "$id" "$actor" "$audit_action" "applied" "$audit_keys" "$approver"
     else
         # apply's own .apply-incomplete marker handles the container-recreate retry; the config
         # backup lets the operator revert by hand if the new config itself is the problem.
         control_write_result "$cdir/results" "$id" "$(jq -n --arg e "$(tail -c 2000 "$logf")" --arg b "${CONFIG_FILE}.bak-control" '{status:"failed",error:$e,backup:$b,ts:(now|floor)}')"
-        control_audit "$cdir/audit/control.log" "$id" "$actor" "$audit_action" "failed" "$keys"
+        control_audit "$cdir/audit/control.log" "$id" "$actor" "$audit_action" "failed" "$audit_keys" "$approver"
     fi
-    rm -f "$staged" "$logf" "${staged}.confirmed"
+    rm -f "$staged" "$logf" "${staged}.confirmed" "${staged}.approved"
 }
 
 # True when SemVer $1 is strictly newer than $2 (either may carry a leading `v`). Both arguments
@@ -12634,7 +12906,7 @@ control_process_request() { # <claimed-file> <control-dir>
     # schema for EVERY action, exactly as `worker`/`changes` already do — the check is a shape
     # guard, and the value guard is per-verb: control_diag_logs takes the container name only if it
     # matches a member of its own fixed allowlist, and clamps the count host-side.
-    if [ "$(jq -r '[keys[] | select(. != "id" and . != "action" and . != "config" and . != "actor" and . != "version" and . != "worker" and . != "changes" and . != "confirm" and . != "container" and . != "lines")] | length' "$file")" != "0" ]; then
+    if [ "$(jq -r '[keys[] | select(. != "id" and . != "action" and . != "config" and . != "actor" and . != "version" and . != "worker" and . != "changes" and . != "confirm" and . != "approval" and . != "container" and . != "lines")] | length' "$file")" != "0" ]; then
         control_write_result "$cdir/results" "$id" "$(jq -n '{status:"rejected",error:"unexpected keys in request",ts:(now|floor)}')"
         control_audit "$cdir/audit/control.log" "$id" "" "invalid" "rejected"
         return 0
@@ -12646,7 +12918,7 @@ control_process_request() { # <claimed-file> <control-dir>
     action=$(jq -r '.action // ""' "$file")
     case "$action" in
     preview) control_preview "$file" "$id" "$actor" "$cdir" ;;
-    commit) control_commit "$id" "$actor" "$cdir" "$(jq -r '.confirm // ""' "$file")" ;;
+    commit) control_commit "$id" "$actor" "$cdir" "$(jq -r '.confirm // ""' "$file")" "$(jq -c '.approval // null' "$file")" ;;
     upgrade) control_upgrade "$file" "$id" "$actor" "$cdir" ;;
     worker-apply) control_worker_apply "$file" "$id" "$actor" "$cdir" ;;
     worker-upgrade) control_worker_upgrade "$file" "$id" "$actor" "$cdir" ;;
@@ -12726,6 +12998,13 @@ control_run_pending() {
         [ -f "$req" ] || continue
         claim="$cdir/.claim.$$"
         mv "$req" "$claim" 2>/dev/null || continue
+        # The dashboard cannot reach the owner-only control parent after this atomic claim. Narrow
+        # hand-written/legacy regular files there, tied to the inode we parse; never follow a link.
+        if [ ! -L "$claim" ] && ! chmod 600 "$claim" 2>/dev/null; then
+            warn "Could not protect claimed control request $name — refusing it."
+            rm -f "$claim"
+            continue
+        fi
         control_process_request "$claim" "$cdir"
         rm -f "$claim"
         n=$((n + 1))

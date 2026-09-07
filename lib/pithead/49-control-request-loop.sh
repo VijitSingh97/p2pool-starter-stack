@@ -30,7 +30,7 @@ control_process_request() { # <claimed-file> <control-dir>
     # schema for EVERY action, exactly as `worker`/`changes` already do — the check is a shape
     # guard, and the value guard is per-verb: control_diag_logs takes the container name only if it
     # matches a member of its own fixed allowlist, and clamps the count host-side.
-    if [ "$(jq -r '[keys[] | select(. != "id" and . != "action" and . != "config" and . != "actor" and . != "version" and . != "worker" and . != "changes" and . != "confirm" and . != "container" and . != "lines")] | length' "$file")" != "0" ]; then
+    if [ "$(jq -r '[keys[] | select(. != "id" and . != "action" and . != "config" and . != "actor" and . != "version" and . != "worker" and . != "changes" and . != "confirm" and . != "approval" and . != "container" and . != "lines")] | length' "$file")" != "0" ]; then
         control_write_result "$cdir/results" "$id" "$(jq -n '{status:"rejected",error:"unexpected keys in request",ts:(now|floor)}')"
         control_audit "$cdir/audit/control.log" "$id" "" "invalid" "rejected"
         return 0
@@ -42,7 +42,7 @@ control_process_request() { # <claimed-file> <control-dir>
     action=$(jq -r '.action // ""' "$file")
     case "$action" in
     preview) control_preview "$file" "$id" "$actor" "$cdir" ;;
-    commit) control_commit "$id" "$actor" "$cdir" "$(jq -r '.confirm // ""' "$file")" ;;
+    commit) control_commit "$id" "$actor" "$cdir" "$(jq -r '.confirm // ""' "$file")" "$(jq -c '.approval // null' "$file")" ;;
     upgrade) control_upgrade "$file" "$id" "$actor" "$cdir" ;;
     worker-apply) control_worker_apply "$file" "$id" "$actor" "$cdir" ;;
     worker-upgrade) control_worker_upgrade "$file" "$id" "$actor" "$cdir" ;;
@@ -122,6 +122,13 @@ control_run_pending() {
         [ -f "$req" ] || continue
         claim="$cdir/.claim.$$"
         mv "$req" "$claim" 2>/dev/null || continue
+        # The dashboard cannot reach the owner-only control parent after this atomic claim. Narrow
+        # hand-written/legacy regular files there, tied to the inode we parse; never follow a link.
+        if [ ! -L "$claim" ] && ! chmod 600 "$claim" 2>/dev/null; then
+            warn "Could not protect claimed control request $name — refusing it."
+            rm -f "$claim"
+            continue
+        fi
         control_process_request "$claim" "$cdir"
         rm -f "$claim"
         n=$((n + 1))

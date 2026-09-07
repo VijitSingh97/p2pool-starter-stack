@@ -324,6 +324,7 @@ test-config.sh|2
 test-config.sh|bad_port
 test-config.sh|checked
 test-config.sh|core_checked
+test-confirm-approval.sh|secret_key
 test-control-add-only-ssrf.sh|2
 test-control-add-only-ssrf.sh|3
 test-control-core.sh|reowned
