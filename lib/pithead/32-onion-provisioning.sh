@@ -18,7 +18,7 @@ provision_tor() {
     log "Initializing Tor service to generate onion addresses..."
     # Client-auth keys must be in place before tor starts, since it reads authorized_clients then (#343).
     provision_onion_client_auth
-    docker compose up --pull "$(resolve_pull_policy)" -d tor
+    compose_up --pull "$(resolve_pull_policy)" -d tor
     log "Waiting for Tor hidden services to be generated..."
     P2POOL_ONION=$(wait_for_onion p2pool) ||
         error "Timed out waiting for the P2Pool Tor hidden-service hostname."
@@ -49,7 +49,7 @@ provision_node_onions() {
     [ "$want_monero" == "true" ] || [ "$want_tari" == "true" ] || return 0
 
     log "Publishing the Tor hidden service for the node that just became local..."
-    docker compose up -d tor
+    compose_up -d tor
     if [ "$want_monero" == "true" ]; then
         MONERO_ONION=$(wait_for_onion monero) ||
             error "Timed out waiting for the Monero Tor hidden-service hostname."
