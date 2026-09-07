@@ -120,6 +120,8 @@ assert_eq "a tag stamp for another version than the shipped VERSION is refused" 
 assert_eq "a tag stamp naming a commit this checkout lacks is refused" "$(cs_ref "tag v0.0.1 0123456789abcdef0123456789abcdef01234567" 0.0.1)" "rc=1"
 assert_eq "a missing stamp is refused" "$(cs_ref - 0.0.1)" "rc=1"
 assert_eq "an unknown stamp kind is refused" "$(cs_ref "registry v0.0.1" 0.0.1)" "rc=1"
+assert_eq "a tree stamp with trailing fields is refused" "$(cs_ref "tree garbage" 0.0.1)" "rc=1"
+assert_eq "a tag stamp with trailing fields is refused" "$(cs_ref "tag v0.0.1 $CS_SHA garbage" 0.0.1)" "rc=1"
 
 echo "== wiring: the build stages, the Dockerfile copies, verify-image compares (#1215) =="
 # The three scripts cannot be run together at this tier; what CAN be proven is that each end
