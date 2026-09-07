@@ -113,16 +113,28 @@ assert_not_contains "...and setup did not run" "$out" "setup-ran"
 unset PITHEAD_PRESEED_DIR PITHEAD_RIGFORGE_DIR RF_LOG SAW_STUBS
 rm -rf "$SAWB" "$SAESP"
 echo "== unit: write_handoff_card — the credentials card is owner-only from its first byte (#1842) =="
-# The card carries the login or the rig's control token. Both controls remove what a lazy fix would
-# lean on: the caller's umask is permissive and chmod is a no-op, so only the helper's own umask can
-# produce 600; and a 644 card from an earlier attempt must be REPLACED, since a redirect keeps its mode.
+# The card carries the login or the rig's control token. The caller's umask is permissive and chmod
+# is a no-op in the first row, so mktemp itself must create the private inode. A stale constructor
+# result is tightened before use, a symlink is refused, and an old destination is replaced whole.
 mk_tmpdir HCSB
 mkdir -p "$HCSB/spool"
 printf '{"role":"rig","token":"tok-1"}' | run_sourced "$HCSB" eval 'umask 022; chmod() { :; }; write_handoff_card "$HCSB/spool"'
 assert_rc "writing the card -> rc 0" "$?" "0"
-assert_eq "the card is 600 under a permissive umask with chmod a no-op" "$(stat -c '%a' "$HCSB/spool/handoff.json")" "600"
+assert_eq "mktemp creates the card at 600 under a permissive umask with chmod a no-op" "$(stat -c '%a' "$HCSB/spool/handoff.json")" "600"
 assert_eq "the card is the JSON handed in" "$(jq -r '.token' "$HCSB/spool/handoff.json")" "tok-1"
 assert_eq "no temp file beside the card" "$(find "$HCSB/spool" -name '.handoff*' | wc -l | tr -d ' ')" "0"
+printf 'stale\n' >"$HCSB/spool/stale.tmp"
+chmod 644 "$HCSB/spool/stale.tmp"
+printf '{"role":"rig","token":"tok-2"}' | run_sourced "$HCSB" eval 'mktemp() { printf "%s\n" "$HCSB/spool/stale.tmp"; }; write_handoff_card "$HCSB/spool"'
+assert_rc "a stale 644 temp returned by the constructor is handled -> rc 0" "$?" "0"
+assert_eq "the stale temp is private before it is published" "$(stat -c '%a' "$HCSB/spool/handoff.json")" "600"
+assert_eq "...and carries the new input" "$(jq -r '.token' "$HCSB/spool/handoff.json")" "tok-2"
+printf 'sentinel\n' >"$HCSB/symlink-target"
+ln -s "$HCSB/symlink-target" "$HCSB/spool/planted.tmp"
+printf '{"role":"rig","token":"must-not-land"}' | run_sourced "$HCSB" eval 'mktemp() { printf "%s\n" "$HCSB/spool/planted.tmp"; }; write_handoff_card "$HCSB/spool"'
+assert_rc "a symlink returned by the constructor is refused before the write" "$?" "1"
+assert_eq "the symlink target is untouched" "$(cat "$HCSB/symlink-target")" "sentinel"
+assert_eq "the prior card is untouched on refusal" "$(jq -r '.token' "$HCSB/spool/handoff.json")" "tok-2"
 chmod 644 "$HCSB/spool/handoff.json"
 printf '{"username":"admin","password":"p"}' | run_sourced "$HCSB" eval 'umask 022; chmod() { :; }; write_handoff_card "$HCSB/spool"'
 assert_eq "a 644 card left by an earlier attempt is replaced, not truncated in place" "$(stat -c '%a' "$HCSB/spool/handoff.json")" "600"
