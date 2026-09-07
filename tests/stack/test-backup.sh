@@ -473,6 +473,3 @@ assert_rc "reset-dashboard: compose failure still exits 1 (fail-closed unchanged
 assert_contains "reset-dashboard: #180 subnet-collision explanation reaches the operator (#557)" \
     "$out" "Docker refused the stack's bridge subnet"
 assert_contains "reset-dashboard: crafted failure message names the retry command" "$out" "did NOT come back up"
-
-# shellcheck source=tests/stack/test-cli-restore-hardening.sh
-source "$HERE/test-cli-restore-hardening.sh"
