@@ -542,7 +542,8 @@ chmod +x "$gh_dir/bin/curl"
 w14="89898989-8989-4289-9289-898989898989"
 printf '{"id":"%s","action":"worker-upgrade","actor":"admin","worker":"rig1","version":"v9.9.9"}\n' "$w14" >"$gh_dir/req.json"
 (
-    PATH="$gh_dir/bin:$PATH"
+    export PATH="$gh_dir/bin:$PATH"
+    hash -r
     sleep() { :; }
     CONTROL_WU_BUDGET=1 PITHEAD_CONFIG_FILE="$gh_dir/config.json" \
         run_sourced "$SANDBOX" control_process_request "$gh_dir/req.json" "$gh_dir" >/dev/null 2>&1
