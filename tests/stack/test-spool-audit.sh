@@ -99,7 +99,7 @@ else
 fi
 
 echo "== black-box: spool intake cap + symlink refusal + stale sweep (#33 hardening) =="
-UUID4="44444444-4444-4444-8444-444444444444"
+UUID4="a4a4a4a4-a4a4-4a4a-8a4a-a4a4a4a4a4a4"
 # Oversized intent: refused BEFORE jq parses it (bounded root-runner DoS), no result addressed.
 : >"$AUDIT"
 {
