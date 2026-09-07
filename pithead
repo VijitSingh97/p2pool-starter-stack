@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GENERATED FILE — do not edit. Built from lib/pithead/*.sh (55 slices, LC_ALL=C name order) by:
+# GENERATED FILE — do not edit. Built from lib/pithead/*.sh (56 slices, LC_ALL=C name order) by:
 #   scripts/build-pithead.sh
 # A drifted copy fails `scripts/build-pithead.sh --check` (make lint-pithead-parity).
 #
@@ -1845,21 +1845,25 @@ wizard_mint_token() {
 # Consume one wizard submission: validate the candidate with the same parser setup/apply use; on
 # success install it as ./config.json and mark the spool applied (the wizard page polls for it).
 # On failure surface a short error into the spool for the form. rc: 0 applied, 1 rejected, 2 none.
-firstboot_consume_spool() { # <spool-dir>
+firstboot_consume_spool() ( # <spool-dir>
     local spool="$1" cand="$1/config.json" err
-    [ -f "$cand" ] || return 2
+    local snap rc=0
+    snap=$(wizard_spool_request "$spool" config.json) || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+    trap 'wizard_spool_clean "${snap%/*}"' EXIT
+    cand="$snap"
     # CONFIG_FILE is readonly after sourcing; validate the candidate in a fresh process via the
     # PITHEAD_CONFIG_FILE override (the same parser setup/apply run, against the same file).
     if err=$(PITHEAD_CONFIG_FILE="$cand" bash -c "source '${BASH_SOURCE[0]}' && parse_and_validate_config" 2>&1); then
-        cp "$cand" "$PWD/config.json"
-        rm -f "$cand"
-        touch "$spool/applied"
+        install -m 600 "$cand" "$PWD/config.json" || return 1
+        rm -f "$spool/config.json"
+        wizard_spool_publish "$spool" applied true
         return 0
     fi
-    printf '%s' "$err" | tail -n 2 | tr -d '[:cntrl:]' | tail -c 240 >"$spool/error.txt"
-    rm -f "$cand"
+    printf '%s' "$err" | tail -n 2 | tr -d '[:cntrl:]' | tail -c 240 | wizard_spool_publish "$spool" error.txt cat
+    rm -f "$spool/config.json"
     return 1
-}
+)
 
 # --- the machine role (one stick, three machines) -------------------------------------------
 # What a machine IS is the wizard's first question: a Pithead coordinator, a coordinator that
@@ -1963,14 +1967,12 @@ machine_role_from_config() { # <config-file>
 # way the disk inventory travels. Fail open: no answer publishes only this machine's name, and
 # the pool field opens empty. PITHEAD_RIG_PROBE overrides the target for tests.
 publish_rig_defaults() { # <spool-dir>
-    local probe="${PITHEAD_RIG_PROBE:-pithead.local:3333}" tmp="$1/.rig-defaults.json.$$" pool=""
+    local probe="${PITHEAD_RIG_PROBE:-pithead.local:3333}" pool=""
     if timeout 3 bash -c "</dev/tcp/${probe%:*}/${probe##*:}" 2>/dev/null; then
         pool="$probe"
     fi
     jq -n --arg pool "$pool" --arg worker "$(hostname)" \
-        '{worker: $worker} + (if $pool == "" then {} else {pool: $pool} end)' >"$tmp" 2>/dev/null || : >"$tmp"
-    chown 1000:1000 "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$1/rig-defaults.json"
+        '{worker: $worker} + (if $pool == "" then {} else {pool: $pool} end)' | wizard_spool_publish "$1" rig-defaults.json cat
 }
 
 # Consume one rig-role submission: shape-check the pool address, dial it BEFORE anything
@@ -1978,21 +1980,27 @@ publish_rig_defaults() { # <spool-dir>
 # land the accepted answers as $PWD/rig.json, host-side and outside the spool (the same trust
 # move firstboot_consume_spool makes: what got validated is what gets used, whatever the
 # container writes afterwards). rc: 0 accepted, 1 rejected, 2 none.
-firstboot_consume_rig() { # <spool-dir>
+firstboot_consume_rig() ( # <spool-dir>
     local spool="$1" req="$1/rig-request.json" pool worker host port
-    [ -f "$req" ] || return 2
+    local snap rc=0
+    snap=$(wizard_spool_request "$spool" rig-request.json) || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+    trap 'rm -f "${snap%/*}/rig.json"; wizard_spool_clean "${snap%/*}"' EXIT
+    req="$snap"
     pool=$(jq -r '.pool // ""' "$req" 2>/dev/null | tr -d '[:cntrl:]')
     worker=$(jq -r '.worker // ""' "$req" 2>/dev/null | tr -d '[:cntrl:]')
     host="${pool%:*}"
     port="${pool##*:}"
-    if [ -z "$host" ] || [ "$host" = "$pool" ] || ! [[ "$port" =~ ^[0-9]+$ ]]; then
-        printf 'the pool address must look like host:port — a Pithead answers on port 3333' >"$spool/error.txt"
-        rm -f "$req"
+    host="${host#\[}"
+    host="${host%\]}"
+    if [ "$host" = "$pool" ] || ! is_valid_host "$host" || ! is_valid_port "$port"; then
+        printf 'the pool address must look like host:port — a Pithead answers on port 3333' | wizard_spool_publish "$spool" error.txt cat
+        rm -f "$spool/rig-request.json"
         return 1
     fi
-    if ! timeout 5 bash -c "</dev/tcp/$host/$port" 2>/dev/null; then
-        printf 'cannot reach a pool at %s:%s — check the address, and that the Pithead is up' "$host" "$port" >"$spool/error.txt"
-        rm -f "$req"
+    if ! timeout 5 bash -c '</dev/tcp/"$1"/"$2"' _ "$host" "$port" 2>/dev/null; then
+        printf 'cannot reach a pool at %s:%s — check the address, and that the Pithead is up' "$host" "$port" | wizard_spool_publish "$spool" error.txt cat
+        rm -f "$spool/rig-request.json"
         return 1
     fi
     # The control token (#1836) survives a "Set up again" that keeps the role AND the worker name
@@ -2000,18 +2008,21 @@ firstboot_consume_rig() { # <spool-dir>
     local keep_tok=""
     [ "$(jq -r '.worker // ""' "$PWD/rig.json" 2>/dev/null)" = "${worker:-$(hostname)}" ] &&
         keep_tok=$(jq -r '.access_token // ""' "$PWD/rig.json" 2>/dev/null)
-    if ! jq --arg w "${worker:-$(hostname)}" --arg t "$keep_tok" '{pool: .pool, worker: $w}
+    if ! (
+        umask 077
+        jq --arg w "${worker:-$(hostname)}" --arg t "$keep_tok" '{pool: .pool, worker: $w}
         + (if (.stratum_password // "") == "" then {} else {stratum_password: .stratum_password} end)
         + (if $t == "" then {} else {access_token: $t} end)' \
-        "$req" >"$PWD/rig.json" 2>/dev/null; then
-        rm -f "$req" "$PWD/rig.json"
-        printf 'could not record the rig settings — submit again' >"$spool/error.txt"
+            "$req" >"${snap%/*}/rig.json" 2>/dev/null && mv -fT "${snap%/*}/rig.json" "$PWD/rig.json"
+    ); then
+        rm -f "$spool/rig-request.json" "$PWD/rig.json"
+        printf 'could not record the rig settings — submit again' | wizard_spool_publish "$spool" error.txt cat
         return 1
     fi
     chmod 600 "$PWD/rig.json" 2>/dev/null || true
-    rm -f "$req"
+    rm -f "$spool/rig-request.json"
     return 0
-}
+)
 
 # Consume a restore-at-setup submission (#909, #786 sub-issue B): an uploaded encrypted backup
 # archive + its emergency-kit passphrase, in place of the config form. Same decrypt/verify
@@ -2029,6 +2040,66 @@ firstboot_consume_rig() { # <spool-dir>
 # shell suite can run this without root's /run.
 restore_carry_dir() { printf '%s' "${PITHEAD_RESTORE_CARRY_DIR:-/run/pithead-restore}"; }
 
+# Setup accepts the appliance backup layout, never arbitrary host paths from an archive.
+# Trailing slashes name data trees; other entries name individual files. Keep the same list
+# for membership checks and application so a newly accepted item cannot escape the mapping.
+restore_setup_config_path() {
+    case "$CONFIG_FILE" in
+    /*) printf '%s\n' "$CONFIG_FILE" ;;
+    *) printf '%s\n' "$PWD/$CONFIG_FILE" ;;
+    esac
+}
+
+restore_setup_items() {
+    printf '%s\n' "$(restore_setup_config_path)" "$PWD/$ENV_FILE" "$PWD/Caddyfile" \
+        "$PWD/data/tor/" "$PWD/data/dashboard/" "$PWD/data/monero/" \
+        "$PWD/data/tari/" "$PWD/data/p2pool/"
+}
+
+restore_setup_archive_within_limits() { # <names-file> <verbose-file> [max-members] [max-bytes]
+    local members bytes
+    members=$(wc -l <"$1")
+    [ "$members" -le "${3:-4096}" ] && [ "$(wc -c <"$1")" -le 1048576 ] || return 1
+    bytes=$(awk '$1 ~ /^-/ { total += $3 } END { printf "%.0f", total }' "$2")
+    [ "$bytes" -le "${4:-1073741824}" ]
+}
+
+restore_setup_tar_list() { # <archive> <tar-list-option> <output> [max-KiB] [seconds]
+    timeout "${5:-30}" bash -c \
+        'ulimit -f "$1"; exec tar --quoting-style=escape "$2" "$3"' \
+        _ "${4:-4096}" "$2" "$1" >"$3" 2>/dev/null
+}
+
+restore_setup_publish_file() { # <source> <destination>
+    local publish
+    publish=$(mktemp "${2}.restore.XXXXXXXXXX") || return 1
+    if ! install -m 600 "$1" "$publish" || ! mv -fT -- "$publish" "$2"; then
+        rm -f -- "$publish"
+        return 1
+    fi
+}
+
+restore_setup_members() { # <tar name listing>
+    local member item accepted directory
+    while IFS= read -r member; do
+        case "$member" in '' | /* | *\\* | . | ./* | */./* | */. | *//* | ../* | */../* | */..) return 1 ;; esac
+        directory=0
+        [[ "$member" = */ ]] && directory=1
+        member="${member%/}"
+        accepted=0
+        while IFS= read -r item; do
+            item="${item#/}"
+            if [[ "$item" = */ ]]; then
+                [[ "$member" = "$item"* ]] && accepted=1
+                [[ "$member" = "${item%/}" && "$directory" = 1 ]] && accepted=1
+            elif [ "$member" = "$item" ] && [ "$directory" = 0 ]; then
+                accepted=1
+            fi
+        done < <(restore_setup_items)
+        [ "$accepted" = 1 ] || return 1
+    done <<<"$1"
+}
+
 # The whole restore acceptance, shared by its two doors — the wizard's spool channel
 # (firstboot_consume_restore) and the installer-carried ESP pre-seed (consume_preseed_restore):
 # size cap, encryption detection, decrypt verification, tar integrity, path-safety audit,
@@ -2037,9 +2108,9 @@ restore_carry_dir() { printf '%s' "${PITHEAD_RESTORE_CARRY_DIR:-/run/pithead-res
 # this machine — the installer flow, where the restored tree belongs to the TARGET and
 # decrypted keys must never rest on the stick. rc 0: done. rc 1: refused, one page-ready
 # line in <errfile>. Never deletes <archive> — the callers own their files.
-restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
+restore_apply() ( # <archive> <passphrase> <errfile> [<config-only-dest>]
     local archive="$1" pass="$2" errf="$3" cfg_dest="${4:-}"
-    local size magic encrypted=0 tmp staged_cfg err
+    local size magic encrypted=0 tmp plain tree staged_cfg config_path err
 
     # Server-side cap already refused an oversize upload before it reached the spool; checked
     # again here so a file dropped by any other means gets the same honest refusal.
@@ -2059,28 +2130,28 @@ restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
         ;;
     esac
 
+    tmp=$(mktemp -d "$PWD/.restore.XXXXXXXXXX") || {
+        printf 'could not stage the restore' >"$errf"
+        return 1
+    }
+    trap 'rm -rf -- "$tmp"' EXIT
+    plain="$archive"
     if [ "$encrypted" -eq 1 ]; then
         if [ -z "$pass" ]; then
             printf 'this archive is encrypted — enter its passphrase' >"$errf"
             return 1
         fi
-        local plain_magic
-        plain_magic=$(openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
-            -pass fd:3 -in "$archive" 2>/dev/null 3< <(printf '%s' "$pass") |
-            head -c 2 | od -An -tx1 | tr -d ' \n') || true
-        if [ "$plain_magic" != "1f8b" ]; then
+        plain="$tmp/archive.tar.gz"
+        umask 077
+        if ! openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
+            -pass fd:3 -in "$archive" -out "$plain" 2>/dev/null 3< <(printf '%s' "$pass"); then
             printf 'wrong passphrase or corrupt archive' >"$errf"
             return 1
         fi
-        if ! openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
-            -pass fd:3 -in "$archive" 2>/dev/null 3< <(printf '%s' "$pass") |
-            tar -tzf - >/dev/null 2>&1; then
-            printf 'archive fails integrity verification (tampered or truncated)' >"$errf"
-            return 1
-        fi
-    else
-        if ! tar -tzf "$archive" >/dev/null 2>&1; then
-            printf 'archive fails integrity verification (tampered or truncated)' >"$errf"
+        local plain_magic
+        plain_magic=$(head -c 2 "$plain" | od -An -tx1 | tr -d ' \n')
+        if [ "$plain_magic" != "1f8b" ]; then
+            printf 'wrong passphrase or corrupt archive' >"$errf"
             return 1
         fi
     fi
@@ -2092,34 +2163,45 @@ restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
     # only regular files and dirs under known prefixes, so any escaping path or link is corruption
     # or an attack: fail closed. Lists names (whole-line, absolute/".." check) and the verbose
     # form (link check) separately, because a name with spaces is unparseable from `tar -tv`.
-    local rnames rlinks
-    if [ "$encrypted" -eq 1 ]; then
-        rnames=$(openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass fd:3 -in "$archive" 2>/dev/null 3< <(printf '%s' "$pass") | tar -tz 2>/dev/null)
-        rlinks=$(openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass fd:3 -in "$archive" 2>/dev/null 3< <(printf '%s' "$pass") | tar -tvz 2>/dev/null)
-    else
-        rnames=$(tar -tzf "$archive" 2>/dev/null)
-        rlinks=$(tar -tvzf "$archive" 2>/dev/null)
+    if ! LC_ALL=C restore_setup_tar_list "$plain" -tzf "$tmp/names" ||
+        ! LC_ALL=C restore_setup_tar_list "$plain" -tvzf "$tmp/verbose"; then
+        printf 'archive fails integrity verification (tampered or truncated)' >"$errf"
+        return 1
     fi
-    if printf '%s\n' "$rnames" | grep -qE '^/|(^|/)\.\.(/|$)' ||
-        printf '%s\n' "$rlinks" | grep -qE '^l| -> | link to '; then
+    if ! restore_setup_archive_within_limits "$tmp/names" "$tmp/verbose"; then
+        printf 'archive expands beyond the setup restore limit — use the administrative restore workflow' >"$errf"
+        return 1
+    fi
+    local rnames
+    rnames=$(cat "$tmp/names")
+    if printf '%s\n' "$rnames" | grep -E '^/|(^|/)\.\.(/|$)' >/dev/null ||
+        grep -vE '^[-d]' "$tmp/verbose" >/dev/null; then
         printf 'archive contains unsafe paths or links — refusing to restore' >"$errf"
         return 1
     fi
 
-    tmp=$(mktemp -d) || {
+    if ! restore_setup_members "$rnames"; then
+        printf 'archive contains files outside the appliance backup layout — refusing to restore' >"$errf"
+        return 1
+    fi
+
+    tree="$tmp/tree"
+    mkdir -m 700 "$tree"
+    (umask 077 && tar --no-same-owner --no-same-permissions -xzf "$plain" -C "$tree") || {
         printf 'could not stage the restore' >"$errf"
         return 1
     }
-    if [ "$encrypted" -eq 1 ]; then
-        openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
-            -pass fd:3 -in "$archive" 2>/dev/null 3< <(printf '%s' "$pass") | tar -xzf - -C "$tmp"
-    else
-        tar -xzf "$archive" -C "$tmp"
+    if ! find "$tree" -type d -exec chmod 700 {} + ||
+        ! find "$tree" -type f -exec chmod 600 {} + ||
+        { [ "$(id -u)" = 0 ] && ! chown -R 0:0 "$tree"; }; then
+        printf 'could not secure the staged restore' >"$errf"
+        return 1
     fi
 
     # The archive stores paths relative to "/" (same convention `stack_backup`/`stack_restore`
     # use), so the staged config lands at exactly $PWD/$CONFIG_FILE underneath $tmp.
-    staged_cfg="$tmp/${PWD#/}/$CONFIG_FILE"
+    config_path=$(restore_setup_config_path)
+    staged_cfg="$tree$config_path"
     if [ ! -f "$staged_cfg" ] || ! jq -e . "$staged_cfg" >/dev/null 2>&1; then
         rm -rf "$tmp"
         printf 'archive does not contain a usable configuration' >"$errf"
@@ -2137,16 +2219,38 @@ restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
     if [ -n "$cfg_dest" ]; then
         # Installer door: the card and the ESP staging need the config; the tree stays in the
         # archive for the target to restore itself.
-        install -m 600 "$staged_cfg" "$cfg_dest"
+        restore_setup_publish_file "$staged_cfg" "$cfg_dest" || {
+            printf 'could not apply the backup files' >"$errf"
+            return 1
+        }
         rm -rf "$tmp"
         return 0
     fi
-    # Commit: everything the archive carried (config.json, .env, Caddyfile, the Tor data dir,
-    # the dashboard database) lands at its real absolute path in one move — the same
-    # destination `tar -xzf archive -C /` would use directly, just proven safe first.
-    # prepare_directories (run by the `setup` this feeds) unconditionally re-chowns every data
-    # dir afterwards, so ownership here does not need fixing up by hand.
-    cp -a "$tmp"/. /
+    # Apply only the accepted files/data trees. Do not copy staging's ancestor directories
+    # onto /: their metadata is not part of the backup contract.
+    local item source dest copy_failed=0
+    while IFS= read -r item; do
+        source="$tree$item"
+        [ -e "$source" ] || continue
+        if [[ "$item" = */ ]]; then
+            dest="${item%/}"
+            rm -rf -- "$dest"
+            mv -T -- "$source" "$dest" || {
+                copy_failed=1
+                break
+            }
+        else
+            restore_setup_publish_file "$source" "$item" || {
+                copy_failed=1
+                break
+            }
+        fi
+    done < <(restore_setup_items)
+    if [ "$copy_failed" = 1 ]; then
+        rm -rf "$tmp"
+        printf 'could not apply the backup files' >"$errf"
+        return 1
+    fi
     rm -rf "$tmp"
     # #1239 (live KVM guest evidence): the archive's .env is the SOURCE machine's own —
     # DEPLOYMENT_COMPLETED=true there records THAT machine's prior deployment, not this
@@ -2167,47 +2271,48 @@ restore_apply() { # <archive> <passphrase> <errfile> [<config-only-dest>]
         safe_sed 's/^DEPLOYMENT_COMPLETED=.*/DEPLOYMENT_COMPLETED=false/' "$PWD/$ENV_FILE"
     fi
     return 0
-}
+)
 
-firstboot_consume_restore() { # <spool-dir> [<installer 0|1>]
-    local spool="$1" installer="${2:-0}" archive="$1/restore-archive" passfile="$1/restore-passphrase"
-    local pass=""
-    [ -f "$archive" ] || return 2
-    { set +x; } 2>/dev/null # xtrace would print the passphrase below
-    pass=$(cat "$passfile" 2>/dev/null || true)
-    rm -f "$passfile" # never persisted in the spool beyond this attempt, accepted or not
-
+firstboot_consume_restore() ( # <spool-dir> [<installer 0|1>]
+    local spool="$1" installer="${2:-0}" archive pass_snap="" pass="" rc=0 errf
+    archive=$(wizard_spool_request "$spool" restore-archive "$RESTORE_MAX_BYTES") || rc=$?
+    if [ "$rc" != 0 ]; then
+        [ "$rc" = 2 ] || rm -f "$spool/restore-passphrase"
+        return "$rc"
+    fi
+    errf="${archive%/*}/error"
+    trap 'rm -f "$errf"; wizard_spool_clean "${archive%/*}"; [ -z "$pass_snap" ] || wizard_spool_clean "${pass_snap%/*}"' EXIT
+    { set +x; } 2>/dev/null
+    pass_snap=$(wizard_spool_snapshot "$spool" restore-passphrase 4096) || rc=$?
+    rm -f "$spool/restore-passphrase" "$spool/restore-archive"
+    if [ "$rc" = 0 ]; then
+        pass=$(cat "$pass_snap")
+    elif [ "$rc" != 2 ]; then
+        wizard_spool_publish "$spool" error.txt printf '%s' 'Unsafe restore passphrase file — submit again.'
+        return 1
+    fi
+    # Error text is private too: restore_apply never receives a page-writable path.
+    umask 077
     if [ "$installer" -eq 1 ]; then
-        # Installer boot: validate and surface the config for the card, but the restored TREE
-        # belongs to the TARGET — decrypted keys must never rest on the stick. The accepted
-        # archive and its passphrase park in tmpfs for the ESP carry the install branch stages.
-        if ! restore_apply "$archive" "$pass" "$spool/error.txt" "$PWD/config.json"; then
-            pass=""
-            rm -f "$archive"
+        if ! restore_apply "$archive" "$pass" "$errf" "$PWD/config.json"; then
+            wizard_spool_publish "$spool" error.txt cat "$errf"
             return 1
         fi
         local carry
         carry=$(restore_carry_dir)
         (umask 077 && mkdir -p "$carry" &&
-            mv "$archive" "$carry/archive" &&
+            mv -fT "$archive" "$carry/archive" &&
             printf '%s' "$pass" >"$carry/pass") || {
-            pass=""
-            printf 'could not stage the restore for the install' >"$spool/error.txt"
-            rm -rf "$carry" "$archive" "$PWD/config.json"
+            wizard_spool_publish "$spool" error.txt printf '%s' 'could not stage the restore for the install'
+            rm -rf "$carry" "$PWD/config.json"
             return 1
         }
-        pass=""
-        touch "$spool/applied"
-        return 0
+    elif ! restore_apply "$archive" "$pass" "$errf"; then
+        wizard_spool_publish "$spool" error.txt cat "$errf"
+        return 1
     fi
-    local rrc=0
-    restore_apply "$archive" "$pass" "$spool/error.txt" || rrc=1
-    pass=""
-    rm -f "$archive"
-    [ "$rrc" -eq 0 ] || return 1
-    touch "$spool/applied"
-    return 0
-}
+    wizard_spool_publish "$spool" applied true
+)
 
 # --- disk installer (appliance only) -------------------------------------------------------
 # The appliance can boot from the installation medium itself. When it does, the wizard leads with
@@ -2264,15 +2369,13 @@ data_wipe_note() {
 # spool never hands machine 2 machine 1's note. Skipped on removable boot media, where
 # PRESEED_DIR is the STICK's own ESP and would describe the stick, not this machine.
 publish_data_wipe_note() { # <spool-dir>
-    local tmp="$1/.data-wiped.json.$$" note
+    local note
     if boot_is_removable; then
         note="{}"
     else
         note=$(data_wipe_note) || note="{}"
     fi
-    printf '%s' "$note" >"$tmp" 2>/dev/null || : >"$tmp"
-    chown 1000:1000 "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$1/data-wiped.json"
+    wizard_spool_publish "$1" data-wiped.json printf '%s' "$note"
 }
 
 # The restore pre-seed (#909): an installer boot that accepted a backup archive stages it —
@@ -2375,12 +2478,7 @@ installer_mode_available() {
 # able to name a target the host did not offer — that is the same boundary the #33 control
 # channel draws, and here the action erases a disk.
 publish_disk_inventory() { # <spool-dir>
-    # Atomic: the wizard reads this file between our writes, and a truncate-then-write would
-    # hand it an empty inventory mid-write — rendering a disk picker with no disks.
-    local tmp="$1/.disks.tsv.$$"
-    "$(install_bin)" --list >"$tmp" 2>/dev/null || : >"$tmp"
-    chown 1000:1000 "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$1/disks.tsv"
+    wizard_spool_publish "$1" disks.tsv "$(install_bin)" --list
 }
 
 # The strip a previous install's config passes through before any of it may be SHOWN (#794):
@@ -2424,8 +2522,8 @@ strip_config_secrets() { # <config-file> -> stripped JSON on stdout
 # anything) and pure convenience: every failure path returns 1 and the page simply opens
 # blank — nothing here may block an install. rc 0 = a pre-fill was published.
 prefill_from_previous_install() { # <spool-dir>
-    local spool="$1" disk part mnt cfg tmp rc=1
-    disk=$(awk -F'\t' '$5 == "pithead-with-data" {print $1}' "$spool/disks.tsv" 2>/dev/null)
+    local spool="$1" disk part mnt cfg rc=1
+    disk=$(wizard_spool_read "$spool" disks.tsv | awk -F'\t' '$5 == "pithead-with-data" {print $1}')
     # Two candidates would make the pre-fill a guess about WHICH machine's answers; offer none.
     [ -n "$disk" ] && [ "$(printf '%s\n' "$disk" | wc -l)" -eq 1 ] || return 1
     part=$(lsblk -lnpo NAME,PARTLABEL "/dev/$disk" 2>/dev/null | awk '$2 == "data" {print $1; exit}')
@@ -2436,7 +2534,6 @@ prefill_from_previous_install() { # <spool-dir>
     # runs against its content.
     if mount -t ext4 -o ro,nosuid,nodev,noexec "$part" "$mnt" 2>/dev/null; then
         cfg="$mnt/pithead/config.json"
-        tmp="$spool/.last-attempt.json.$$"
         # The -L guards close a symlink escape: a crafted disk could point pithead/ or
         # config.json at a file on the RUNNING host, and jq follows symlinks — the read-only
         # mount keeps both components stable under the checks. The size cap bounds what an
@@ -2444,11 +2541,9 @@ prefill_from_previous_install() { # <spool-dir>
         # it needs) rejects everything else.
         if [ ! -L "$mnt/pithead" ] && [ ! -L "$cfg" ] &&
             [ -f "$cfg" ] && [ "$(wc -c <"$cfg" 2>/dev/null || echo 0)" -le 1048576 ] &&
-            [ -s "$cfg" ] && strip_config_secrets "$cfg" >"$tmp"; then
-            chown 1000:1000 "$tmp" 2>/dev/null || true
-            mv -f "$tmp" "$spool/last-attempt.json" && rc=0
+            [ -s "$cfg" ] && wizard_spool_publish "$spool" last-attempt.json strip_config_secrets "$cfg"; then
+            rc=0
         fi
-        rm -f "$tmp"
         umount "$mnt" 2>/dev/null || umount -l "$mnt" 2>/dev/null || true
     fi
     rmdir "$mnt" 2>/dev/null || true
@@ -2524,27 +2619,37 @@ preflight_remote_nodes() { # <config-file>
 # the wizard's combined submit; both fields are re-validated HERE because they arrive through
 # a web form — the disk against the inventory this host published, the wipe mode against the
 # fixed set. The container asks, the host decides.
-consume_install_request() { # <spool-dir>
+consume_install_request() ( # <spool-dir> [required-wipe]
     local spool="$1" req="$1/install-request" target wipe err
-    [ -f "$req" ] || return 2
+    local snap rc=0
+    snap=$(wizard_spool_request "$spool" install-request) || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+    trap 'wizard_spool_clean "${snap%/*}"' EXIT
+    req="$snap"
     target=$(cut -f1 <"$req" | tr -dc 'a-zA-Z0-9_-')
     wipe=$(cut -f2 <"$req" | tr -dc 'a-z')
-    rm -f "$req"
+    rm -f "$spool/install-request"
     case "$wipe" in keep | data | all) ;; *) wipe="keep" ;; esac
+    # The bare-reinstall door may only preserve data, even if the page replaces its request
+    # after that door's readiness check. Enforce the policy on THIS consumed snapshot.
+    if [ -n "${2:-}" ] && [ "$wipe" != "$2" ]; then
+        wizard_spool_publish "$spool" error.txt printf '%s' 'The install request changed — submit the settings again.'
+        return 1
+    fi
     if ! "$(install_bin)" --list 2>/dev/null | cut -f1 | grep -qx "$target"; then
-        printf 'not an offered target: %s' "$target" >"$spool/error.txt"
+        printf 'not an offered target: %s' "$target" | wizard_spool_publish "$spool" error.txt cat
         return 1
     fi
     log "Installing to /dev/$target (data: $wipe) ..."
     if err=$("$(install_bin)" --target "/dev/$target" --wipe "$wipe" --yes 2>&1); then
-        touch "$spool/installed"
+        wizard_spool_publish "$spool" installed true
         log "Installed to /dev/$target."
         return 0
     fi
-    printf '%s' "$err" | tail -n 2 | tr -d '[:cntrl:]' | tail -c 240 >"$spool/error.txt"
+    printf '%s' "$err" | tail -n 2 | tr -d '[:cntrl:]' | tail -c 240 | wizard_spool_publish "$spool" error.txt cat
     warn "Install to /dev/$target failed."
     return 1
-}
+)
 
 # Baked container-image archives (/opt/pithead/images) are DERIVED, like every rendered file:
 # they ship in the read-only slot, the engine's storage lives on /data — which survives
@@ -2648,6 +2753,115 @@ load_baked_images() { # $1 (optional): image ref whose absence forces a load des
     return 0
 }
 
+# The host/page filesystem boundary. The outer directory is root-owned and sticky so the
+# page can submit requests but cannot replace host-owned entries. Private staging directories
+# keep even a file destined for uid 1000 unreachable until its atomic publication.
+prepare_wizard_spool() { # <spool-dir>
+    [ ! -L "$1" ] || return 1
+    mkdir -p "$1" || return 1
+    if [ "$(id -u)" = 0 ]; then
+        if ! chown 0:1000 "$1" || ! chmod 1770 "$1"; then
+            chmod 700 "$1" 2>/dev/null || true
+            return 1
+        fi
+    else
+        [ "$(stat -c '%u' "$1")" = "$(id -u)" ] && chmod 700 "$1"
+    fi
+}
+
+wizard_spool_private() { # <spool-dir> -> private directory
+    prepare_wizard_spool "$1" || return 1
+    (
+        umask 077
+        mktemp -d "$1/.host.XXXXXXXXXX"
+    )
+}
+
+# Cleanup never recursively follows an untrusted submission (a directory is not an input).
+wizard_spool_clean() { # <private-dir>
+    rm -f -- "$1/input" "$1/value" 2>/dev/null || true
+    rmdir -- "$1/input" 2>/dev/null || true
+    rmdir -- "$1" 2>/dev/null || true
+}
+
+wizard_spool_publish() ( # <spool-dir> <name> <producer> [args...]
+    local spool="$1" name="$2" tmp
+    shift 2
+    case "$name" in '' | */* | . | ..) return 1 ;; esac
+    tmp=$(wizard_spool_private "$spool") || return 1
+    trap 'wizard_spool_clean "$tmp"' EXIT
+    umask 077
+    "$@" >"$tmp/value" || return 1
+    if [ "$(id -u)" = 0 ]; then
+        case "$name" in
+        error.txt | last-attempt.json | installing)
+            chmod 600 "$tmp/value" && chown 1000:1000 "$tmp/value" || return 1
+            ;;
+        *) chmod 640 "$tmp/value" && chown 0:1000 "$tmp/value" || return 1 ;;
+        esac
+    fi
+    # -T replaces the entry itself, including a symlink to a directory. No pathname operation
+    # after publication may chmod, chown, truncate or read back a page-owned destination.
+    mv -fT -- "$tmp/value" "$spool/$name"
+)
+
+# Pin the directory entry with a non-dereferencing hard link inside our private directory.
+# Inspect it there BEFORE opening (including FIFOs); the page cannot replace that name. Copy
+# into a fresh inode before parsing: a page process may still hold the original inode open.
+# All validation and subsequent use must use the returned snapshot, never the request again.
+wizard_spool_snapshot() ( # <spool-dir> <name> [max-bytes] -> private snapshot path
+    local spool="$1" name="$2" limit="${3:-1048576}" tmp owner size
+    case "$name" in '' | */* | . | ..) return 1 ;; esac
+    [ -e "$spool/$name" ] || [ -L "$spool/$name" ] || return 2
+    tmp=$(wizard_spool_private "$spool") || return 1
+    trap 'wizard_spool_clean "$tmp"' EXIT
+    ln -P -- "$spool/$name" "$tmp/input" 2>/dev/null || return 1
+    [ ! -L "$tmp/input" ] && [ -f "$tmp/input" ] || return 1
+    [ "$(stat -c '%h' "$tmp/input")" = 2 ] || return 1
+    owner=$(stat -c '%u' "$tmp/input")
+    [ "$owner" = "$(id -u)" ] || [ "$owner" = 1000 ] || return 1
+    size=$(stat -c '%s' "$tmp/input")
+    [ "$size" -le "$limit" ] || return 3
+    umask 077
+    head -c "$((limit + 1))" -- "$tmp/input" >"$tmp/value" || return 1
+    [ "$(stat -c '%s' "$tmp/value")" -le "$limit" ] || return 3
+    rm -f -- "$tmp/input"
+    trap - EXIT
+    printf '%s\n' "$tmp/value"
+)
+
+wizard_spool_read() ( # <spool-dir> <name> -> bounded text snapshot
+    local snap rc=0
+    snap=$(wizard_spool_snapshot "$1" "$2") || return "$?"
+    cat "$snap" || rc=$?
+    wizard_spool_clean "${snap%/*}"
+    return "$rc"
+)
+
+wizard_spool_has() { wizard_spool_read "$1" "$2" >/dev/null 2>&1; }
+
+write_handoff_card() { wizard_spool_publish "$1" handoff.json cat; }
+
+# Submission consumers report unsafe entries as a retryable failure. Text/marker readers use
+# snapshot directly, so checking an absent marker does not manufacture a page error.
+wizard_spool_request() { # <spool-dir> <name> [max-bytes] -> snapshot
+    local snap rc=0
+    snap=$(wizard_spool_snapshot "$@") || rc=$?
+    if [ "$rc" = 0 ]; then
+        printf '%s\n' "$snap"
+    elif [ "$rc" = 1 ] || [ "$rc" = 3 ]; then
+        rm -f -- "$1/$2" 2>/dev/null || true
+        if [ "$rc" = 3 ]; then
+            wizard_spool_publish "$1" error.txt printf '%s' 'Setup submission is too large — use a smaller file and submit again.'
+        else
+            wizard_spool_publish "$1" error.txt printf '%s' 'Unsafe setup submission — submit the settings again.'
+        fi
+        return 1
+    else
+        return "$rc"
+    fi
+}
+
 # Everything the wizard container needs in its spool, staged fresh for EVERY wizard start.
 #
 # It used to run once, before the loop — and the accept path removes the whole spool before
@@ -2660,25 +2874,22 @@ load_baked_images() { # $1 (optional): image ref whose absence forces a load des
 # so honestly instead of promising a scheme it is not serving.
 stage_wizard_spool() { # <spool-dir> -> fingerprint on stdout
     local spool="$1"
-    mkdir -p "$spool"
-    # The wizard container runs as uid 1000 and must write the spool; transient dir, addresses
-    # only by design, removed at handoff.
-    chown 1000:1000 "$spool" 2>/dev/null || chmod 777 "$spool"
+    prepare_wizard_spool "$spool" || return 1
     # The wizard renders the EXACT config that will be written, defaults included, so it needs
     # the reference. It is a read-only schema, not a secret.
-    cp /opt/pithead/config.reference.json "$spool/config.reference.json" 2>/dev/null ||
-        cp "$PWD/config.reference.json" "$spool/config.reference.json" 2>/dev/null || true
-    chown 1000:1000 "$spool/config.reference.json" 2>/dev/null || true
+    local ref=/opt/pithead/config.reference.json
+    [ -f "$ref" ] || ref="$PWD/config.reference.json"
+    wizard_spool_publish "$spool" config.reference.json cat "$ref" || return 1
     # The rig pre-fill and (#1318) the saved role ride beside the reference — derived fresh each
     # boot, like the disk inventory, so machine 2 on a fleet stick never opens on machine 1's.
-    publish_rig_defaults "$spool"
-    publish_saved_role "$spool"
+    publish_rig_defaults "$spool" || return 1
+    publish_saved_role "$spool" || return 1
     # The data-wipe note (#1121): same "derived fresh every boot" rule, for the same fleet-stick
     # reason — see publish_data_wipe_note.
-    publish_data_wipe_note "$spool"
+    publish_data_wipe_note "$spool" || return 1
     # Installer mode reads the disk list from here too; a retry with no list is the same dead end
     # in a different shape.
-    installer_mode_available && publish_disk_inventory "$spool"
+    if installer_mode_available; then publish_disk_inventory "$spool" || return 1; fi
     # Copies the canonical pair off /data — minting only happens the first time, so the
     # fingerprint the console prints stays the machine's one certificate across retries.
     wizard_mint_cert "$spool" 2>/dev/null || true
@@ -2689,8 +2900,7 @@ stage_wizard_spool() { # <spool-dir> -> fingerprint on stdout
 # two card paths sit past their handoff-ack, and the bare keep-reinstall has no card and never waits (#1482).
 wizard_install_begin() { # <spool-dir>
     mutation_lock_acquire firstboot-install
-    touch "$1/installing"
-    chown 1000:1000 "$1/installing" 2>/dev/null || true
+    wizard_spool_publish "$1" installing true
 }
 
 # The switch-off every install path ends on, and where the window closes — held across the poweroff for the reason
@@ -2799,7 +3009,7 @@ firstboot_wizard() {
     export_build_provenance
     image="${PITHEAD_REGISTRY}/pithead-dashboard:${STACK_VERSION}"
     spool="$PWD/data/firstboot"
-    stage_wizard_spool "$spool" >/dev/null
+    stage_wizard_spool "$spool" >/dev/null || error "Could not prepare the setup page files."
 
     local installer=0 operator_preseed=0
     [ -f "$PRESEED_DIR/pithead-config.json" ] && operator_preseed=1
@@ -2809,9 +3019,9 @@ firstboot_wizard() {
         # The pre-fill is derived fresh every boot, never inherited: the stick's spool
         # survives between machines, and machine 2 must not open on machine 1's answers —
         # the same staleness rule the per-session flow-marker clear below enforces.
-        rm -f "$spool/last-attempt.json"
-        if [ "$operator_preseed" -eq 1 ] && jq -c . "$PRESEED_DIR/pithead-config.json" >"$spool/last-attempt.json" 2>/dev/null; then
-            chown 1000:1000 "$spool/last-attempt.json" 2>/dev/null || true
+        rm -f "$spool/last-attempt.json" "$spool/install-attempt.json" \
+            "$spool/auth-mode" "$spool/config-changes.json"
+        if [ "$operator_preseed" -eq 1 ] && wizard_spool_publish "$spool" last-attempt.json jq -c . "$PRESEED_DIR/pithead-config.json" 2>/dev/null; then
             log "Pre-seeded configuration found — the page opens with it filled in."
         elif prefill_from_previous_install "$spool"; then
             log "Found the previous installation's settings on the target disk — the page opens with them filled in (secrets left out)."
@@ -2838,7 +3048,7 @@ firstboot_wizard() {
         # Re-stage per session, and re-derive the fingerprint with it: the accept path removes the
         # spool, so a retry that reused a cert_fp computed once would advertise HTTPS and a
         # fingerprint for a certificate the container can no longer read (#1063).
-        cert_fp=$(stage_wizard_spool "$spool")
+        cert_fp=$(stage_wizard_spool "$spool") || error "Could not prepare the setup page files."
         [ -n "$cert_fp" ] || warn "Could not generate a setup certificate — the setup page will be plain HTTP."
         # Every wizard session starts with CLEAN flow state. The spool lives on this medium's
         # /data, which survives reboots — so a fleet stick that installed machine 1 still
@@ -2912,12 +3122,13 @@ firstboot_wizard() {
             # with keep as its erase policy (restore the config, keep the synced chains), and
             # this shortcut once swallowed it — the machine "keep"-installed a blank disk and
             # the operator's backup never reached it. The archive must be consumed first.
-            if [ "$installer" -eq 1 ] && [ -f "$spool/install-request" ] &&
-                [ "$(cut -f2 "$spool/install-request" 2>/dev/null)" = "keep" ] &&
-                [ ! -f "$spool/config.json" ] && [ ! -f "$spool/restore-archive" ]; then
+            if [ "$installer" -eq 1 ] && wizard_spool_has "$spool" install-request &&
+                [ "$(wizard_spool_read "$spool" install-request 2>/dev/null | cut -f2)" = "keep" ] &&
+                [ ! -e "$spool/config.json" ] && [ ! -L "$spool/config.json" ] &&
+                [ ! -e "$spool/restore-archive" ] && [ ! -L "$spool/restore-archive" ]; then
                 wizard_install_begin "$spool"
                 local irc=0
-                consume_install_request "$spool" || irc=$?
+                consume_install_request "$spool" keep || irc=$?
                 if [ "$irc" -ne 0 ]; then
                     rm -f "$spool/installing"
                     wizard_install_failed_page "$spool" "Reinstall"
@@ -2945,20 +3156,18 @@ firstboot_wizard() {
                 # The rig's card: worker, pool, the control token (#1836 — minted once, shown ONCE: a rig serves
                 # no page after this) and this box's address for the adopt form. No login. The same ack still gates the erase.
                 jq -n --arg w "$rig_worker" --arg s "stratum+tcp://$rig_pool" --arg t "$rig_token" --arg a "$(hostname -I 2>/dev/null | awk '{print $1}')" \
-                    '{role: "rig", worker: $w, stratum: $s, token: $t, address: $a}' >"$spool/handoff.json"
-                chown 1000:1000 "$spool/handoff.json" 2>/dev/null || true
+                    '{role: "rig", worker: $w, stratum: $s, token: $t, address: $a}' | write_handoff_card "$spool"
                 local hwait=0
-                while [ ! -f "$spool/handoff-ack" ] && [ "$hwait" -lt 600 ]; do
+                while ! wizard_spool_has "$spool" handoff-ack && [ "$hwait" -lt 600 ]; do
                     sleep 2
                     hwait=$((hwait + 2))
                 done
-                if [ "$installer" -eq 1 ] && [ -f "$spool/install-request" ]; then
+                if [ "$installer" -eq 1 ] && wizard_spool_has "$spool" install-request; then
                     # Rig onto a disk: identical erase discipline to the coordinator install —
                     # the ack releases it, and a missing human hands the form back intact.
-                    if [ ! -f "$spool/handoff-ack" ]; then
+                    if ! wizard_spool_has "$spool" handoff-ack; then
                         rm -f "$spool/handoff.json" "$spool/install-request" "$PWD/rig.json"
-                        printf 'The rig card was never confirmed — nothing was installed. Submit again when you are ready.' >"$spool/error.txt"
-                        chown 1000:1000 "$spool/error.txt" 2>/dev/null || true
+                        printf 'The rig card was never confirmed — nothing was installed. Submit again when you are ready.' | wizard_spool_publish "$spool" error.txt cat
                         continue
                     fi
                     wizard_install_begin "$spool"
@@ -2970,8 +3179,7 @@ firstboot_wizard() {
                     mount -o remount,rw /boot/efi 2>/dev/null || true
                     if ! install -m 600 "$PWD/rig.json" /boot/efi/pithead-rig.json; then
                         rm -f "$spool/installing" "$spool/handoff.json" "$spool/handoff-ack" "$spool/install-request" "$PWD/rig.json"
-                        printf 'Could not stage the rig settings for the installed system — nothing was installed.' >"$spool/error.txt"
-                        chown 1000:1000 "$spool/error.txt" 2>/dev/null || true
+                        printf 'Could not stage the rig settings for the installed system — nothing was installed.' | wizard_spool_publish "$spool" error.txt cat
                         mutation_lock_release
                         continue
                     fi
@@ -2989,8 +3197,7 @@ firstboot_wizard() {
                 # Run from this medium — or an installed machine choosing the rig role: the
                 # answers stay on THIS machine's /data and the marker closes the wizard window.
                 record_machine_role rig
-                touch "$spool/applied"
-                chown 1000:1000 "$spool/applied" 2>/dev/null || true
+                wizard_spool_publish "$spool" applied true
                 sleep 8 # long enough for the page's poll to show the saved state
                 "$engine" rm -f pithead-wizard >/dev/null 2>&1 || true
                 _console "Rig settings saved: $rig_worker -> stratum+tcp://$rig_pool."
@@ -3021,9 +3228,8 @@ firstboot_wizard() {
                 # on the page, with the attempt kept for editing — not minutes into provisioning.
                 local pf_err
                 if ! pf_err=$(preflight_remote_nodes "$PWD/config.json"); then
-                    printf '%s' "$pf_err" | tail -c 300 >"$spool/error.txt"
-                    jq -c . "$PWD/config.json" >"$spool/last-attempt.json" 2>/dev/null
-                    chown 1000:1000 "$spool/error.txt" "$spool/last-attempt.json" 2>/dev/null || true
+                    printf '%s' "$pf_err" | tail -c 300 | wizard_spool_publish "$spool" error.txt cat
+                    wizard_spool_publish "$spool" last-attempt.json jq -c . "$PWD/config.json" 2>/dev/null
                     # Same bare-keep hazard as a rejected restore: the config candidate is gone,
                     # so a staged keep install-request would install WITHOUT it on the next pass.
                     rm -f "$PWD/config.json" "$spool/install-request"
@@ -3044,9 +3250,8 @@ firstboot_wizard() {
                 # validator's own error() exit cannot take this loop with it, and CONFIG_FILE
                 # (readonly) is aimed by the env var rather than reassigned.
                 if ! post_err=$(PITHEAD_CONFIG_FILE="$PWD/config.json" bash -c "source '${BASH_SOURCE[0]}' && parse_and_validate_config" 2>&1); then
-                    printf '%s' "$post_err" | tail -c 300 >"$spool/error.txt"
-                    jq -c . "$PWD/config.json" >"$spool/last-attempt.json" 2>/dev/null
-                    chown 1000:1000 "$spool/error.txt" "$spool/last-attempt.json" 2>/dev/null || true
+                    printf '%s' "$post_err" | tail -c 300 | wizard_spool_publish "$spool" error.txt cat
+                    wizard_spool_publish "$spool" last-attempt.json jq -c . "$PWD/config.json" 2>/dev/null
                     rm -f "$PWD/config.json" "$spool/install-request"
                     warn "The machine's own defaults collide with this configuration: $post_err"
                     sleep 2
@@ -3065,10 +3270,9 @@ firstboot_wizard() {
                 # credentials must not vanish with it.
                 jq -n --arg u "$dash_user" --arg p "$dash_pass" \
                     --arg d "https://$(hostname).local" --arg s "$stratum_addr" \
-                    '{username:$u,password:$p,dashboard:$d,stratum:$s}' >"$spool/handoff.json"
-                chown 1000:1000 "$spool/handoff.json" 2>/dev/null || true
+                    '{username:$u,password:$p,dashboard:$d,stratum:$s}' | write_handoff_card "$spool"
                 local hwait=0
-                while [ ! -f "$spool/handoff-ack" ] && [ "$hwait" -lt 600 ]; do
+                while ! wizard_spool_has "$spool" handoff-ack && [ "$hwait" -lt 600 ]; do
                     sleep 2
                     hwait=$((hwait + 2))
                 done
@@ -3076,11 +3280,10 @@ firstboot_wizard() {
                     # Combined install+configure (one page on the USB). The ack releases the
                     # ERASE, so a missing human means no install: hand the form back intact
                     # rather than destroy a disk on a timeout.
-                    if [ ! -f "$spool/handoff-ack" ]; then
+                    if ! wizard_spool_has "$spool" handoff-ack; then
                         rm -f "$spool/handoff.json" "$spool/install-request"
-                        printf 'Credentials were never confirmed — nothing was installed. Submit again when you are ready.' >"$spool/error.txt"
-                        jq -c . "$PWD/config.json" >"$spool/last-attempt.json" 2>/dev/null
-                        chown 1000:1000 "$spool/error.txt" "$spool/last-attempt.json" 2>/dev/null || true
+                        printf 'Credentials were never confirmed — nothing was installed. Submit again when you are ready.' | wizard_spool_publish "$spool" error.txt cat
+                        wizard_spool_publish "$spool" last-attempt.json jq -c . "$PWD/config.json" 2>/dev/null
                         rm -f "$PWD/config.json"
                         continue
                     fi
@@ -3111,8 +3314,7 @@ firstboot_wizard() {
                     install -m 600 /dev/null /boot/efi/pithead-setup-wizard || staged_ok=0
                     if [ "$staged_ok" -ne 1 ]; then
                         rm -f "$spool/installing" "$spool/handoff.json" "$spool/handoff-ack" "$spool/install-request"
-                        printf 'Could not stage the configuration for the installed system — nothing was installed.' >"$spool/error.txt"
-                        chown 1000:1000 "$spool/error.txt" 2>/dev/null || true
+                        printf 'Could not stage the configuration for the installed system — nothing was installed.' | wizard_spool_publish "$spool" error.txt cat
                         rm -f "$PWD/config.json" /boot/efi/pithead-restore.enc /boot/efi/pithead-restore-pass /boot/efi/pithead-setup-wizard
                         rm -rf "$carry"
                         mutation_lock_release
@@ -3138,7 +3340,7 @@ firstboot_wizard() {
                     rm -rf "$carry"
                     if [ "$irc" -ne 0 ]; then
                         rm -f /boot/efi/pithead-config.json "$spool/installing" "$spool/handoff.json" "$spool/handoff-ack"
-                        jq -c . "$spool/last-attempt.json" >/dev/null 2>&1 || true
+                        wizard_spool_has "$spool" last-attempt.json || true
                         wizard_install_failed_page "$spool" "Install"
                         continue
                     fi
@@ -3177,22 +3379,20 @@ firstboot_wizard() {
                 # conditional, is at wizard_keep_failed_config's definition and wizard_setup_failed.
                 local kept_copy=0
                 if wizard_setup_failed "$setup_rc"; then kept_copy=1; fi
-                mkdir -p "$spool"
-                chown 1000:1000 "$spool" 2>/dev/null || chmod 777 "$spool"
+                prepare_wizard_spool "$spool" || return 1
                 # The reopened page gets BOTH halves of a usable retry: the reason it failed, and
                 # the configuration that failed — nobody re-pastes a 95-character address the
                 # machine still holds. The accept path wiped the spool, so both are restored here.
-                grep -a "\[ERROR\]" "$setup_log" | tail -n 1 | tr -d '[:cntrl:]' | tail -c 300 >"$spool/error.txt"
-                [ -s "$spool/error.txt" ] || printf 'Provisioning failed — see the machine console for detail.' >"$spool/error.txt"
+                grep -a "\[ERROR\]" "$setup_log" | tail -n 1 | tr -d '[:cntrl:]' | tail -c 300 | wizard_spool_publish "$spool" error.txt cat
+                [ -n "$(wizard_spool_read "$spool" error.txt)" ] || printf 'Provisioning failed — see the machine console for detail.' | wizard_spool_publish "$spool" error.txt cat
                 # Prefill from what THIS run failed on. The copy when it was made, the live file
                 # otherwise — never a config.json.failed left by an earlier attempt, which would
                 # hand the operator back answers they had already moved past.
                 if [ "$kept_copy" -eq 1 ]; then
-                    jq -c . "$PWD/config.json.failed" >"$spool/last-attempt.json" 2>/dev/null || true
+                    wizard_spool_publish "$spool" last-attempt.json jq -c . "$PWD/config.json.failed" 2>/dev/null || true
                 elif [ -f "$PWD/config.json" ]; then
-                    jq -c . "$PWD/config.json" >"$spool/last-attempt.json" 2>/dev/null || true
+                    wizard_spool_publish "$spool" last-attempt.json jq -c . "$PWD/config.json" 2>/dev/null || true
                 fi
-                chown 1000:1000 "$spool/error.txt" "$spool/last-attempt.json" 2>/dev/null || true
                 rm -f "$setup_log"
                 break # outer loop re-mints a token and restarts the wizard container
             fi
@@ -3222,28 +3422,31 @@ setup_again_mode() { [ -n "${PITHEAD_SETUP_AGAIN:-}" ]; }
 # published outside a set-up-again boot: the file's presence IS the page's signal.
 publish_saved_role() { # <spool-dir>
     setup_again_mode || return 0
-    local spool="$1" role tmp="$1/.saved-role.json.$$" rtmp="$1/.rig-defaults.json.$$"
+    local spool="$1" role
     role=$(machine_role)
     if [ "$role" = rig ] && [ -f "$PWD/rig.json" ]; then
-        jq '{role: "rig", pool: (.pool // ""), worker: (.worker // "")}' "$PWD/rig.json" >"$tmp" 2>/dev/null ||
-            jq -n '{role: "rig"}' >"$tmp"
-        jq '{pool, worker}' "$tmp" >"$rtmp" 2>/dev/null && mv -f "$rtmp" "$spool/rig-defaults.json" || rm -f "$rtmp"
+        wizard_spool_publish "$spool" saved-role.json jq \
+            '{role: "rig", pool: (.pool // ""), worker: (.worker // "")}' "$PWD/rig.json" || return 1
+        wizard_spool_publish "$spool" rig-defaults.json jq '{pool, worker}' "$PWD/rig.json"
     else
-        jq -n --arg r "$role" '{role: $r}' >"$tmp"
-        if [ ! -f "$spool/last-attempt.json" ] && [ -f "$PWD/config.json" ]; then
-            strip_config_secrets "$PWD/config.json" >"$spool/last-attempt.json" 2>/dev/null ||
-                rm -f "$spool/last-attempt.json"
+        wizard_spool_publish "$spool" saved-role.json jq -n --arg r "$role" '{role: $r}' || return 1
+        if [ ! -e "$spool/last-attempt.json" ] && [ -f "$PWD/config.json" ]; then
+            wizard_spool_publish "$spool" last-attempt.json strip_config_secrets "$PWD/config.json"
         fi
     fi
-    chown 1000:1000 "$tmp" "$spool/rig-defaults.json" "$spool/last-attempt.json" 2>/dev/null || true
-    mv -f "$tmp" "$spool/saved-role.json"
+}
+
+# The wizard's credentials card, both roles: the coordinator's login, or (since #1836) the rig's
+# control token. The shared spool publisher creates it privately and replaces any stale card.
+write_handoff_card() { # <spool-dir>; the card's JSON on stdin
+    wizard_spool_publish "$1" handoff.json cat
 }
 
 # "Keep it": the page wrote keep-role. Nothing on /data was touched — the marker, rig.json and
 # config.json are exactly as this boot found them — so firstboot_wizard returns, the unit ends,
 # and pithead-boot runs the boot the machine would have taken from the default entry.
 wizard_keep_requested() { # <spool-dir>
-    setup_again_mode && [ -f "$1/keep-role" ] || return 1
+    setup_again_mode && wizard_spool_has "$1" keep-role || return 1
     rm -f "$1/keep-role"
     _console "Setup closed: the saved settings are kept. The machine is starting as it was."
 }
@@ -3599,19 +3802,19 @@ provision_local_miner() {
 
 # --- the rig role's boot leg (one stick, three machines) -------------------------------------
 # A rig has no config.json, no containers, no dashboard and no chains: its entire product is the
-# miner. So it rides the SAME leg the Both role rides, sourced from rig.json instead of
-# config.json — one invocation contract, one prebuilt, one appliance mode.
+# miner. It shares the Both provisioning leg, with rig.json as its input.
 
 # The rig's control token (#1836): 32 hex, minted once and kept in rig.json beside the answers
 # it belongs to, so the config rebuilt at every boot carries the token the operator pasted into
 # the coordinator's adopt form. The token is this function's ONLY stdout — callers capture it.
 rig_access_token() {
-    local tok tmp="$PWD/.rig.json.tmp"
+    local tok tmp
     tok=$(jq -r '.access_token // ""' "$PWD/rig.json" 2>/dev/null)
     if ! [[ "$tok" =~ ^[0-9a-f]{32}$ ]]; then
         tok=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
         [[ "$tok" =~ ^[0-9a-f]{32}$ ]] || return 1
-        if ! { jq --arg t "$tok" '. + {access_token: $t}' "$PWD/rig.json" >"$tmp" 2>/dev/null &&
+        tmp=$(mktemp "$PWD/.rig.json.XXXXXXXXXX") || return 1
+        if ! { (umask 077 && jq --arg t "$tok" '. + {access_token: $t}' "$PWD/rig.json" >"$tmp" 2>/dev/null) &&
             chmod 600 "$tmp" && mv -f "$tmp" "$PWD/rig.json"; }; then
             rm -f "$tmp"
             return 1
@@ -6612,10 +6815,8 @@ wizard_mint_cert() { # <spool-dir>  -> prints the fingerprint
     d=$(appliance_tls_dir)
     fp=$(appliance_mint_cert) || return 1
     # The container reads its copy from the spool; the canonical pair stays on /data.
-    cp "$d/wizard.crt" "$spool/wizard.crt" 2>/dev/null || return 1
-    cp "$d/wizard.key" "$spool/wizard.key" 2>/dev/null || return 1
-    chown 1000:1000 "$spool/wizard.key" "$spool/wizard.crt" 2>/dev/null || true
-    chmod 640 "$spool/wizard.key" 2>/dev/null || true
+    wizard_spool_publish "$spool" wizard.crt cat "$d/wizard.crt" || return 1
+    wizard_spool_publish "$spool" wizard.key cat "$d/wizard.key" || return 1
     printf '%s' "$fp"
 }
 
@@ -6631,7 +6832,7 @@ ensure_appliance_dashboard_password() { # [spool-dir]
     [ -z "$(jq -r '.dashboard.auth.password // ""' "$CONFIG_FILE")" ] || return 0
     # The operator's explicit "no login" is honoured — an empty password is also what "not
     # chosen" looks like, so the choice cannot live in the config and rides beside it.
-    if [ -n "${1:-}" ] && [ "$(cat "$1/auth-mode" 2>/dev/null)" = "none" ]; then
+    if [ -n "${1:-}" ] && [ "$(wizard_spool_read "$1" auth-mode 2>/dev/null)" = "none" ]; then
         warn "Dashboard login disabled at the operator's request — anyone on this network can open it."
         return 0
     fi
@@ -7501,6 +7702,51 @@ gh_release_fetch() { # <owner/repo>; sets GH_RELEASE_JSON on success, GH_RELEASE
     return 1
 }
 
+render_worker_read_tokens() { # <masked-dir>; dashboard-only RigForge credentials, never browser config
+    local LC_ALL=C mdir="$1" final rows tmp
+    final="$mdir/worker-read-tokens.json"
+    rows=$(mktemp "$mdir/.worker-read-rows.XXXXXX") || {
+        rm -f "$final"
+        return 1
+    }
+    tmp=$(mktemp "$mdir/.worker-read-tokens.XXXXXX") || {
+        rm -f "$rows" "$final"
+        return 1
+    }
+    chmod 600 "$rows" "$tmp" || {
+        rm -f "$rows" "$tmp" "$final"
+        return 1
+    }
+    if ! jq -c '(.workers.api_port // 8080) as $default
+        | (.workers.list // [])[]
+        | {name: (.name // ""), host: (.host // ""), token: (.token | strings),
+           port: (.port // $default)}' "$CONFIG_FILE" |
+        while IFS= read -r row; do
+            name=$(printf '%s' "$row" | jq -r '.name')
+            host=$(printf '%s' "$row" | jq -r '.host')
+            token=$(printf '%s' "$row" | jq -r '.token')
+            port=$(printf '%s' "$row" | jq -r '.port')
+            [ -n "$name" ] && [ -n "$host" ] && [ -n "$token" ] || continue
+            [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || continue
+            [ "${#token}" -ge 32 ] && [[ "$token" != *[![:graph:]]* ]] || continue
+            read=$(hmac_sha256_hex "$token" 'rigforge:api-read:v1') || exit 1
+            printf '%s\n%s\n%s\n%s\n' "$name" "$host" "$port" "$read" |
+                jq -Rn '{name: input, host: input, port: (input | tonumber), read_token: input}' >>"$rows" || exit 1
+        done; then
+        rm -f "$rows" "$tmp" "$final"
+        return 1
+    fi
+    jq -s . "$rows" >"$tmp" && chmod 600 "$tmp" && mv "$tmp" "$final"
+    local rc=$?
+    rm -f "$rows" "$tmp"
+    if [ "$rc" -eq 0 ]; then
+        chown "${APP_UID:-1000}:${APP_GID:-1000}" "$final" 2>/dev/null ||
+            sudo chown "${APP_UID:-1000}:${APP_GID:-1000}" "$final" || rc=1
+    fi
+    [ "$rc" -eq 0 ] || rm -f "$final"
+    return "$rc"
+}
+
 # Render the pre-masked prefill copy (#440): the live config with every SET secret leaf replaced
 # by the {"__secret__":true} sentinel, written atomically to <control-dir>/masked/config.json.
 # The dashboard serves the Configuration form from THIS file (mounted read-only) — the raw
@@ -7545,10 +7791,15 @@ render_masked_config() { # <control-dir>
               if (. // "") == "" then . else {"__secret__": true} end)
           else . end' "$CONFIG_FILE" >"$tmp" 2>/dev/null; then
         chmod 644 "$tmp" 2>/dev/null || true
-        mv "$tmp" "$mdir/config.json" 2>/dev/null ||
+        if mv "$tmp" "$mdir/config.json" 2>/dev/null; then
+            render_worker_read_tokens "$mdir" ||
+                warn "Could not render the per-rig read credentials — protected RigForge feeds will stay unavailable."
+        else
+            rm -f "$tmp" "$mdir/worker-read-tokens.json"
             warn "Could not write $mdir/config.json — the dashboard editor prefill may be stale."
+        fi
     else
-        rm -f "$tmp"
+        rm -f "$tmp" "$mdir/worker-read-tokens.json"
         warn "Could not render the masked config copy — the dashboard editor prefill may be stale."
     fi
 }
@@ -8621,6 +8872,33 @@ sha256_hex() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum | cut -d' ' -f1
     else shasum -a 256 | cut -d' ' -f1; fi
+}
+
+# HMAC-SHA256 without putting the key in a child process's argv. ACCESS_TOKEN is header-clean ASCII,
+# so bash can hold it losslessly; only padded key bytes flow to openssl on stdin.
+hmac_sha256_hex() { # <key> <message>
+    local key="$1" message="$2" key_hex="" byte oct i pad
+    if [ "${#key}" -gt 64 ]; then
+        key_hex=$(printf '%s' "$key" | openssl dgst -sha256 -binary | od -An -v -tx1 | tr -d ' \n') || return 1
+    else
+        key_hex=$(printf '%s' "$key" | od -An -v -tx1 | tr -d ' \n') || return 1
+    fi
+    while [ "${#key_hex}" -lt 128 ]; do key_hex="${key_hex}00"; done
+    _hmac_pad() {
+        pad="$1"
+        for ((i = 0; i < 128; i += 2)); do
+            byte=$((16#${key_hex:i:2} ^ pad))
+            printf -v oct '%03o' "$byte"
+            printf "\\$oct"
+        done
+    }
+    {
+        _hmac_pad 92
+        {
+            _hmac_pad 54
+            printf '%s' "$message"
+        } | openssl dgst -sha256 -binary
+    } | openssl dgst -sha256 | sed 's/^.*= //'
 }
 
 # bcrypt-hash a dashboard password with the PINNED Caddy image (read straight from docker-compose.yml
@@ -12059,11 +12337,11 @@ control_worker_apply() { # <claimed-file> <id> <actor> <control-dir>
     control_write_result "$results" "$id" "$(jq -n --arg w "$worker" '{status:"running",worker:$w,ts:(now|floor)}')"
     # POST the change to the rig's control API. Direct LAN dial (like the read path) — NOT Tor: the rig
     # is an operator-set host on the mining LAN, not clearnet. The token rides one header, never the
-    # URL, the result, or the audit log.
+    # URL, process argv, the result, or the audit log.
     local url="http://$host:$cport/apply" bodyf="$cdir/staged/.$id.body" code
-    if ! code=$(curl -sS -o "$bodyf" -w '%{http_code}' --max-time 15 --max-filesize "$CURL_CAP_SMALL" \
-        -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
-        --data "$changes" "$url" 2>/dev/null); then
+    if ! code=$(printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" |
+        curl -sS -o "$bodyf" -w '%{http_code}' --max-time 15 --max-filesize "$CURL_CAP_SMALL" \
+            --config - -H "Content-Type: application/json" --data "$changes" "$url" 2>/dev/null); then
         rm -f "$bodyf"
         _wa_fail "could not reach worker '$worker' control API at $host:$cport — nothing was applied."
         return 0
@@ -12091,8 +12369,9 @@ control_worker_apply() { # <claimed-file> <id> <actor> <control-dir>
     while [ "$SECONDS" -lt "$deadline" ]; do
         sleep 2
         sbody="$cdir/staged/.$id.status"
-        if ! scode=$(curl -sS -o "$sbody" -w '%{http_code}' --max-time 10 --max-filesize "$CURL_CAP_SMALL" \
-            -H "Authorization: Bearer $token" "http://$host:$cport/status" 2>/dev/null); then
+        if ! scode=$(printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" |
+            curl -sS -o "$sbody" -w '%{http_code}' --max-time 10 --max-filesize "$CURL_CAP_SMALL" \
+                --config - "http://$host:$cport/status" 2>/dev/null); then
             rm -f "$sbody"
             continue
         fi
@@ -12109,8 +12388,11 @@ control_worker_apply() { # <claimed-file> <id> <actor> <control-dir>
         case "$status" in
         applied | rejected | rolled_back | failed)
             # reason is rig-supplied (attacker-influenceable); cap it before it is stored/rendered.
-            reason=$(jq -r '.reason // ""' "$sbody" | head -c 500)
-            ckeys=$(jq -c '.changed_keys // []' "$sbody")
+            if ! reason=$(jq -r '(.reason // "") | tostring | .[:500]' "$sbody") ||
+                ! ckeys=$(jq -c '.changed_keys // []' "$sbody"); then
+                rm -f "$sbody"
+                continue
+            fi
             rm -f "$sbody"
             control_write_result "$results" "$id" "$(jq -n --arg s "$status" --arg c "$change_id" --arg w "$worker" --argjson k "$ckeys" --arg r "$reason" \
                 '{status:$s,change_id:$c,worker:$w,changed_keys:$k,reason:(if $r=="" then null else $r end),ts:(now|floor)}')"
@@ -12203,11 +12485,13 @@ control_worker_upgrade() { # <claimed-file> <id> <actor> <control-dir>
     fi
     control_write_result "$results" "$id" "$(jq -n --arg w "$worker" --arg v "$tag" '{status:"running",worker:$w,version:$v,ts:(now|floor)}')"
     # POST the upgrade to the rig's control API — direct LAN dial like worker-apply, NOT Tor. The
-    # body carries the HOST-derived tag only; the token rides one header, never the URL or result.
+    # body carries the HOST-derived tag only; the token rides one stdin-fed header, never argv,
+    # the URL, or the result.
     local url="http://$host:$cport/upgrade" bodyf="$cdir/staged/.$id.body" code
-    if ! code=$(curl -sS -o "$bodyf" -w '%{http_code}' --max-time 15 --max-filesize "$CURL_CAP_SMALL" \
-        -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
-        --data "$(jq -n --arg v "$tag" '{version:$v}')" "$url" 2>/dev/null); then
+    if ! code=$(printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" |
+        curl -sS -o "$bodyf" -w '%{http_code}' --max-time 15 --max-filesize "$CURL_CAP_SMALL" \
+            --config - -H "Content-Type: application/json" \
+            --data "$(jq -n --arg v "$tag" '{version:$v}')" "$url" 2>/dev/null); then
         rm -f "$bodyf"
         _wu_fail "could not reach worker '$worker' control API at $host:$cport — nothing was changed."
         return 0
@@ -12238,8 +12522,9 @@ control_worker_upgrade() { # <claimed-file> <id> <actor> <control-dir>
     while [ "$SECONDS" -lt "$deadline" ]; do
         sleep 5
         sbody="$cdir/staged/.$id.status"
-        if ! scode=$(curl -sS -o "$sbody" -w '%{http_code}' --max-time 10 --max-filesize "$CURL_CAP_SMALL" \
-            -H "Authorization: Bearer $token" "http://$host:$cport/status" 2>/dev/null); then
+        if ! scode=$(printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "$token" | jq -Rs .)" |
+            curl -sS -o "$sbody" -w '%{http_code}' --max-time 10 --max-filesize "$CURL_CAP_SMALL" \
+                --config - "http://$host:$cport/status" 2>/dev/null); then
             rm -f "$sbody"
             continue
         fi
@@ -12257,7 +12542,10 @@ control_worker_upgrade() { # <claimed-file> <id> <actor> <control-dir>
         case "$status" in
         applied | noop | throttled | rolled_back | failed)
             # reason is rig-supplied (attacker-influenceable); cap it before it is stored/rendered.
-            reason=$(jq -r '.reason // ""' "$sbody" | head -c 500)
+            if ! reason=$(jq -r '(.reason // "") | tostring | .[:500]' "$sbody"); then
+                rm -f "$sbody"
+                continue
+            fi
             rm -f "$sbody"
             # Legacy remap: a pre-rigforge#320 rig (≤ v1.11.2, the supported floor) collapses its
             # 6h anti-beacon throttle into failed+"throttled — ..." free text, and retry-later

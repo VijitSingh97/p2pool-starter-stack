@@ -32,3 +32,5 @@ Config *values* (every `config.json` key): [`docs/configuration.md`](../configur
 each test tier proves and where a new test goes: [`testing-strategy.md`](testing-strategy.md) /
 [`testing-guide.md`](testing-guide.md). Release mechanics: [`releasing.md`](releasing.md). The
 service graph and privacy model: [`docs/architecture.md`](../architecture.md).
+
+Wizard host/page file publication and input snapshots share `lib/pithead/11a-wizard-spool.sh`; the protocol is documented in [appliance-wizard.md](appliance-wizard.md#host-and-page-spool-files).
