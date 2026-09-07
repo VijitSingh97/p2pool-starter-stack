@@ -336,6 +336,18 @@ run_pending >/dev/null
 assert_eq "host-approved price-feed change applies" "$(jq -r '.status' "$RESULTS/$UUID3.json")" "applied"
 assert_eq "approved price feed landed" "$(jq -r '.dashboard.energy.price_feed' "$C/config.json")" "true"
 
+# Scalar arrays have one dashboard field path. The host audit must collapse element indexes to that
+# same path or the history reconciler will mislabel this approved dashboard edit as a later host edit.
+jq -n --slurpfile live "$C/config.json" --arg id "$UUID3" \
+    '{id:$id,action:"preview",actor:"admin",config:($live[0] | .notifications.webhooks=["https://example.com/hook"])}' >"$REQS/$UUID3.json"
+run_pending >/dev/null
+jq -n --arg id "$UUID3" '{id:$id,action:"commit",actor:"admin",approval:{payout_suffixes:{}}}' >"$REQS/$UUID3.json"
+arm_fake_telegram
+run_pending >/dev/null
+assert_eq "approved webhook edit applies" "$(jq -r '.status' "$RESULTS/$UUID3.json")" "applied"
+assert_eq "scalar-array audit uses the dashboard field path" \
+    "$(jq -r 'select(.action=="commit-approved") | .keys' "$AUDIT" | tail -n 1)" "notifications.webhooks"
+
 echo "== unit: every rendered fixed secret and variable secret stays out of change text (#1959) =="
 for secret_key in DASHBOARD_AUTH_HASH_B64 TELEGRAM_BOT_TOKEN XMRIG_API_TOKEN \
     MONERO_NODE_USERNAME MONERO_NODE_PASSWORD MONERO_VIEW_KEY TARI_VIEW_KEY \
