@@ -155,8 +155,7 @@ expect_min "tecnativa socket-proxy pinned by digest (both proxies)" "tecnativa/d
 expect_present "caddy pinned by digest" "caddy:2.11.4@sha256:df7f1c2fb114453b951de51a98efc010db1655a92c2e86be6706714e2417a78d"
 expect_present "tari node pinned by digest" "minotari_node:v5.3.1-mainnet@sha256:824fd6ec21d618805317d7eede374d6782906eeae17d2fc8aaad4df6205f94e0"
 
-# Per-service precision checks via the JSON render (cleaner than grepping the flat YAML): the
-# Docker socket proxies must stay least-privilege, and the Tari probe must self-match safely.
+# Per-service precision checks via the JSON render.
 JSON="$(docker compose --env-file "$ENV_FILE" -f "$ROOT/docker-compose.yml" config --format json 2>/dev/null)"
 jq_assert() { # <label> <filter> [json, default $JSON]
     if jq -e "$2" <<<"${3-$JSON}" >/dev/null 2>&1; then echo "  ✓ $1"; else
@@ -183,6 +182,7 @@ jq_assert "both socket proxies publish only to the host loopback" \
 # No mining service may sit on proxy_net (keep the isolation one-directional).
 jq_assert "mining services are not on proxy_net" \
     '[.services["monerod"], .services["tari"], .services["p2pool"], .services["xmrig-proxy"]] | all((.networks // {} | keys) | any(. == "proxy_net") | not)'
+jq_assert "p2pool disables its persistent file log (#1989)" '.services.p2pool.command | index("--no-log-file") != null'
 # The Tari probe uses the [m] bracket so grep can't match its own argv (a false-healthy bug).
 jq_assert "tari healthcheck uses the [m]inotari self-match guard" \
     '(.services.tari.healthcheck.test | tostring) | contains("[m]inotari")'
