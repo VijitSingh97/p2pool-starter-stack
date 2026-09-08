@@ -7,15 +7,14 @@
 // is what actually authorizes appending a brand-new workers.list[] descriptor; this only builds and
 // sends the proposal.
 //
-// One caveat carried over from every other config.json-only write (dashboard.energy is the
-// existing example): a commit that changes nothing in .env doesn't recreate any container, so the
-// dashboard's own cached worker list picks up the new rig only once the dashboard itself restarts
-// — the panel says so rather than claiming the rig is editable the instant the request returns.
+// The worker reader reopens the directory-mounted config and credential map on every probe, so an
+// applied append becomes visible on the next worker poll without restarting the dashboard.
 
 import { pollResult } from "./configview.mjs";
 import { Component, html } from "./preact.mjs";
 import {
   buildAdoptedConfig,
+  DEFAULT_API_PORT,
   DEFAULT_CONTROL_PORT,
   hostIsInternal,
   validateAdoptFields,
@@ -28,6 +27,7 @@ export class AdoptRigForm extends Component {
     super(props);
     this.state = {
       host: props.ip || "",
+      apiPort: DEFAULT_API_PORT,
       controlPort: DEFAULT_CONTROL_PORT,
       token: "",
       busy: false,
@@ -36,8 +36,8 @@ export class AdoptRigForm extends Component {
   }
 
   async adopt() {
-    const { host, controlPort, token } = this.state;
-    const validation = validateAdoptFields(host, controlPort, token);
+    const { host, apiPort, controlPort, token } = this.state;
+    const validation = validateAdoptFields(host, apiPort, controlPort, token);
     if (validation) {
       this.setState({ result: { status: "error", error: validation } });
       return;
@@ -58,7 +58,14 @@ export class AdoptRigForm extends Component {
         });
         return;
       }
-      const proposed = buildAdoptedConfig(liveConfig, this.props.name, host, controlPort, token);
+      const proposed = buildAdoptedConfig(
+        liveConfig,
+        this.props.name,
+        host,
+        apiPort,
+        controlPort,
+        token,
+      );
       let res = await fetch("/api/control/preview", {
         method: "POST",
         headers: CONTROL_HEADERS,
@@ -99,7 +106,7 @@ export class AdoptRigForm extends Component {
   }
 
   render() {
-    const { host, controlPort, token, busy, result } = this.state;
+    const { host, apiPort, controlPort, token, busy, result } = this.state;
     return html`
       <div class="adopt-rig">
         <p class="text-muted text-xs">
@@ -111,6 +118,11 @@ export class AdoptRigForm extends Component {
           <span class="config-field-name">host</span>
           <input type="text" disabled=${busy} value=${host} placeholder="e.g. 192.168.1.10"
               onInput=${(e) => this.setState({ host: e.target.value })} />
+        </label>
+        <label class="config-field">
+          <span class="config-field-name">api_port</span>
+          <input type="number" disabled=${busy} value=${apiPort}
+              onInput=${(e) => this.setState({ apiPort: e.target.value })} />
         </label>
         <label class="config-field">
           <span class="config-field-name">control_port</span>
@@ -135,8 +147,7 @@ export class AdoptRigForm extends Component {
 function AdoptStatus({ result }) {
   if (result.status === "applied") {
     return html`<p class="text-small mt-1 status-ok">
-      Saved to config.json. The dashboard reads its worker list once at startup, so this editor may
-      not appear until it restarts — the next config apply, upgrade, or a manual restart picks it up.
+      Saved to config.json. The dashboard will use the adopted rig on its next worker poll.
     </p>`;
   }
   return html`<p class="text-small mt-1 status-bad">${result.error || result.status}</p>`;

@@ -37,6 +37,7 @@ setup() {
     check_stratum_exposure setup # WARN-only: public-IP host => unauthenticated stratum :3333 exposed (#113)
     load_preserved_state
     resolve_dashboard_host "interactive"
+    reconcile_appliance_hostname
     prepare_directories
     render_env    # bootstrap .env so Tor (and compose var substitution) have what they need
     provision_tor # populates the real onion addresses

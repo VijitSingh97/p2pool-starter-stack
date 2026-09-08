@@ -230,7 +230,7 @@ Image=$reg/pithead-p2pool:$ver
 Network=mining.network
 IP=$prefix.28
 Environment=P2POOL_FLAGS=$(_qenv P2POOL_FLAGS)
-Exec=--host $(_qenv MONERO_NODE_HOST) --rpc-port $(_qenv MONERO_RPC_PORT) --rpc-login $(_qenv MONERO_NODE_USERNAME):$(_qenv MONERO_NODE_PASSWORD) --zmq-port $(_qenv MONERO_ZMQ_PORT) --wallet $(_qenv MONERO_WALLET_ADDRESS) --merge-mine tari://$(_qenv TARI_GRPC_ADDRESS) $(_qenv TARI_WALLET_ADDRESS) --onion-address $(_qenv P2POOL_ONION_ADDRESS) --local-api --stratum 0.0.0.0:3333 --p2p 0.0.0.0:$(_qenv P2POOL_PORT) --data-api /stats
+Exec=--no-log-file --host $(_qenv MONERO_NODE_HOST) --rpc-port $(_qenv MONERO_RPC_PORT) --rpc-login $(_qenv MONERO_NODE_USERNAME):$(_qenv MONERO_NODE_PASSWORD) --zmq-port $(_qenv MONERO_ZMQ_PORT) --wallet $(_qenv MONERO_WALLET_ADDRESS) --merge-mine tari://$(_qenv TARI_GRPC_ADDRESS) $(_qenv TARI_WALLET_ADDRESS) --onion-address $(_qenv P2POOL_ONION_ADDRESS) --local-api --stratum 0.0.0.0:3333 --p2p 0.0.0.0:$(_qenv P2POOL_PORT) --data-api /stats
 Volume=$(_qenv P2POOL_DATA_DIR):/home/ubuntu
 Volume=$(_qenv P2POOL_DATA_DIR)/stats:/stats
 Volume=/dev/hugepages:/dev/hugepages

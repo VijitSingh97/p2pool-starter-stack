@@ -224,7 +224,7 @@ check_appliance_cert() {
     esac
 
     # Everything else appliance_site_names() adds beyond the base — always empty when
-    # dashboard.host is pinned (appliance_site_names' own auto-expansion guard), so a pin never
+    # dashboard.host is a DNS/IP pin (not a label), so such a pin never
     # even reaches the engine-dependent leniency below: there is nothing here it would need to
     # excuse. This is the only category that can contain a compose-bridge gateway.
     local tok extras=""

@@ -64,12 +64,11 @@ readonly FIRST_RUN_MARKER=".pithead-first-run-done"
 # ${USER:-$(id -un)}: USER is a login-session convention, not a guarantee — systemd services and
 # containers may run without it, and set -u turns the reference into a fatal error at source time.
 readonly REAL_USER="${SUDO_USER:-${USER:-$(id -un)}}"
-# Where operator messages send a reader for the long version (#1024). A release bundle carries the
-# CLI, the compose file, the config files and cosign.pub — deliberately no docs/, so a message that
-# names a repo path resolves to nothing on the installs that make up most of the fleet. Point at the
-# published copy instead: `main` is the released-only branch, so it is the documentation for the
-# version an operator is actually running. Bare paths are still fine in COMMENTS, which only ever
-# get read inside a checkout that has them.
+# Where operator messages send a reader for the long version (#1024). A release bundle carries only
+# a curated operator-doc subset, so an arbitrary repo path is not guaranteed to exist on an install.
+# Point at the published copy instead: `main` is the released-only branch, so it is the documentation
+# for the version an operator is actually running. Bare paths are still fine in COMMENTS, which only
+# ever get read inside a checkout that has them.
 readonly DOCS_URL="https://github.com/p2pool-starter-stack/pithead/blob/main"
 
 # Non-root uid:gid the BUILT images run their main process as (#255). pithead owns the data dirs,

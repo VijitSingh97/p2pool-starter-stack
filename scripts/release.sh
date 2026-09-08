@@ -21,7 +21,7 @@
 #   scripts/release.sh [options]              (or: make release ARGS="...")
 #
 # Options:
-#   --dry-run            Preflight + print the full plan (images, tags, manifest). No build/push/publish.
+#   --dry-run            Build the local CLI, run preflight, and print the plan. No image build/push/publish.
 #   --rc N               Staging release-candidate number (default: 1) -> :vX.Y.Z-rc.N.
 #   --skip-tests         Skip `make test` (NOT recommended; the gate is what makes a release trustworthy).
 #   --skip-integration   Skip the #54 live integration matrix (still runs `make test`).
@@ -363,9 +363,10 @@ check_verifier_image() {
 
 preflight() {
     stage "1/7  Preflight"
-
     REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || die "Not inside a git repository."
     cd "$REPO_ROOT"
+    log "Building the generated pithead CLI"
+    bash scripts/build-pithead.sh || die "Could not build the pithead CLI."
     [ -f VERSION ] && [ -f docker-compose.yml ] || die "VERSION / docker-compose.yml not found at the repo root."
     command -v docker >/dev/null 2>&1 || die "docker is required."
     docker buildx version >/dev/null 2>&1 || die "docker buildx is required (for digest-level promotion)."
@@ -387,7 +388,6 @@ preflight() {
     GIT_COMMIT="$(git rev-parse HEAD)"
     GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
     BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
     if [ "$ALLOW_DIRTY" -eq 0 ] && [ -n "$(git status --porcelain)" ]; then
         die "Working tree is dirty. Commit/stash first, or pass --allow-dirty."
     fi
@@ -733,16 +733,15 @@ compose_build_mounts() {
 # ./build/* path the compose mounts at runtime (compose_build_mounts) IS shipped, so the pulled
 # containers find the config templates they render at setup.
 make_bundle() {
-    # Unpacks to a versionless "pithead/" dir so the documented quick start can `cd pithead` and so a
-    # later bundle re-download upgrades it in place. Ships BOTH config templates: config.minimal.json
-    # (basic — just the two wallet addresses, the documented quick-start config) and the advanced
-    # example. The bundle README + the repo quick start both point at the basic one (matching setup's
-    # own "copy config.minimal.json" guidance); the advanced example is "for more options".
+    # Unpacks to a versionless "pithead/" dir. Ships only the operator docs needed to run the stack.
     local out="$1" d="$WORKDIR/pithead"
     mkdir -p "$d"
-    # cosign.pub rides in the bundle (#376) so a release install (no git checkout) has the verifier
-    # next to pithead; preflight guarantees it exists on a real run.
     cp pithead pithead-completion.bash VERSION docker-compose.yml config.minimal.json config.reference.json config.core-keys.json cosign.pub "$d/" 2>/dev/null || true
+    mkdir -p "$d/docs"
+    local doc docs_url="https://github.com/p2pool-starter-stack/pithead/blob/$TAG"
+    for doc in docs/{configuration,dashboard,faq,getting-started,hardware,monitoring,operations,privacy,telegram,workers}.md; do
+        sed -E -e "s|]\\(\\.\\./([^):]+)\\)|]($docs_url/\\1)|g" -e "s|]\\(([^#./][^):]*)\\)|]($docs_url/docs/\\1)|g" -e "s|]\\(\\./([^):]+)\\)|]($docs_url/docs/\\1)|g" -e "s|(src(set)?=\")\\./images/|\\1https://raw.githubusercontent.com/p2pool-starter-stack/pithead/$TAG/docs/images/|g" "$doc" >"$d/$doc"
+    done
     local m
     while IFS= read -r m; do
         [ -e "$m" ] || {
@@ -752,7 +751,7 @@ make_bundle() {
         mkdir -p "$d/$(dirname "$m")"
         cp -R "$m" "$d/$(dirname "$m")/"
     done < <(compose_build_mounts docker-compose.yml)
-    printf 'Pithead %s — pinned install bundle (images pulled from %s, no local build).\n\nQuick start:\n  1. cp config.minimal.json config.json   # then set your Monero + Tari payout addresses\n     (more options: config.reference.json)\n  2. ./pithead setup\n\nThere are no build contexts here, so pithead pulls the published %s images instead of building.\n' \
+    printf 'Pithead %s — pinned install bundle (images pulled from %s, no local build).\n\nQuick start:\n  1. cp config.minimal.json config.json   # then set your Monero + Tari payout addresses\n     (more options: config.reference.json)\n  2. ./pithead setup\n\nOffline operator guides are in docs/; start with docs/getting-started.md.\nThere are no build contexts here, so pithead pulls the published %s images instead of building.\n' \
         "$TAG" "$REGISTRY" "$TAG" >"$d/README.txt"
     if [ "$DRY_RUN" -eq 1 ]; then
         printf '   %s[dry-run]%s would tar -> %s\n' "$C_YELLOW" "$C_RESET" "$out"

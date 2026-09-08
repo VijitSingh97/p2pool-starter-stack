@@ -1,16 +1,6 @@
 # --- Backup / Restore ---
-# Protect the irreplaceable bits: config.json, .env (secrets), the Caddyfile, the Tor data dir
-# (onion service keys), and the dashboard data dir (its DB never re-syncs). The blockchains do
-# re-sync, so they're excluded by default; pass --with-chains to fold in Monero/Tari/P2Pool data.
-#
-# The two files a backup archive cannot be worth taking without (#1059/#1244): config.json and
-# .env carry the node credentials and secrets, unlike every optional item stack_backup adds
-# below them (Caddyfile, the Tor data dir, the dashboard dir all get a plain `[ -f ]`/`[ -d ]`
-# guard already — these two didn't). Called BEFORE the disk-space check and before anything
-# touches the running stack, so a refusal here leaves the box exactly as it was, the same
-# promise the space check already makes. `-f` (not `-e`) so a symlink dangling at this instant
-# refuses too, the same as one dangling at tar time would. A function, not inline, so it is
-# testable at tier 1 without driving the whole backup flow.
+# Protect config, secrets, onion keys, and the dashboard DB; blockchains re-sync and are excluded
+# unless --with-chains is set. Required-file checks precede disk and stack changes (#1059/#1244).
 backup_require_items() { # <item>...
     local _req
     for _req in "$@"; do
@@ -43,6 +33,27 @@ backup_diagnose_items() { # <tar -C dir> <item>...
     done
 }
 
+# Isolate stack_up's exit-based failures so backup can retry and report both outcomes.
+backup_stack_up() (
+    trap - ERR
+    stack_up
+)
+backup_restart_stack() {
+    backup_stack_up && return 0
+    if is_appliance; then
+        warn "The stack did not restart after the backup — retrying through the appliance boot path."
+        # The boot unit owns its own mutation window and carries the appliance image registry.
+        mutation_lock_release
+        sudo systemctl restart pithead-boot.service && return 0
+        warn "The appliance boot path also failed to restart the stack."
+        return 1
+    fi
+    warn "The stack did not restart after the backup — retrying the normal startup path once."
+    backup_stack_up && return 0
+    warn "The stack failed to restart after two attempts."
+    return 1
+}
+
 stack_backup() {
     local with_chains=0 assume_yes=0 was_running=0 no_encrypt=0
     for arg in "$@"; do
@@ -57,14 +68,8 @@ stack_backup() {
     require_env
     parse_and_validate_config
 
-    # Resolve the encryption passphrase up front, before anything is touched. The archive holds
-    # the stack's full secret material (.env, onion private keys, the dashboard DB), and chmod 600
-    # only protects it on this disk — so it's encrypted by default (#374). Plaintext needs an
-    # explicit choice: --no-encrypt, or an empty passphrase at the interactive prompt (with a loud
-    # warning — never a silent lockout of the operator's own onion keys). An UNATTENDED run
-    # (--yes) with no passphrase refuses instead of downgrading: a cron job whose
-    # PITHEAD_BACKUP_PASSPHRASE line is typo'd away must fail loudly, not archive the onion keys
-    # in plaintext forever while reporting success.
+    # Resolve encryption before touching disk. Plaintext is explicit; unattended use without a
+    # passphrase refuses instead of silently archiving secrets in plaintext (#374).
     local pass=""
     { set +x; } 2>/dev/null # xtrace would print the passphrase below (see the prompt-path comment)
     if [ "$no_encrypt" -eq 0 ]; then
@@ -201,7 +206,15 @@ stack_backup() {
         # down — the same blast-radius rule as #1244/#1248.
         backup_require_items "${required[@]}"
         was_running=1
-        stack_down
+        if ! (
+            trap - ERR
+            stack_down
+        ); then
+            warn "The stack did not stop cleanly, so no backup archive was attempted."
+            backup_restart_stack ||
+                error "Backup aborted: the stack failed to stop and failed to recover. Correct the errors above, then run '$0 up'."
+            error "Backup aborted because the stack could not be stopped cleanly. The normal startup path recovered it; no archive was written."
+        fi
     else
         # Stack already stopped: the same hold and the same re-check, still before tar.
         mutation_lock_acquire backup
@@ -246,12 +259,16 @@ stack_backup() {
         }
     done
     if [ "$_backup_ok" -ne 1 ]; then
-        [ "$was_running" -eq 1 ] && stack_up
         backup_diagnose_items "/" "${items[@]}"
+        [ "$was_running" -ne 1 ] || backup_restart_stack ||
+            error "Backup failed, the partial archive was removed, and the stack failed to recover. Correct the errors above, then run '$0 up'."
         error "Backup failed — the partial archive was removed."
     fi
-    sudo chown "$REAL_USER":"$REAL_USER" "$archive"
-    chmod 600 "$archive"
+    if ! sudo chown "$REAL_USER":"$REAL_USER" "$archive" || ! chmod 600 "$archive"; then
+        [ "$was_running" -ne 1 ] || backup_restart_stack ||
+            error "The archive was created at $archive but could not be secured, and the stack failed to recover. Treat the archive as sensitive; correct the errors above, then run '$0 up'."
+        error "The archive was created at $archive but could not be secured. Treat it as sensitive and inspect its ownership and mode before moving it."
+    fi
 
     log "Backup written to: $archive"
     if [ -n "$pass" ]; then
@@ -262,14 +279,16 @@ stack_backup() {
     fi
 
     if [ "$was_running" -eq 1 ]; then
-        stack_up
+        if ! backup_restart_stack; then
+            error "Backup archive was written to $archive, but the normal and recovery startup paths failed. The archive is valid; correct the startup error above and run '$0 up'."
+        fi
         log "Stack restarted after the backup."
     fi
     mutation_lock_release
 }
 
 stack_restore() {
-    local assume_yes=0 archive="" arg
+    local assume_yes=0 archive="" archive_source="" arg
     for arg in "$@"; do
         case "$arg" in
         -y | --yes) assume_yes=1 ;;
@@ -282,7 +301,18 @@ stack_restore() {
     [ -f "$archive" ] || error "Archive not found: $archive"
     # Resolve to an absolute path now, since we extract from "/" below.
     archive=$(cd "$(dirname "$archive")" && printf '%s/%s' "$PWD" "$(basename "$archive")")
+    archive_source="$archive"
 
+    # Snapshot once so every audit and the extraction read the same bytes. Clear inherited state
+    # before arming cleanup: only a directory created by this invocation may be removed.
+    RESTORE_STAGE_DIR=""
+    trap restore_discard_stage EXIT
+    RESTORE_STAGE_DIR=$(mktemp -d) || error "Could not create a private restore staging directory."
+    if ! (umask 077 && cp -- "$archive" "$RESTORE_STAGE_DIR/.archive" && chmod 600 "$RESTORE_STAGE_DIR/.archive"); then
+        restore_discard_stage
+        error "Could not copy $archive_source into private restore staging — nothing was restored."
+    fi
+    archive="$RESTORE_STAGE_DIR/.archive"
     # Detect the format by magic bytes, not by flag or filename: `Salted__` is an openssl-encrypted
     # archive (the default since #374), gzip magic is a plaintext archive from any earlier release —
     # both keep restoring with the same command. Anything else is refused before the confirm prompt.
@@ -291,14 +321,14 @@ stack_restore() {
     case "$magic" in
     53616c7465645f5f) encrypted=1 ;; # "Salted__"
     1f8b*) ;;                        # gzip
-    *) error "Not a pithead backup archive (neither openssl-encrypted nor gzip): $archive" ;;
+    *) error "Not a pithead backup archive (neither openssl-encrypted nor gzip): $archive_source" ;;
     esac
 
-    # Note: we do NOT require/parse the current config here — restore must work even when the
-    # on-disk config.json is lost or corrupt. The config comes back out of the archive.
-
+    # Early UX check; the authoritative check runs under the mutation lock before extraction.
+    restore_require_stack_stopped
+    # Do not parse current config: restore must recover a lost or corrupt config.json.
     warn "Restore will OVERWRITE config.json, .env, Caddyfile, the Tor data dir, and the dashboard's database from the archive."
-    warn "Stop the stack first with '$0 down' so files are restored in a consistent state."
+    warn "The stack is stopped; keep it stopped until this restore finishes."
     if [ "$assume_yes" -eq 0 ]; then
         read -r -p "Continue and overwrite these files? (y/N): " CONFIRM || true
         if [[ ! "$CONFIRM" =~ ^[Yy] ]]; then
@@ -344,20 +374,13 @@ stack_restore() {
             error "Archive fails integrity verification (tampered or truncated) — nothing was restored."
     fi
 
-    # After the confirm and the passphrase prompt, and after the integrity verify (read-only):
-    # the extraction below is the mutating window.
+    # Stage and validate all destinations before the mutating window.
+    restore_stage_archive "$archive" "$encrypted" "$pass"
     mutation_lock_acquire restore
-    log "Restoring from $archive ..."
-    # The archive stores paths relative to / (leading slash stripped), so extracting at / puts
-    # every file back exactly where it came from. sudo so we can write into the 100:101-owned
-    # Tor data dir. The encrypted path streams openssl into tar — no plaintext archive on disk.
-    if [ "$encrypted" -eq 1 ]; then
-        openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
-            -pass fd:3 -in "$archive" 3< <(printf '%s' "$pass") |
-            sudo tar -xzf - -C "/"
-    else
-        sudo tar -xzf "$archive" -C "/"
-    fi
+    restore_require_stack_stopped
+    restore_recheck_destinations
+    log "Restoring from $archive_source ..."
+    restore_commit_stage
 
     # Now that config.json is back, resolve the Tor data dir from it and fix ownership so the
     # onion keys load (matching prepare_directories).

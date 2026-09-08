@@ -14,9 +14,9 @@
 #      than a file: monotonic_exempt() carries the reasoning.
 #
 # Exemptions are enumerated by path/glob in is_exempt() below, each with its own reason —
-# generated code, vendored files, data/config, prose docs, and the shipped `pithead` artifact
-# itself, which #1105 Phase 2 made a build product: it is generated from lib/pithead/*.sh, and
-# those slices carry the rows. Binary files are detected generically (grep -I), not listed.
+# generated code, vendored files, data/config, and prose docs. The generated root `pithead` is
+# git-ignored, while its tracked lib/pithead/*.sh sources remain candidates. Binary files are
+# detected generically (grep -I), not listed.
 #
 # Run `--self-test` first (fixtures for every failure mode, including the empty-enumeration
 # guard); `--generate` reprints the budget for every current non-exempt offender, for seeding or
@@ -78,9 +78,6 @@ is_exempt() {
     docs/research/*) return 0 ;;
     # Captured benchmark run data, not source.
     docs/benchmarks/data/*) return 0 ;;
-    # The shipped pithead CLI artifact — generated, not written (#1105 Phase 2): it is built from
-    # lib/pithead/*.sh, and those slices carry the budget rows instead.
-    pithead) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -187,10 +184,9 @@ run_gate() {
 #
 # lib/pithead/99-remainder.sh is not a file anyone writes. It is whatever of the generated
 # `pithead` artifact #1105 Phase 2 has not split out yet, so its ceiling measures work
-# REMAINING, not the size of a source file. `pithead` itself is exempt in is_exempt() precisely
-# so a CLI bug fix may add lines; routing those same lines through a ratcheting row turned that
-# exemption into a hard freeze, because no value of the row passed — run_gate refused the growth
-# and check_monotonic refused the raise.
+# REMAINING, not the size of a source file. Routing generated-artifact growth through a ratcheting
+# source row created a hard freeze, because no value of the row passed — run_gate refused the
+# growth and check_monotonic refused the raise.
 #
 # What kept it honest is what was NOT changed for it: run_gate's `lines > ceiling` rule is
 # untouched, so a PR that grows the artifact must still record the new count, and the row stayed a

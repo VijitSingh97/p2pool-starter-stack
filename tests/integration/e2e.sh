@@ -5,13 +5,6 @@
 #   tests/integration/e2e.sh <branch> [options]
 #   tests/integration/e2e.sh claude/my-feature --mode matrix
 #
-# What it does, end to end, then puts everything back the way it found it:
-#   1. Provisions a DEDICATED checkout on the test bench (/srv/code/pithead-e2e) — the canonical
-#      /srv/code/pithead is the baseline and is never git-touched.
-#   2. Fetches + checks out <branch> there, and seeds it with the LIVE release bundle's config.json/.env
-#      (falling back to the canonical checkout's if there's no live bundle) so it has the same wallet /
-#      secrets / onion keys / shared chains (just the branch's code).
-#   3. Takes a `pithead backup` of the live stack (the rollback anchor).
 #   4. Borrows a miner (set MINER_HOST): backs up its xmrig config and repoints it at the test bench so
 #      the live matrix has a real worker mining through this stack.
 #   5. Deploys the branch (`pithead upgrade` — re-renders configs AND rebuilds the branch's first-party
@@ -54,6 +47,7 @@ WORKERS=1
 BORROW_MINER=1
 SKIP_PREFLIGHT=0
 KEEP=0
+SCENARIO=""
 BRANCH=""
 
 # --- Output -----------------------------------------------------------------
@@ -90,26 +84,19 @@ USAGE:
 
 OPTIONS:
   --mode <m>        targeted | check | matrix   (default: targeted)
-                      targeted — LEAN (default): validate the dashboard + the sync logic against
-                                 the EXISTING synced node — no full config sweep, no node re-sync.
-                                 = check + lifecycle (one controlled restart exercises the sync
-                                 gate / node-down failover), auth-fail-closed, RigForge read+control.
-                      check    — non-destructive: readiness + current live state only (pure reads).
-                      matrix   — the full destructive config matrix + lifecycle + fault-injection
-                                 + auth-fail-closed, with --safety-backup auto-rollback. Opt-in —
-                                 a full pre-release sweep; recreates containers across many configs.
+                      targeted — one canonical scenario, lifecycle, auth and RigForge.
+                      check — readiness/current-state reads. matrix — all destructive phases.
+  --scenario <name> with --mode matrix, run only this existing scenario plus the matrix-only phases
   --workers <n>     workers expected mining through the stack (default: 1 — the borrowed miner)
   --bench <host>    SSH host of the test bench to deploy onto (or set BENCH_HOST)
   --miner <host>    SSH host of the miner to borrow (or set MINER_HOST)
-  --no-miner        don't borrow a miner; the harness skips its two mining assertions
-                    (workers online, stratum hashes) with a logged notice — everything else binds
-  --skip-preflight  skip the bench-chains-synced pre-flight (a cold bench then fails the
-                    required-sync assertions as environment noise — use knowingly)
+  --no-miner        do not borrow a miner; skip its two mining assertions
+  --skip-preflight  skip the bench-chains-synced pre-flight
   --keep            don't restore at the end (leave the branch deployed + miner repointed — debugging)
   -h, --help        this help
 
 ENV OVERRIDES: BENCH_HOST, MINER_HOST, CANONICAL_DIR, E2E_DIR, MINER_XMRIG_CONFIG, GIT_REMOTE_URL, and
-  RIG_HOST, IT_RIG_TOKEN, RIG_CONTROL_PORT, RIGFORGE_CONFIG (#1378 — all default off the borrowed miner)
+  RIG_HOST, RIG_NAME, IT_RIG_TOKEN, RIG_CONTROL_PORT, RIGFORGE_CONFIG, RIGFORGE_BOOTSTRAP_VERSION
 
 EXAMPLES:
   tests/integration/e2e.sh claude/my-feature                 # targeted (the default), borrow the miner
@@ -127,6 +114,10 @@ while [ $# -gt 0 ]; do
         ;;
     --workers)
         WORKERS="$2"
+        shift 2
+        ;;
+    --scenario)
+        SCENARIO="$2"
         shift 2
         ;;
     --bench)
@@ -165,6 +156,11 @@ done
     die "A <branch> is required."
 }
 case "$MODE" in check | targeted | matrix) ;; *) die "--mode must be check|targeted|matrix (got '$MODE')." ;; esac
+[ -z "$SCENARIO" ] || [ "$MODE" = matrix ] || die "--scenario is only supported with --mode matrix."
+[[ -z "$SCENARIO" || "$SCENARIO" =~ ^[a-z0-9-]+$ ]] || die "--scenario contains unsupported characters: $SCENARIO"
+[[ -z "$RIGFORGE_BOOTSTRAP_VERSION" || "$RIGFORGE_BOOTSTRAP_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "RIGFORGE_BOOTSTRAP_VERSION must be a vX.Y.Z tag."
+[[ -z "$RIG_NAME" || "$RIG_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "RIG_NAME contains unsupported characters."
+[[ "$RIG_CONTROL_PORT" =~ ^[0-9]{1,5}$ ]] && [ "$RIG_CONTROL_PORT" -ge 1 ] && [ "$RIG_CONTROL_PORT" -le 65535 ] || die "RIG_CONTROL_PORT must be a TCP port 1-65535."
 
 # --- SSH helpers ------------------------------------------------------------
 # Keepalives so a quiet (but live) connection isn't dropped; BatchMode so we never hang on a prompt.
@@ -448,7 +444,7 @@ provision() {
         # that seed thinking clean spares them.
         git -C '$E2E_DIR' checkout -q -f -B '$BRANCH' FETCH_HEAD
         git -C '$E2E_DIR' reset -q --hard FETCH_HEAD
-        git -C '$E2E_DIR' clean -qfdx -e /results -e /backups -e /data
+        git -C '$E2E_DIR' clean -qfdx -e /results -e /backups -e /data && bash '$E2E_DIR/scripts/build-pithead.sh' >/dev/null
     " || die "Failed to provision/checkout '$BRANCH' in $E2E_DIR."
     local head
     head="$(on_bench "git -C '$E2E_DIR' rev-parse --short HEAD")"
@@ -610,13 +606,17 @@ run_harness() {
     local phases
     case "$MODE" in
     check) phases="--check" ;;
-    targeted) phases="--auth-fail-closed --lifecycle" ;; # readiness/check run inline first (below); NOT here — run.sh returns after --readiness
-    matrix) phases="--safety-backup --lifecycle --fault-injection --auth-fail-closed --hardening --subnet" ;;
+    targeted) phases="--scenario local-pruned-main-secure-tari --auth-fail-closed --lifecycle" ;; # readiness/check run inline first (below); NOT here — run.sh returns after --readiness
+    matrix) phases="${SCENARIO:+--scenario $(quote_arg "$SCENARIO") }--safety-backup --lifecycle --fault-injection --auth-fail-closed --hardening --subnet" ;;
     esac
     # RigForge read (#185/#235/#260) + the WRITE paths (#513/#514/#516/#517/#1002b/#1236): both need a
     # REAL rig, both self-skip loudly without one. The write half was matrix-only until #1364. rig_supply
     # supplies its host + token (#1378) and ALWAYS returns rc 0, so this && cannot drop the flags.
-    [ "$BORROW_MINER" = "1" ] && [ "$MODE" != "check" ] && rig_supply && phases="$phases --rigforge --rigforge-control${RIG_HOST:+ --rig-host $RIG_HOST --rig-control-port $RIG_CONTROL_PORT}"
+    if [ "$BORROW_MINER" = "1" ] && [ "$MODE" != "check" ]; then
+        rig_supply
+        [ -n "$RIG_NAME" ] || die "Borrowed rig NAME unavailable from $RIGFORGE_CONFIG."
+        phases="$phases --rigforge --rigforge-control --rig-name $(quote_arg "$RIG_NAME")${RIG_HOST:+ --rig-host $(quote_arg "$RIG_HOST") --rig-control-port $(quote_arg "$RIG_CONTROL_PORT")}${RIGFORGE_BOOTSTRAP_VERSION:+ --rigforge-bootstrap-version $(quote_arg "$RIGFORGE_BOOTSTRAP_VERSION")}"
+    fi
     # #905: no borrowed miner means no worker will ever appear — tell the harness to SKIP its two
     # mining assertions (workers online, stratum hashes) instead of failing a healthy stack.
     local no_mining=""

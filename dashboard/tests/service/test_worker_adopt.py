@@ -15,6 +15,7 @@ specific broken test, not a vague coverage drop:
 import pytest
 
 from mining_dashboard.service.worker_adopt import (
+    DEFAULT_API_PORT,
     DEFAULT_CONTROL_PORT,
     HOST_RE,
     NAME_RE,
@@ -64,6 +65,12 @@ class TestValidateWorkerDescriptor:
         entry = {k: v for k, v in VALID_ENTRY.items() if k != "control_port"}
         assert validate_worker_descriptor(entry) == ""
         assert DEFAULT_CONTROL_PORT == 8082
+
+    def test_api_port_defaults_and_custom_port_validate(self):
+        assert DEFAULT_API_PORT == 8081
+        assert validate_worker_descriptor({**VALID_ENTRY, "port": 18081}) == ""
+        assert validate_worker_descriptor({**VALID_ENTRY, "port": True}) != ""
+        assert validate_worker_descriptor({**VALID_ENTRY, "port": 65536}) != ""
 
     def test_non_object_entry_refused(self):
         assert validate_worker_descriptor("not-an-object") != ""
