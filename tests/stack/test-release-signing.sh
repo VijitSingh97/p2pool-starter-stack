@@ -223,10 +223,10 @@ bundle_without_pub() {
     # shellcheck disable=SC2034  # consumed by make_bundle from the sourced release script
     WORKDIR="$SGN/nopub-bundle" TAG=v9.9.9 REGISTRY=ghcr.io/test DRY_RUN=0
     get_digest() { printf 'ghcr.io/test/pithead-%s@sha256:%064d' "$1" 1; }
-    make_bundle "$SGN/nopub.tar.gz" >/dev/null
-    ! tar tzf "$SGN/nopub.tar.gz" | grep -qx 'pithead/cosign.pub'
+    make_bundle "$SGN/nopub.tar.gz" >/dev/null || return 1
+    [ -s "$SGN/nopub.tar.gz" ] && tar tzf "$SGN/nopub.tar.gz" >"$SGN/nopub.list" || return 1
+    ! grep -qx 'pithead/cosign.pub' "$SGN/nopub.list"
 }
-# One resolve decision, reporting COSIGN_ENABLED from EXIT even when die() stops the cut.
 signing_decide() { # <cwd> <env-assignments>
     _action="${3:-}"
     _out="$(
