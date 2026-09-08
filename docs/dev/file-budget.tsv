@@ -69,7 +69,7 @@ tests/integration/lib.sh	692
 tests/integration/run.sh	2551
 tests/integration/selftest-e2e-phases.sh	507
 tests/integration/selftest.sh	686
-tests/os/appliance-config-approval-leg.sh	410
+tests/os/appliance-config-approval-leg.sh	413
 tests/os/failure-evidence.sh	567
 tests/os/run.sh	3423
 tests/os/verify-image.sh	409
