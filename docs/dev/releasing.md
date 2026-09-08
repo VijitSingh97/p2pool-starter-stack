@@ -171,7 +171,9 @@ Release notes, where operators actually read it. The branch model itself is in
    (see [Branch mechanics](#branch-mechanics)), write the release notes from the `CHANGELOG.md`
    entry, and attach release assets: a pinned `docker-compose.yml` / config bundle referencing
    `${STACK_VERSION}=vX.Y.Z`, its detached signature (`pithead.tar.gz.sig`), plus the ingredients
-   manifest (exact component versions + promoted image digests).
+   manifest (exact component versions + promoted image digests). The install bundle includes the
+   generated CLI and top-level operator guides, but no source slices, appliance code, tests,
+   developer docs, research, or image assets.
 
    **When the version ships the appliance channel too, pass `--draft`.** Published release
    assets are immutable — v1.18.0 shipped an asset that could not be amended and the whole

@@ -136,6 +136,9 @@ CS_VI="$(cat "$ROOT/tests/os/verify-image.sh")"
 assert_contains "build-image stages into os/build/stage from STACK_VERSION" "$CS_BI" 'stage_compose "$STACK_VERSION" os/build/stage'
 assert_contains "the Dockerfile copies the STAGED compose file" "$CS_DF" 'os/build/stage/docker-compose.yml'
 assert_contains "the Dockerfile copies the stamp beside it" "$CS_DF" 'os/build/stage/COMPOSE_SOURCE'
+assert_eq "the appliance carries no documentation or source-only trees" "$(grep -cE '^COPY (docs|lib|scripts|tests|dashboard|\.github)/' "$ROOT/os/rootfs/Dockerfile" || true)" "0"
+assert_contains "the appliance copies only Monero's runtime-mounted template" "$CS_DF" 'COPY build/monero/bitmonero.conf.template'
+assert_not_contains "the appliance excludes Monero image-build sources" "$CS_DF" 'COPY build/monero/ /opt/pithead/build/monero/'
 assert_not_contains "the Dockerfile no longer copies the tree's compose file" "$CS_DF" 'VERSION docker-compose.yml'
 assert_contains "verify-image compares against what the stamp resolves to, not the tree" "$CS_VI" 'compose_reference "$ROOT" "$COMPOSE_REF"'
 assert_not_contains "verify-image's old tree comparison is gone" "$CS_VI" 'docker-compose.yml" ./docker-compose.yml'

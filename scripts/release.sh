@@ -734,15 +734,15 @@ compose_build_mounts() {
 # containers find the config templates they render at setup.
 make_bundle() {
     # Unpacks to a versionless "pithead/" dir so the documented quick start can `cd pithead` and so a
-    # later bundle re-download upgrades it in place. Ships BOTH config templates: config.minimal.json
-    # (basic — just the two wallet addresses, the documented quick-start config) and the advanced
-    # example. The bundle README + the repo quick start both point at the basic one (matching setup's
-    # own "copy config.minimal.json" guidance); the advanced example is "for more options".
+    # later bundle re-download upgrades it in place. Ships both config templates and only the
+    # operator docs needed to install, configure, monitor and maintain this Compose stack.
     local out="$1" d="$WORKDIR/pithead"
     mkdir -p "$d"
     # cosign.pub rides in the bundle (#376) so a release install (no git checkout) has the verifier
     # next to pithead; preflight guarantees it exists on a real run.
     cp pithead pithead-completion.bash VERSION docker-compose.yml config.minimal.json config.reference.json config.core-keys.json cosign.pub "$d/" 2>/dev/null || true
+    mkdir -p "$d/docs"
+    cp docs/{configuration,dashboard,faq,getting-started,hardware,monitoring,operations,privacy,telegram,workers}.md "$d/docs/"
     local m
     while IFS= read -r m; do
         [ -e "$m" ] || {
@@ -752,7 +752,7 @@ make_bundle() {
         mkdir -p "$d/$(dirname "$m")"
         cp -R "$m" "$d/$(dirname "$m")/"
     done < <(compose_build_mounts docker-compose.yml)
-    printf 'Pithead %s — pinned install bundle (images pulled from %s, no local build).\n\nQuick start:\n  1. cp config.minimal.json config.json   # then set your Monero + Tari payout addresses\n     (more options: config.reference.json)\n  2. ./pithead setup\n\nThere are no build contexts here, so pithead pulls the published %s images instead of building.\n' \
+    printf 'Pithead %s — pinned install bundle (images pulled from %s, no local build).\n\nQuick start:\n  1. cp config.minimal.json config.json   # then set your Monero + Tari payout addresses\n     (more options: config.reference.json)\n  2. ./pithead setup\n\nOffline operator guides are in docs/; start with docs/getting-started.md.\nThere are no build contexts here, so pithead pulls the published %s images instead of building.\n' \
         "$TAG" "$REGISTRY" "$TAG" >"$d/README.txt"
     if [ "$DRY_RUN" -eq 1 ]; then
         printf '   %s[dry-run]%s would tar -> %s\n' "$C_YELLOW" "$C_RESET" "$out"
