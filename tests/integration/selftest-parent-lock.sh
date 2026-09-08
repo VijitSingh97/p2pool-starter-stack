@@ -105,14 +105,23 @@ assert_rc "a fresh checkout records launch intent before the runner creates resu
 assert_rc "an unresolved durable launch intent refuses restoration" "$?" 1
 (
     source "$HERE/detached-harness.sh"
-    HARNESS_PENDING=1 HARNESS_STATE=/test/state
-    on_bench() { case "$1" in cat\ *) printf 'running 4242\n' ;; *) printf 'drained\n' >"$WORK/recovered" ;; esac; }
+    HARNESS_PENDING=1 HARNESS_STATE=/test/state HARNESS_PID=123
+    on_bench() { case "$1" in cat\ *) printf 'running 4242\n' ;; *) printf '%s\n' "$1" >"$WORK/recovered" ;; esac; }
     warn() { :; }
     drain_harness
     [ "$HARNESS_DONE" = 1 ]
 ) >/dev/null 2>&1
-assert_rc "a lost reply recovers and drains the durable process-group identity" "$?" 0
-assert_eq "the recovered process group was actually drained" "$(cat "$WORK/recovered")" drained
+assert_rc "a partial numeric reply recovers the durable process-group identity" "$?" 0
+assert_contains "the durable process group replaced the partial reply" "$(cat "$WORK/recovered")" "_ '4242'"
+(
+    source "$HERE/detached-harness.sh"
+    HARNESS_PENDING=1 HARNESS_STATE=/test/state HARNESS_PID=partial
+    on_bench() { case "$1" in cat\ *) printf 'running 4242\n' ;; *) printf '%s\n' "$1" >"$WORK/recovered-malformed" ;; esac; }
+    warn() { :; }
+    drain_harness
+) >/dev/null 2>&1
+assert_rc "a malformed reply recovers the durable process-group identity" "$?" 0
+assert_contains "the durable process group replaced the malformed reply" "$(cat "$WORK/recovered-malformed")" "_ '4242'"
 assert_contains "drain proves absence inside one checked root shell" "$(cat "$HERE/detached-harness.sh")" 'sudo -n bash -c'
 assert_contains "only the local nested runner can use parent-lock bypass" \
     "$(sed -n '/RIG_LOCK_PARENT_ACTOR/,/elif \[ "\$IT_MODE"/p' "$HERE/run.sh")" \

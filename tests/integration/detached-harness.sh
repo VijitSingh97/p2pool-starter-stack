@@ -14,14 +14,13 @@ drain_harness() {
     local state i
     [ "$HARNESS_PENDING" = 1 ] && [ "$HARNESS_DONE" = 0 ] || return 0
     warn "detached harness is still active; terminating and draining it before restoration"
-    if [ -z "$HARNESS_PID" ]; then
-        for i in {1..10}; do
-            state="$(on_bench "cat '$HARNESS_STATE'" 2>/dev/null)" || state=""
-            [[ "$state" =~ ^running\ ([0-9]+)$ ]] && HARNESS_PID="${BASH_REMATCH[1]}" && break
-            sleep 1
-        done
-        [ -n "$HARNESS_PID" ] || return 1
-    fi
+    HARNESS_PID=""
+    for i in {1..10}; do
+        state="$(on_bench "cat '$HARNESS_STATE'" 2>/dev/null)" || state=""
+        [[ "$state" =~ ^running\ ([0-9]+)$ ]] && HARNESS_PID="${BASH_REMATCH[1]}" && break
+        sleep 1
+    done
+    [ -n "$HARNESS_PID" ] || return 1
     until on_bench "sudo -n bash -c 'p=\$1; if kill -0 -- -\$p 2>/dev/null; then kill -TERM -- -\$p || exit 1; fi; i=0; while kill -0 -- -\$p 2>/dev/null && test \"\$i\" -lt 30; do sleep 1; i=\$((i + 1)); done; if kill -0 -- -\$p 2>/dev/null; then kill -KILL -- -\$p || exit 1; fi; ! kill -0 -- -\$p 2>/dev/null' _ '$HARNESS_PID'"; do
         warn "could not prove the detached harness stopped; retaining ownership and retrying"
         sleep 5
