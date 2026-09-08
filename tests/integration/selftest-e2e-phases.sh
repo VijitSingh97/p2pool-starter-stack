@@ -18,7 +18,6 @@ source "$HERE/lib.sh"
 # The REAL rig_supply, not a re-spelling of it — same reason run_harness is extracted below (#1378).
 # shellcheck source=tests/integration/rig-supply.sh
 source "$HERE/rig-supply.sh"
-
 E2E_SRC="$HERE/e2e.sh"
 RUN_SRC="$HERE/run.sh"
 assert_eq "rig-supply.sh actually defines rig_supply (#1378)" \
@@ -68,6 +67,7 @@ drive_harness() { # <mode> <borrow_miner> [rig-token] -> "LAUNCH\t<cmd>" then "S
         step() { :; }
         warn() { :; }
         ok() { :; }
+        harness_prepare() { HARNESS_STATE=/test/state; }; harness_finished() { :; }
         die() {
             echo "DIE: $*" >&2
             exit 1
@@ -79,7 +79,7 @@ drive_harness() { # <mode> <borrow_miner> [rig-token] -> "LAUNCH\t<cmd>" then "S
             *nohup*)
                 printf '%s' "$1" >"$LAUNCH_FILE"
                 # The launch is the one on_bench call e2e.sh pipes the token into (#1378).
-                cat >"$STDIN_FILE"
+                cat >"$STDIN_FILE"; echo 4242
                 ;;
             # rig_supply's proof dial. Succeeds here; the unreachable-rig path is driven separately
             # by rc_of below, which is where the exit-code contract is asserted.
@@ -118,7 +118,7 @@ stdin_of() { # <mode> <borrow> [token] -> what e2e.sh piped into the launch call
 
 compose_phases() { # <mode> <borrow_miner> [token] -> the phase list e2e.sh would launch run.sh with
     # Everything between the runner's positional args and the trailing redirect is the phase list.
-    launch_of "$@" | sed -n 's/.*\.e2e-run\.sh[^ ]* [^ ]* [^ ]* [^ ]* [^ ]* [^ ]* \(.*\) >\/dev\/null.*/\1/p'
+    launch_of "$@" | sed -n 's/.*\.e2e-run\.sh[^ ]* [^ ]* [^ ]* [^ ]* [^ ]* [^ ]* [^ ]* \(.*\) >\/dev\/null.*/\1/p'
 }
 
 has_phase() { # <phase-list> <flag> -> "yes" | "no"
@@ -200,7 +200,7 @@ LAUNCH="$(launch_of targeted 1)"
 assert_eq "the launch command does NOT contain the token" \
     "$(contains "$LAUNCH" "s3cr3t-tok3n")" "no"
 assert_eq "the launch passes the token as an environment entry, not an argument" \
-    "$(contains "$LAUNCH" 'IT_RIG_TOKEN="$t" nohup')" "yes"
+    "$(contains "$LAUNCH" 'IT_RIG_TOKEN="$t" RIG_LOCK_PARENT_ACTOR=')" "yes"
 assert_eq "the token is what e2e.sh pipes to the launch call" \
     "$(stdin_of targeted 1)" "s3cr3t-tok3n"
 
