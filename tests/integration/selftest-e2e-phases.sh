@@ -184,25 +184,25 @@ assert_eq "targeted passes --rig-control-port so e2e.sh and run.sh cannot dial d
     "$(has_phase "$TARGETED" --rig-control-port)" "yes"
 
 echo "== an UNSUPPLIED rig still gets the phase — a gap must not become a dropped phase (#1378) =="
-# Driving with an empty token takes rig_supply's no-token branch. The phase must still be requested:
-# its dashboard-side legs are real coverage, and silently dropping it is the #1364 defect returning.
 UNSUPPLIED="$(compose_phases targeted 1 "")"
-assert_eq "no token => the write phase is STILL requested" \
-    "$(has_phase "$UNSUPPLIED" --rigforge-control)" "yes"
-assert_eq "no token => nothing is piped to the launch" \
-    "$(stdin_of targeted 1 "")" ""
+assert_eq "no token => the write phase is STILL requested" "$(has_phase "$UNSUPPLIED" --rigforge-control)" "yes"
+assert_eq "no token => nothing is piped to the launch" "$(stdin_of targeted 1 "")" ""
 
 echo "== the token never lands in the detached runner's argv (#1378) =="
-# /proc/PID/cmdline is world-readable and the nohup'd runner lives for the whole run, so the token
-# travels on stdin and arrives as an ENVIRONMENT entry (/proc/PID/environ is owner-only). run.sh
-# already puts it in a short-lived bench-side curl argv via rx(); a long-lived one is the new risk.
+# The long-lived runner takes credentials through stdin/environment, never world-readable argv.
 LAUNCH="$(launch_of targeted 1)"
-assert_eq "the launch command does NOT contain the token" \
-    "$(contains "$LAUNCH" "s3cr3t-tok3n")" "no"
-assert_eq "the launch passes the token as an environment entry, not an argument" \
-    "$(contains "$LAUNCH" 'IT_RIG_TOKEN="$t" RIG_LOCK_PARENT_ACTOR=')" "yes"
-assert_eq "the token is what e2e.sh pipes to the launch call" \
-    "$(stdin_of targeted 1)" "s3cr3t-tok3n"
+assert_eq "the launch command does NOT contain the token" "$(contains "$LAUNCH" "s3cr3t-tok3n")" "no"
+assert_eq "the launch passes the token as an environment entry, not an argument" "$(contains "$LAUNCH" 'IT_RIG_TOKEN="$t"')" "yes"
+assert_eq "the token is what e2e.sh pipes to the launch call" "$(stdin_of targeted 1)" "s3cr3t-tok3n"
+echo "== matrix-only fault inputs reach the detached runner without entering argv =="
+ROLLBACK='{"pools":[{"url":"127.0.0.1:1"}]}' POOLS='[{"url":"probe:1"}]'
+SUPPLIED="$(IT_RIG_ROLLBACK_CHANGES="$ROLLBACK" IT_RIG_POOLS_PROBE="$POOLS" drive_harness matrix 1)" SUPPLIED_LAUNCH="${SUPPLIED#*LAUNCH$'\t'}" SUPPLIED_LAUNCH="${SUPPLIED_LAUNCH%%$'\n'STDIN$'\t'*}"
+assert_eq "the launch exports the rollback input to run.sh" "$(contains "$SUPPLIED_LAUNCH" 'IT_RIG_ROLLBACK_CHANGES="$rollback"')" "yes"
+assert_eq "the launch exports the pools probe to run.sh" "$(contains "$SUPPLIED_LAUNCH" 'IT_RIG_POOLS_PROBE="$pools"')" "yes"
+assert_eq "the rollback input crosses stdin intact" "$(contains "$SUPPLIED" "$(printf '%s' "$ROLLBACK" | base64 | tr -d '\n')")" "yes"
+assert_eq "the pools probe crosses stdin intact" "$(contains "$SUPPLIED" "$(printf '%s' "$POOLS" | base64 | tr -d '\n')")" "yes"
+assert_eq "the rollback input stays out of argv" "$(contains "$SUPPLIED_LAUNCH" "$ROLLBACK")" "no"
+assert_eq "the pools probe stays out of argv" "$(contains "$SUPPLIED_LAUNCH" "$POOLS")" "no"
 
 echo "== rig_supply's rc-0 contract, which e2e.sh's && chain depends on (#1378) =="
 # e2e.sh appends the phase flags with `... && rig_supply && phases=...`. A rig_supply that returned

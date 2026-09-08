@@ -98,7 +98,7 @@ OPTIONS:
   -h, --help        this help
 
 ENV OVERRIDES: BENCH_HOST, MINER_HOST, CANONICAL_DIR, E2E_DIR, MINER_XMRIG_CONFIG, GIT_REMOTE_URL, and
-  RIG_HOST, RIG_NAME, IT_RIG_TOKEN, RIG_CONTROL_PORT, RIGFORGE_CONFIG, RIGFORGE_BOOTSTRAP_VERSION
+  RIG_HOST, RIG_NAME, IT_RIG_TOKEN, IT_RIG_ROLLBACK_CHANGES, IT_RIG_POOLS_PROBE, RIG_CONTROL_PORT, RIGFORGE_CONFIG, RIGFORGE_BOOTSTRAP_VERSION
 
 EXAMPLES:
   tests/integration/e2e.sh claude/my-feature                 # targeted (the default), borrow the miner
@@ -640,7 +640,7 @@ RUNNER
             warn "readiness/check reported issues (see above) — continuing to the destructive phases"
     fi
     harness_prepare "$rearm_id" || die "Failed to record harness launch intent."
-    HARNESS_PID="$(printf '%s\n%s\n%s\n' "$IT_RIG_TOKEN" "${RIG_LOCK_PARENT_ACTOR:-}" "${RIG_LOCK_PARENT_NONCE:-}" | on_bench "IFS= read -r t; IFS= read -r a; IFS= read -r n; rm -f '$E2E_DIR/results/e2e-harness.done' '$rearm_request' '$rearm_ack' || exit 1; cd '$E2E_DIR' || exit 1; IT_RIG_TOKEN=\"\$t\" RIG_LOCK_PARENT_ACTOR=\"\$a\" RIG_LOCK_PARENT_NONCE=\"\$n\" nohup setsid ./.e2e-run.sh '$HARNESS_STATE' '$E2E_DIR' '$WORKERS' '$rearm_request' '$rearm_ack' '$rearm_id' $phases >/dev/null 2>&1 & p=\$!; i=0; until grep -Eq \"^running \$p [0-9]+\$\" '$HARNESS_STATE'; do test \"\$i\" -lt 50 || exit 1; sleep .1; i=\$((i + 1)); done; echo \$p")" || die "Failed to launch the harness."
+    HARNESS_PID="$(printf '%s\n%s\n%s\n%s\n%s\n' "$IT_RIG_TOKEN" "${RIG_LOCK_PARENT_ACTOR:-}" "${RIG_LOCK_PARENT_NONCE:-}" "$(printf '%s' "${IT_RIG_ROLLBACK_CHANGES:-}" | base64 | tr -d '\n')" "$(printf '%s' "${IT_RIG_POOLS_PROBE:-}" | base64 | tr -d '\n')" | on_bench "IFS= read -r t; IFS= read -r a; IFS= read -r n; IFS= read -r rb; IFS= read -r pb; rollback=\$(printf '%s' \"\$rb\" | base64 -d) || exit 1; pools=\$(printf '%s' \"\$pb\" | base64 -d) || exit 1; rm -f '$E2E_DIR/results/e2e-harness.done' '$rearm_request' '$rearm_ack' || exit 1; cd '$E2E_DIR' || exit 1; IT_RIG_TOKEN=\"\$t\" IT_RIG_ROLLBACK_CHANGES=\"\$rollback\" IT_RIG_POOLS_PROBE=\"\$pools\" RIG_LOCK_PARENT_ACTOR=\"\$a\" RIG_LOCK_PARENT_NONCE=\"\$n\" nohup setsid ./.e2e-run.sh '$HARNESS_STATE' '$E2E_DIR' '$WORKERS' '$rearm_request' '$rearm_ack' '$rearm_id' $phases >/dev/null 2>&1 & p=\$!; i=0; until grep -Eq \"^running \$p [0-9]+\$\" '$HARNESS_STATE'; do test \"\$i\" -lt 50 || exit 1; sleep .1; i=\$((i + 1)); done; echo \$p")" || die "Failed to launch the harness."
     [[ "$HARNESS_PID" =~ ^[0-9]+$ ]] || die "Harness launch returned an invalid PID."
 
     # Poll the done-marker, printing a heartbeat tail of the log.
