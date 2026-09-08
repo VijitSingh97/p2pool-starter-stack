@@ -148,7 +148,7 @@ drive_restore() { # <is-source-checkout: yes|no> -> the `cd RESTORE_DIR && ...` 
     # cannot follow into.
     (
         exec </dev/null
-        RESTORED=0 KEEP=0 MINER_CFG_BACKUP="" RESTORE_DIR=/srv/code/baseline
+        MODE=targeted RESTORED=0 KEEP=0 MINER_CFG_BACKUP="" RESTORE_DIR=/srv/code/baseline
         E2E_DIR=/srv/code/pithead-e2e BENCH_HOST=bench SAFETY_ARCHIVE=""
         RESTORE_PROOF_FAILED=0 CONTROL_PROOF_FAILED=0 CONTROL_VERDICT_BEFORE=""
         BASELINE_IMAGES="" BRANCH_IMAGES="" SRC_CHECKOUT="$1" CMD_FILE="$cf"
@@ -156,6 +156,7 @@ drive_restore() { # <is-source-checkout: yes|no> -> the `cd RESTORE_DIR && ...` 
         step() { :; }
         warn() { :; }
         ok() { :; }
+        stop_harness() { return 0; }
         control_units_verdict() { echo on-target; }
         wait_bench_healthy() { return 0; }
         verify_restore_proof() { return 0; }

@@ -35,6 +35,10 @@ source "$HERE/rigforge-upgrade.sh"
 source "$HERE/zmq-probe.sh"
 # shellcheck source=tests/integration/mergemine-probe.sh
 source "$HERE/mergemine-probe.sh"
+# shellcheck source=tests/integration/live-gates.sh
+source "$HERE/live-gates.sh"
+# shellcheck source=tests/integration/live-safety-support.sh
+source "$HERE/live-safety-support.sh"
 
 # --- Defaults / globals -----------------------------------------------------
 IT_MODE="ssh"
@@ -53,12 +57,19 @@ RUN_HARDENING=0
 RUN_RIGFORGE=0
 RUN_RIGFORGE_CONTROL=0
 RUN_SUBNET=0
+RUN_IMAGE_UPGRADE=0
+IMAGE_UPGRADE_FROM_SHA=""
+IMAGE_UPGRADE_TO_SHA=""
+RUN_XVB_ROUTING=0
 RIG_HOST=""
 RIG_NAME=""
 RIGFORGE_BOOTSTRAP_VERSION=""
 RIG_CONTROL_PORT="8082"
 SAFETY_BACKUP=0
 SAFETY_ARCHIVE=""
+SAFETY_RESTORE_FAILED=0
+_SAFETY_RESTORE_ARMED=0
+_SAFETY_FOREIGN_TRAP=""
 KEEP_STATE=0
 EXPECTED_WORKERS=2
 SKIP_MINING_ASSERTS=0
@@ -72,6 +83,7 @@ OUT_DIR="$HERE/results"
 BASELINE_CONFIG=""
 BASELINE_PRUNE=""
 BASELINE_SECRET_FP=""
+BASELINE_EXACT_SECRET_FP=""
 
 usage() {
     cat <<'EOF'
@@ -130,8 +142,20 @@ MATRIX:
                          asserts no clearnet egress leaks while SOCKS is down AND that
                          `doctor` flags the outage loudly (#563), shadows timedatectl for a
                          real clock-drift verdict, and tmpfs-fills the dashboard data dir for
-                         a real ENOSPC verdict (#383). DESTRUCTIVE-then-restored; local mode
-                         only. Slow (healthcheck + node-health debounce).
+                         a real ENOSPC verdict (#383). DESTRUCTIVE-then-restored; works over
+                         SSH and locally. Slow (healthcheck + node-health debounce).
+  --image-upgrade <old-sha> <new-sha>
+                         run `pithead upgrade` from a private candidate release bundle against the already-running old images and prove
+                         image revision, chain-data/height continuity, categorized secret
+                         fingerprints, workers, and mining across the change. Both arguments must
+                         be exact 40-hex Pithead commits. DESTRUCTIVE; requires --safety-backup.
+  --candidate-bundle <tar.gz> <sig> <trusted-cosign.pub>
+                         private candidate bundle, detached signature, and external trust root.
+                         Required with --image-upgrade; all paths must be absolute local files.
+  --xvb-routing-smoke    establish P2Pool routing, enable XvB at the donor tier, and poll the real
+                         controller/proxy/dashboard through one bounded XvB→P2Pool transition,
+                         then restore the original config. Requires --safety-backup, recent PPLNS
+                         shares, and miners.
   --auth-fail-closed     also run the fail-closed auth phase (#153/#203): empty PROXY_AUTH_TOKEN
                          in .env and assert `pithead up` REFUSES to start (the live counterpart
                          to the tier-1 compose-config check), then restore the exact token and
@@ -268,6 +292,30 @@ parse_args() {
             RUN_FAULTS=1
             shift
             ;;
+        --image-upgrade)
+            [ "$#" -ge 3 ] || {
+                it_err "--image-upgrade requires <old-sha> <new-sha>."
+                exit 2
+            }
+            RUN_IMAGE_UPGRADE=1
+            IMAGE_UPGRADE_FROM_SHA="${2:-}"
+            IMAGE_UPGRADE_TO_SHA="${3:-}"
+            shift 3
+            ;;
+        --candidate-bundle)
+            [ "$#" -ge 4 ] || {
+                it_err "--candidate-bundle requires <tar.gz> <signature> <trusted-cosign.pub>."
+                exit 2
+            }
+            CANDIDATE_BUNDLE="$2"
+            CANDIDATE_SIGNATURE="$3"
+            TRUSTED_COSIGN_PUB="$4"
+            shift 4
+            ;;
+        --xvb-routing-smoke)
+            RUN_XVB_ROUTING=1
+            shift
+            ;;
         --auth-fail-closed)
             RUN_AUTH_FAIL_CLOSED=1
             shift
@@ -345,6 +393,25 @@ parse_args() {
     }
     if [ -n "$RIGFORGE_BOOTSTRAP_VERSION" ] && [ -z "$RIG_NAME" ]; then
         it_err "--rigforge-bootstrap-version requires --rig-name."
+        exit 2
+    fi
+    if [ "$RUN_IMAGE_UPGRADE" = "1" ]; then
+        valid_full_sha "$IMAGE_UPGRADE_FROM_SHA" && valid_full_sha "$IMAGE_UPGRADE_TO_SHA" || {
+            it_err "--image-upgrade requires two lowercase 40-hex Pithead commits."
+            exit 2
+        }
+        [ "$SAFETY_BACKUP" = "1" ] || {
+            it_err "--image-upgrade requires --safety-backup."
+            exit 2
+        }
+        [ "$IMAGE_UPGRADE_FROM_SHA" != "$IMAGE_UPGRADE_TO_SHA" ] || {
+            it_err "--image-upgrade old and new commits must differ."
+            exit 2
+        }
+    fi
+    validate_live_gate_args
+    if [ "$SKIP_MINING_ASSERTS" = "1" ] && { [ "$RUN_IMAGE_UPGRADE" = "1" ] || [ "$RUN_XVB_ROUTING" = "1" ]; }; then
+        it_err "--image-upgrade and --xvb-routing-smoke require binding mining assertions; remove --no-mining-asserts."
         exit 2
     fi
 }
@@ -432,6 +499,12 @@ preflight() {
     BASELINE_CONFIG="$(rx 'cat config.json')"
     BASELINE_PRUNE="$(env_on_box MONERO_PRUNE)" # 1 = pruned, 0 = full
     BASELINE_SECRET_FP="$(secret_fingerprint)"
+    if [ "$SAFETY_BACKUP" = 1 ]; then
+        BASELINE_EXACT_SECRET_FP="$(upgrade_secret_fingerprints)" || {
+            it_err "Could not fingerprint every wallet/proxy/dashboard/RPC/onion secret category."
+            exit 1
+        }
+    fi
     if [ -z "$BASELINE_CONFIG" ]; then
         it_err "Could not read baseline config.json from the box."
         exit 1
@@ -887,9 +960,9 @@ assert_scenario() {
     assert_contains "re-apply is a no-op" "$again" "No configuration changes detected"
 }
 
-# Runtime egress posture (#274) — the structural proof of #270, beyond config: poll each app
-# container's LIVE connections and FAIL if any holds a PERSISTENT direct public connection (i.e. it
-# isn't dialing through the Tor SOCKS). Config-level checks miss this — it's what caught the #165
+# Runtime egress observation (#274), beyond config: poll each bridge app container's live IPv4 TCP
+# connections and fail if any holds a persistent direct public connection (i.e. it isn't dialing
+# through the Tor SOCKS). It does not claim to capture UDP or host-network processes. This caught the #165
 # stale-image p2pool leak and the #271 Tari direct-dial. Reuses bench-verify-egress.sh (the #256
 # verifier) in its persistent-only mode so post-restart startup transients don't false-positive.
 # Skipped when a clearnet initial sync is active (#183): a node is then intentionally on clearnet.
@@ -898,7 +971,7 @@ assert_egress_posture() {
     mc="$(env_on_box MONERO_CLEARNET_SYNC)"
     tc="$(env_on_box TARI_CLEARNET_SYNC)"
     if [ "$mc" = "true" ] || [ "$tc" = "true" ]; then
-        it_log "   egress: clearnet initial sync active (#183) — skipping the all-Tor egress gate"
+        it_skip_leg "all-Tor live egress (#274/#270)" "clearnet initial sync is explicitly active" "by-design"
         return 0
     fi
     prefix="$(env_on_box NETWORK_PREFIX)"
@@ -910,8 +983,8 @@ assert_egress_posture() {
     [ "$IT_MODE" = "local" ] && bench="$HERE/benchmarks/bench-verify-egress.sh"
     out="$(rx "bash $(quote_arg "$bench") tor --dir . --prefix '$prefix' --polls 3 --interval 8 2>&1")"
     case "$(egress_verdict "$out")" in
-    ok) it_pass "no clearnet egress — every app dials via Tor (#274/#270)" ;;
-    leak) it_fail "no clearnet egress — every app dials via Tor (#274/#270)" "$(printf '%s' "$out" | grep -E 'LEAK|✗' | head -4)" ;;
+    ok) it_pass "no persistent direct IPv4 TCP egress observed from bridge apps (#274/#270)" ;;
+    leak) it_fail "no persistent direct IPv4 TCP egress observed from bridge apps (#274/#270)" "$(printf '%s' "$out" | grep -E 'LEAK|✗' | head -4)" ;;
     *) it_fail "egress verifier INCONCLUSIVE — could not run, not a detected leak (#274/#270)" "$(printf '%s' "$out" | tail -4)" ;;
     esac
 }
@@ -924,12 +997,12 @@ assert_egress_posture() {
 #      Reading the live container env (not the compose render) catches a stale-image/partial update
 #      that didn't apply the proxy, exactly like the #152/#173 live xmrig-proxy argv checks. socks5h
 #      (not socks5) means the xmrvsbeast hostname resolves over Tor too — no local DNS leak.
-#   2. assert_egress_posture (run alongside, below) proves NO app container holds a direct clearnet
-#      connection — so the XvB call provably could only have left via Tor.
+#   2. The focused live smoke runs the wallet-bearing client in an internal network whose only peer
+#      is Tor. assert_egress_posture separately observes sustained direct IPv4 TCP bridge traffic.
 # Skipped when XvB is disabled (nothing dials xmrvsbeast then).
 assert_xvb_over_tor() {
     if [ "$(env_on_box XVB_ENABLED)" != "true" ]; then
-        it_log "   xvb: disabled — skipping the XvB-over-Tor wiring check"
+        it_skip_leg "XvB-over-Tor wiring (#206/#163)" "XvB is disabled in this scenario" "by-design"
         return 0
     fi
     local prefix proxy want
@@ -1020,12 +1093,12 @@ assert_share_stats_live() {
 # python3 — the SQL uses `?` placeholders throughout so the one-liner needs no embedded single
 # quotes and stays safely bash-single-quotable.
 assert_telemetry_tables_present() {
-    local missing
-    missing="$(rx "docker exec dashboard python3 -c 'import sqlite3;c=sqlite3.connect(\"/data/mining_data.db\");want=[\"blocks\",\"xvb_history\",\"network_history\",\"disk_growth\",\"worker_history\"];have={r[0] for r in c.execute(\"SELECT name FROM sqlite_master WHERE type=? AND name IN (?,?,?,?,?)\",[\"table\"]+want).fetchall()};print(\",\".join(sorted(set(want)-have)))'" 2>/dev/null)"
-    if [ -z "$missing" ]; then
-        it_pass "telemetry backbone tables present after upgrade (#196: blocks/xvb_history/network_history/disk_growth/worker_history)"
+    local verdict
+    verdict="$(rx "docker exec dashboard python3 -c 'import sqlite3;c=sqlite3.connect(\"/data/mining_data.db\");want={\"blocks\":[\"ts\",\"height\",\"difficulty\"],\"xvb_history\":[\"ts\",\"avg_1h\",\"avg_24h\",\"fail_count\",\"donation_fraction\",\"mode\"],\"network_history\":[\"ts\",\"difficulty\",\"height\",\"reward\",\"pool_hashrate\"],\"disk_growth\":[\"ts\",\"monero_db_bytes\",\"disk_used_gb\",\"disk_total_gb\"],\"worker_history\":[\"ts\",\"name\",\"h15\",\"accepted\",\"rejected\"]};bad=[n for n,cols in want.items() if [r[1] for r in c.execute(f\"PRAGMA table_info({n})\")]!=cols];print(\"ok\" if c.execute(\"PRAGMA quick_check\").fetchone()[0]==\"ok\" and not bad else \"bad\")'" 2>/dev/null)"
+    if [ "$verdict" = "ok" ]; then
+        it_pass "telemetry DB is valid and has the expected post-upgrade schema (#196)"
     else
-        it_fail "telemetry backbone tables present after upgrade (#196)" "missing: $missing"
+        it_fail "telemetry DB is valid and has the expected post-upgrade schema (#196)" "quick_check or required table columns failed"
     fi
 }
 
@@ -1043,121 +1116,6 @@ assert_current_state() {
     assert_telemetry_tables_present
     assert_doctor_ok
     [ "$IT_FAIL" -gt "$fails_before" ] && capture_artifacts "check" "$OUT_DIR"
-}
-
-# --- Release-server readiness (--readiness) ---------------------------------
-# Read-only assessment of whether the box is fit to be a RELEASE / validation server: it must
-# reuse already-synced chains, vary configs cheaply, and keep its keys/secrets and dashboard
-# from leaking. Complements `pithead doctor` (stack health) — this checks the server's fitness
-# for the integration harness's job. A WARN is "works, but not ideal"; a FAIL is "fix before
-# using as a release gate".
-box_fstype() { rx "df --output=fstype $(quote_arg "$1") 2>/dev/null | tail -n1 | tr -d ' '"; }
-box_avail_gb() { rx "df -BG --output=avail $(quote_arg "$1") 2>/dev/null | tail -n1 | tr -dc '0-9'"; }
-box_mode() { rx "stat -c %a $(quote_arg "$1") 2>/dev/null"; }
-
-assert_release_readiness() {
-    IT_CURRENT_SCENARIO="readiness"
-    echo ""
-    it_log "── release-server readiness ────────────────────────"
-
-    # 1. The whole point of a release server: chains already synced, reused in minutes.
-    if monero_caught_up; then it_pass "Monero is synced (chain reusable by the matrix)"; elif [ $? = 1 ]; then it_fail "Monero is synced" "monerod answered: not caught up — the matrix would have to re-sync"; else it_fail "Monero is synced" "monerod could not be asked — unreachable, refused, timed out or rejected; sync state unknown"; fi
-    pithead status >/dev/null 2>&1
-    assert_rc "stack is healthy (pithead status)" "$?" "0"
-
-    # 2. The prune axis must vary the DB without re-syncing or mutating the canonical chain. The
-    #    OTHER prune mode is unlocked either by (a) a snapshot/reflink-capable live FS (so a
-    #    variant can be made cheaply) or (b) supplying a pre-built chain of the OPPOSITE mode
-    #    (--full-data-dir when the box is pruned, --pruned-data-dir when it's full). A SAME-mode
-    #    copy on a CoW volume is also useful: it lets destructive scenarios run off the live chain.
-    #    the test bench is a pruned box (MONERO_PRUNE=1) with a pruned copy on a btrfs CoW loopback, so it
-    #    exercises pruned mode live with snapshot isolation; full mode is covered by the fakes.
-    local mdir fstype="" cow_live=0 baseline_mode="full" bp
-    mdir="$(env_on_box MONERO_DATA_DIR)"
-    bp="${BASELINE_PRUNE:-$(env_on_box MONERO_PRUNE)}" # so standalone --readiness sees it too
-    [ -n "$mdir" ] && fstype="$(box_fstype "$mdir")"
-    case "$fstype" in btrfs | zfs | xfs) cow_live=1 ;; esac
-    [ "$bp" = "1" ] && baseline_mode="pruned"
-    it_log "   live chain: ${mdir:-?} (${fstype:-unknown}, ${baseline_mode})"
-
-    # Classify any supplied chains by prune mode relative to the live baseline.
-    local opp_dir opp_label same_dir
-    if [ "$bp" = "1" ]; then
-        opp_dir="${FULL_DATA_DIR:-}"
-        opp_label="full"
-        same_dir="${PRUNED_DATA_DIR:-}"
-    else
-        opp_dir="${PRUNED_DATA_DIR:-}"
-        opp_label="pruned"
-        same_dir="${FULL_DATA_DIR:-}"
-    fi
-
-    # A same-mode copy (e.g. the CoW pruned chain) — snapshot isolation for destructive scenarios.
-    if [ -n "$same_dir" ]; then
-        local sfs
-        sfs="$(box_fstype "$same_dir")"
-        if rx "test -e $(quote_arg "$same_dir")/lmdb/data.mdb" >/dev/null 2>&1; then
-            case "$sfs" in
-            btrfs | zfs | xfs) it_pass "snapshot-isolated $baseline_mode chain on a CoW FS ($same_dir, $sfs) — destructive scenarios needn't touch the live chain" ;;
-            *) it_log "   same-mode copy at $same_dir ($sfs — not CoW)" ;;
-            esac
-        else
-            it_warn "supplied same-mode dir has no lmdb/data.mdb ($same_dir)"
-        fi
-    fi
-
-    # The opposite-mode chain is what unlocks the OTHER value of the prune axis.
-    if [ -n "$opp_dir" ]; then
-        if rx "test -e $(quote_arg "$opp_dir")/lmdb/data.mdb" >/dev/null 2>&1; then
-            it_pass "both prune modes exercisable (live=$baseline_mode + supplied $opp_label chain at $opp_dir)"
-        else
-            it_fail "supplied $opp_label chain present" "$opp_dir has no lmdb/data.mdb"
-        fi
-    elif [ "$cow_live" -eq 1 ]; then
-        it_pass "prune axis: live FS is snapshot-capable ($fstype) — the $opp_label variant can be built cheaply"
-    else
-        it_warn "prune axis: only $baseline_mode is testable live — no $opp_label chain supplied, so $opp_label scenarios skip (cover that mode via the fake mini-stack, or build one)"
-    fi
-
-    # 3. Disk headroom on the live chain FS (room to operate + hold a co-located second chain).
-    if [ -n "$mdir" ]; then
-        local avail
-        avail="$(box_avail_gb "$mdir")"
-        if [ -n "$avail" ] && [ "$avail" -ge 100 ] 2>/dev/null; then
-            it_pass "disk headroom on the live chain FS (${avail} GiB free)"
-        else
-            it_warn "low disk headroom on the live chain FS (${avail:-?} GiB free) — snapshots / a full+pruned matrix may not fit"
-        fi
-    fi
-
-    # 4. Secrets must not be world/group readable (the box holds wallet/RPC creds + onion keys).
-    local envmode
-    envmode="$(box_mode .env)"
-    case "$envmode" in
-    "" | *[!0-9]*) it_warn ".env permissions unknown" ;;
-    ?00) it_pass ".env is owner-only (mode $envmode)" ;;
-    *) it_fail ".env is owner-only" "mode is $envmode — group/other can read RPC creds & onions; run: chmod 600 .env" ;;
-    esac
-
-    # 5. The dashboard must sit behind Caddy on localhost, never bound to a public interface.
-    local d_addrs exposed=0 st _q1 _q2 laddr
-    d_addrs="$(rx "ss -tlnH 'sport = :8000' 2>/dev/null")"
-    if [ -z "$d_addrs" ]; then
-        it_warn "nothing listening on :8000 (dashboard) — can't assess exposure"
-    else
-        while read -r st _q1 _q2 laddr _; do
-            [ -n "$laddr" ] || continue
-            case "$laddr" in 127.0.0.1:* | "[::1]:"*) : ;; *) exposed=1 ;; esac
-        done <<<"$d_addrs"
-        if [ "$exposed" -eq 0 ]; then it_pass "dashboard bound to localhost only (Caddy fronts it)"; else it_fail "dashboard bound to localhost only" "it is listening on a non-loopback address — do not expose the dashboard directly"; fi
-    fi
-
-    # 6. The backup/rollback safety net must be usable (writable backups dir + tar).
-    if rx "mkdir -p backups && touch backups/.itest-rw 2>/dev/null && rm -f backups/.itest-rw && command -v tar" >/dev/null 2>&1; then
-        it_pass "backup/rollback prerequisites present (writable backups/, tar)"
-    else
-        it_fail "backup prerequisites present" "backups/ not writable or tar missing — --safety-backup won't work"
-    fi
 }
 
 # --- Lifecycle + edge phase (--lifecycle) -----------------------------------
@@ -1854,57 +1812,6 @@ run_auth_fail_closed() {
     [ "$IT_FAIL" -gt "$fails_before" ] && capture_artifacts "auth-fail-closed" "$OUT_DIR"
 }
 
-# --- Safety backup / rollback (--safety-backup) -----------------------------
-# Take a real `pithead backup` before the destructive scenarios so a failed run can be rolled
-# all the way back (config, .env, Caddyfile, Tor onion keys, dashboard DB). This both protects
-# a precious box AND exercises backup/restore end-to-end (#102) — closing that CLI-breadth gap.
-safety_backup() {
-    [ "$SAFETY_BACKUP" = "1" ] || return 0
-    it_log "Taking a safety backup before destructive scenarios (pithead backup -y)…"
-    if ! pithead backup -y --no-encrypt >"$OUT_DIR/backup.log" 2>&1; then
-        it_fail "safety backup created" "see $OUT_DIR/backup.log"
-        return 0
-    fi
-    SAFETY_ARCHIVE="$(rx 'ls -t backups/pithead-backup-*.tar.gz 2>/dev/null | head -n1')"
-    if [ -z "$SAFETY_ARCHIVE" ]; then
-        it_fail "safety backup archive located" "no backups/pithead-backup-*.tar.gz on the box"
-        return 0
-    fi
-    it_log "Safety backup: $SAFETY_ARCHIVE"
-    # Exercise backup as an assertion: the archive must list the core files we'd roll back to.
-    local listing
-    listing="$(rx "tar -tzf $(quote_arg "$SAFETY_ARCHIVE") 2>/dev/null")"
-    assert_contains "backup archive contains config.json" "$listing" "config.json"
-    assert_contains "backup archive contains .env" "$listing" ".env"
-}
-
-# On a failed run, roll the box back to the pre-test safety backup.
-safety_rollback_if_failed() {
-    [ "$SAFETY_BACKUP" = "1" ] && [ -n "$SAFETY_ARCHIVE" ] || return 0
-    [ "$IT_FAIL" -gt 0 ] || return 0
-    it_warn "failures detected — rolling back to the safety backup ($SAFETY_ARCHIVE)…"
-    pithead down >/dev/null 2>&1 || true
-    if pithead restore -y "$SAFETY_ARCHIVE" >/dev/null 2>&1; then
-        pithead up >/dev/null 2>&1 || true
-        wait_status_ok 240 || true
-        it_log "rollback complete — config/.env/onions/dashboard restored from the pre-test backup."
-    else
-        it_err "restore FAILED — the box may be in a partial state; archive kept at $SAFETY_ARCHIVE"
-        return 0
-    fi
-}
-
-# Remove the generated safety archive once we're done (kept on --keep, or if restore failed).
-safety_cleanup() {
-    [ -n "$SAFETY_ARCHIVE" ] || return 0
-    if [ "$KEEP_STATE" = "1" ]; then
-        it_warn "--keep: leaving the safety backup at $SAFETY_ARCHIVE"
-        return 0
-    fi
-    rx "rm -f $(quote_arg "$SAFETY_ARCHIVE")" >/dev/null 2>&1 || true
-    it_step "removed the safety backup archive"
-}
-
 # --- Restore + summary ------------------------------------------------------
 restore_baseline() {
     [ "$KEEP_STATE" = "1" ] && {
@@ -1913,10 +1820,18 @@ restore_baseline() {
     }
     [ -z "$BASELINE_CONFIG" ] && return
     it_log "Restoring original config.json and re-applying…"
-    push_config "$BASELINE_CONFIG"
-    pithead apply -y >/dev/null 2>&1 || it_warn "restore apply reported a non-zero exit; check the box."
-    wait_status_ok 240 || true
-    assert_eq "secrets intact after restore" "$(secret_fingerprint)" "$BASELINE_SECRET_FP"
+    if ! push_config "$BASELINE_CONFIG" || ! pithead apply -y >/dev/null 2>&1 || ! wait_status_ok 240; then
+        SAFETY_RESTORE_FAILED=1
+        it_fail "restore original config and healthy stack" "config write, apply, or health wait failed; safety archive retained"
+        return 1
+    fi
+    if [ "$(rx 'cat config.json')" != "$BASELINE_CONFIG" ] ||
+        [ "$(secret_fingerprint)" != "$BASELINE_SECRET_FP" ]; then
+        SAFETY_RESTORE_FAILED=1
+        it_fail "restore exact config and secrets" "post-restore verification failed; safety archive retained"
+        return 1
+    fi
+    it_pass "original config and secrets restored exactly"
 }
 
 summary() {
@@ -2508,7 +2423,31 @@ main() {
     fi
 
     # Optional rollback net for the destructive phases that follow.
-    safety_backup
+    if ! safety_backup; then
+        summary
+        return
+    fi
+    [ -z "$SAFETY_ARCHIVE" ] || arm_safety_abort_restore
+
+    # Upgrade first: old images are still running when the harness starts, and every later phase
+    # then exercises the declared candidate image set. Do not mutate further after a failed
+    # upgrade/provenance check; go straight through the existing rollback/restore path.
+    if [ "$RUN_IMAGE_UPGRADE" = "1" ]; then
+        local upgrade_fails_before="$IT_FAIL"
+        run_image_upgrade
+        if [ "$IT_FAIL" -gt "$upgrade_fails_before" ]; then
+            if [ "$_UPGRADE_RESTORE_ARMED" = "1" ]; then
+                restore_upgrade_baseline
+            else
+                safety_rollback_if_failed
+                restore_baseline
+            fi
+            [ "$SAFETY_RESTORE_FAILED" = 0 ] && _SAFETY_RESTORE_ARMED=0
+            safety_cleanup
+            summary
+            return
+        fi
+    fi
 
     local name rest
     if [ -n "$ONLY_SCENARIO" ]; then
@@ -2536,14 +2475,21 @@ main() {
     [ "$rig_control_ok" = 1 ] && [ "$RUN_FAULTS" = "1" ] && run_fault_injection
     [ "$rig_control_ok" = 1 ] && [ "$RUN_AUTH_FAIL_CLOSED" = "1" ] && run_auth_fail_closed
     [ "$rig_control_ok" = 1 ] && [ "$RUN_HARDENING" = "1" ] && run_hardening
+    [ "$rig_control_ok" = 1 ] && [ "$RUN_XVB_ROUTING" = "1" ] && run_xvb_routing_smoke
     # Subnet last among the destructive phases: it does a full down/up, so it re-establishes the
     # baseline stack cleanly before the end-of-run restore.
     [ "$rig_control_ok" = 1 ] && [ "$RUN_SUBNET" = "1" ] && run_subnet_scenario
 
-    # Failure → roll the box back to the safety backup; success → leave it (restore_baseline
-    # just puts config.json back to where we found it). Then drop the generated archive.
-    safety_rollback_if_failed
-    restore_baseline
+    # An image gate always returns the exact old release. Failed runs rewind state; green runs keep
+    # legitimate chain/dashboard advances. Other runs roll back only on
+    # failure, then put config.json back where it started. Drop the archive only after verification.
+    if [ "$_UPGRADE_RESTORE_ARMED" = "1" ]; then
+        if [ "$IT_FAIL" = 0 ]; then restore_upgrade_baseline 0; else restore_upgrade_baseline; fi
+    else
+        safety_rollback_if_failed
+        restore_baseline
+    fi
+    [ "$SAFETY_RESTORE_FAILED" = 0 ] && _SAFETY_RESTORE_ARMED=0
     safety_cleanup
     summary
 }

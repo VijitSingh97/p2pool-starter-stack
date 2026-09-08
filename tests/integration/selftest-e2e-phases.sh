@@ -57,7 +57,7 @@ drive_harness() { # <mode> <borrow_miner> [rig-token] -> "LAUNCH\t<cmd>" then "S
         # Nothing in here may read the SCRIPT's stdin: an unpiped `cat` in the stub would hang, and
         # a hang reads as a mutation that survived. A pipeline still supplies its own stdin.
         exec </dev/null
-        MODE="$1" BORROW_MINER="$2" WORKERS=1 BENCH_HOST=bench E2E_DIR=/srv/code/pithead-e2e
+        MODE="$1" BORROW_MINER="$2" WORKERS=1 BENCH_HOST=bench E2E_DIR=/srv/code/pithead-e2e RESTORE_DIR=/srv/code/pithead-live
         SCENARIO="${4:-}" RIGFORGE_BOOTSTRAP_VERSION="${5:-}"
         # rig_supply's inputs (#1378). MINER_HOST is what RIG_HOST defaults to; the token comes off
         # the stubbed on_miner, so the empty-token path is reachable by passing "".
@@ -118,7 +118,7 @@ stdin_of() { # <mode> <borrow> [token] -> what e2e.sh piped into the launch call
 
 compose_phases() { # <mode> <borrow_miner> [token] -> the phase list e2e.sh would launch run.sh with
     # Everything between the runner's positional args and the trailing redirect is the phase list.
-    launch_of "$@" | sed -n 's/.*\.e2e-run\.sh[^ ]* [^ ]* [^ ]* \(.*\) >\/dev\/null.*/\1/p'
+    launch_of "$@" | sed -n 's/.*\.e2e-run\.sh[^ ]* [^ ]* [^ ]* [^ ]* \(.*\) >\/dev\/null.*/\1/p'
 }
 
 has_phase() { # <phase-list> <flag> -> "yes" | "no"
@@ -159,7 +159,7 @@ assert_eq "check does NOT request the write phase" \
     "$(has_phase "$CHECK" --rigforge-control)" "no"
 assert_eq "check launches EXACTLY --check — no destructive phase may ever join it" \
     "$(phase_set "$CHECK")" "--check "
-
+assert_contains "check does not require or lock a miner" "$(cat "$E2E_SRC")" 'if [ "$BORROW_MINER" = "1" ] && [ "$MODE" != "check" ]; then'
 echo "== --no-miner: no rig means no rig phases, and the mining asserts are skipped (#905) =="
 NOMINER="$(compose_phases targeted 0)"
 assert_eq "no borrowed miner => no write phase (there is no rig to write to)" \
@@ -480,7 +480,7 @@ drive_recovery() { # <pools-json> <n-backups> -> $OUT (the warn lines), $CFGDIR 
 BEFORE='{"pools":[{"url":"pithead.example:3333"},{"url":"bench.example:3333"}]}'
 drive_recovery "$BEFORE" 1
 assert_eq "a permanent bench pool at [1] is not treated as a leftover borrow" "$(cat "$CFGDIR/config.json")" "$BEFORE"
-assert_eq "  its stale backup is cleared, so 'oldest' keeps meaning the original" "$(ls -1 "$CFGDIR" | wc -l)" "1"
+assert_eq "  its stale backup is cleared, so 'oldest' keeps meaning the original" "$(ls -1 "$CFGDIR" | wc -l | tr -d ' ')" "1"
 assert_eq "  and it is reported as the rig's own permanent bench pool" "$(contains "$OUT" "permanent bench pool")" "yes"
 
 # F1: the unrecoverable arm must not be followed by the reassuring verdict that cancels it.
@@ -491,13 +491,13 @@ assert_eq "  and does NOT also report there was no un-restored borrow to undo (#
 # Arm 1: a borrow WITH surviving backups restores from the OLDEST, then prunes them all.
 drive_recovery '{"pools":[{"url":"pithead.example:3333"},{"url":"bench.example:3333","rig-id":"pithead-e2e"}]}' 2
 assert_eq "a leftover borrow is restored from the oldest backup" "$(jq -r '.pools[0].url' "$CFGDIR/config.json")" "orig1.example:3333"
-assert_eq "  and every backup is pruned once the bytes are back" "$(ls -1 "$CFGDIR" | wc -l)" "1"
+assert_eq "  and every backup is pruned once the bytes are back" "$(ls -1 "$CFGDIR" | wc -l | tr -d ' ')" "1"
 assert_eq "  and the report does NOT then deny the borrow it just undid (#1415 F1, arm 1)" "$(contains "$OUT" "found no un-restored borrow to undo")" "no"
 assert_eq "  positive control for the line above: the report DOES fire here" "$(contains "$OUT" "untagged pool(s)")" "yes"
 
 # Unreadable must cost nothing — a config half-written by a run that died mid-restore looks like this.
 drive_recovery 'not json at all' 1
-assert_eq "an unreadable config leaves the only surviving backup alone" "$(ls -1 "$CFGDIR" | wc -l)" "2"
+assert_eq "an unreadable config leaves the only surviving backup alone" "$(ls -1 "$CFGDIR" | wc -l | tr -d ' ')" "2"
 assert_eq "  and the silence is not reported as clean" "$(contains "$OUT" "leaving the config AND any backup(s) untouched")" "yes"
 assert_eq "  and the REPORT block says so in its own words, which is a SECOND guard" "$(contains "$OUT" "do NOT read the silence as clean")" "yes"
 assert_eq "  and the config bytes are untouched too — that message claims BOTH halves" "$(cat "$CFGDIR/config.json")" "not json at all"

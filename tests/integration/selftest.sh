@@ -104,7 +104,7 @@ rc=$?
 assert_rc "payout confirm ok with both tari env vars too" "$rc" "0"
 assert_contains "augments tari.view_key" "$RESOLVED" "tari.view_key=tvk"
 assert_contains "augments tari.spend_public_key" "$RESOLVED" "tari.spend_public_key=tspk"
-unset IT_MONERO_VIEW_KEY IT_TARI_VIEW_KEY IT_TARI_SPEND_PUBLIC_KEY
+(unset IT_MONERO_VIEW_KEY IT_TARI_VIEW_KEY IT_TARI_SPEND_PUBLIC_KEY && bash "$HERE/selftest-live-gates.sh") || it_fail "live-gate self-tests pass"
 # Compound prerequisites both augment.
 BASELINE_PRUNE=1
 FULL_DATA_DIR="/srv/full"
