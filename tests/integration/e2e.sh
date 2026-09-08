@@ -616,8 +616,7 @@ run_harness() {
     phases="$phases $no_mining"
     log "Running the live harness on $BENCH_HOST (mode=$MODE, detached so an SSH drop can't kill it)"
     step "phases: $phases  (workers=$WORKERS)"
-
-    local runner
+    local runner rollback_b64 pools_b64
     runner="$(mktemp)"
     cat >"$runner" <<'RUNNER'
 #!/usr/bin/env bash
@@ -633,14 +632,15 @@ echo $? > "$dir/results/e2e-harness.done"
 RUNNER
     on_bench "cat > '$E2E_DIR/.e2e-run.sh' && chmod +x '$E2E_DIR/.e2e-run.sh'" <"$runner"
     rm -f "$runner"
-    # For non-check modes, run the safe readiness + current-state assertions inline first (fast,
-    # gives early signal), then the destructive phases detached.
+    # Run safe readiness/current-state assertions inline first, then destructive phases detached.
     if [ "$MODE" != "check" ]; then
         printf '%s\n%s\n' "${RIG_LOCK_PARENT_ACTOR:-}" "${RIG_LOCK_PARENT_NONCE:-}" | on_bench "IFS= read -r a; IFS= read -r n; cd '$E2E_DIR' && RIG_LOCK_PARENT_ACTOR=\"\$a\" RIG_LOCK_PARENT_NONCE=\"\$n\" bash tests/integration/run.sh --local --dir '$E2E_DIR' --readiness --check $no_mining" ||
             warn "readiness/check reported issues (see above) — continuing to the destructive phases"
     fi
+    rollback_b64="$(printf '%s' "${IT_RIG_ROLLBACK_CHANGES:-}" | base64 | tr -d '\n')" || die "Failed to encode IT_RIG_ROLLBACK_CHANGES."
+    pools_b64="$(printf '%s' "${IT_RIG_POOLS_PROBE:-}" | base64 | tr -d '\n')" || die "Failed to encode IT_RIG_POOLS_PROBE."
     harness_prepare "$rearm_id" || die "Failed to record harness launch intent."
-    HARNESS_PID="$(printf '%s\n%s\n%s\n%s\n%s\n' "$IT_RIG_TOKEN" "${RIG_LOCK_PARENT_ACTOR:-}" "${RIG_LOCK_PARENT_NONCE:-}" "$(printf '%s' "${IT_RIG_ROLLBACK_CHANGES:-}" | base64 | tr -d '\n')" "$(printf '%s' "${IT_RIG_POOLS_PROBE:-}" | base64 | tr -d '\n')" | on_bench "IFS= read -r t; IFS= read -r a; IFS= read -r n; IFS= read -r rb; IFS= read -r pb; rollback=\$(printf '%s' \"\$rb\" | base64 -d) || exit 1; pools=\$(printf '%s' \"\$pb\" | base64 -d) || exit 1; rm -f '$E2E_DIR/results/e2e-harness.done' '$rearm_request' '$rearm_ack' || exit 1; cd '$E2E_DIR' || exit 1; IT_RIG_TOKEN=\"\$t\" IT_RIG_ROLLBACK_CHANGES=\"\$rollback\" IT_RIG_POOLS_PROBE=\"\$pools\" RIG_LOCK_PARENT_ACTOR=\"\$a\" RIG_LOCK_PARENT_NONCE=\"\$n\" nohup setsid ./.e2e-run.sh '$HARNESS_STATE' '$E2E_DIR' '$WORKERS' '$rearm_request' '$rearm_ack' '$rearm_id' $phases >/dev/null 2>&1 & p=\$!; i=0; until grep -Eq \"^running \$p [0-9]+\$\" '$HARNESS_STATE'; do test \"\$i\" -lt 50 || exit 1; sleep .1; i=\$((i + 1)); done; echo \$p")" || die "Failed to launch the harness."
+    HARNESS_PID="$(printf '%s\n%s\n%s\n%s\n%s\n' "$IT_RIG_TOKEN" "${RIG_LOCK_PARENT_ACTOR:-}" "${RIG_LOCK_PARENT_NONCE:-}" "$rollback_b64" "$pools_b64" | on_bench "IFS= read -r t || exit 1; IFS= read -r a || exit 1; IFS= read -r n || exit 1; IFS= read -r rb || exit 1; IFS= read -r pb || exit 1; rollback=\$(printf '%s' \"\$rb\" | base64 -d) || exit 1; pools=\$(printf '%s' \"\$pb\" | base64 -d) || exit 1; rm -f '$E2E_DIR/results/e2e-harness.done' '$rearm_request' '$rearm_ack' || exit 1; cd '$E2E_DIR' || exit 1; IT_RIG_TOKEN=\"\$t\" IT_RIG_ROLLBACK_CHANGES=\"\$rollback\" IT_RIG_POOLS_PROBE=\"\$pools\" RIG_LOCK_PARENT_ACTOR=\"\$a\" RIG_LOCK_PARENT_NONCE=\"\$n\" nohup setsid ./.e2e-run.sh '$HARNESS_STATE' '$E2E_DIR' '$WORKERS' '$rearm_request' '$rearm_ack' '$rearm_id' $phases >/dev/null 2>&1 & p=\$!; i=0; until grep -Eq \"^running \$p [0-9]+\$\" '$HARNESS_STATE'; do test \"\$i\" -lt 50 || exit 1; sleep .1; i=\$((i + 1)); done; echo \$p")" || die "Failed to launch the harness."
     [[ "$HARNESS_PID" =~ ^[0-9]+$ ]] || die "Harness launch returned an invalid PID."
 
     # Poll the done-marker, printing a heartbeat tail of the log.
