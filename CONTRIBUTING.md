@@ -32,6 +32,12 @@ The root `pithead` executable is generated and git-ignored. Plain `make` builds 
 numbered `lib/pithead/*.sh` sources; the test targets also build it when needed. Edit the slices,
 not the generated file.
 
+The full shell and appliance selftest suite expects **Linux and a non-root user**, as in
+CI. It uses GNU utilities and tests permission failures that root would bypass. Install
+Bash, Git, Make, jq, Node, Python 3, e2fsprogs, and the shellcheck/shfmt versions pinned in
+`Makefile`. On macOS or Windows, run these suites in a Linux VM, container, or WSL;
+the dashboard and frontend unit suites can run on the host.
+
 ## Development workflow
 
 1. Fork the repo and create a branch off `develop` (the integration branch; `main` holds released
