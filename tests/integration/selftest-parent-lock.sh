@@ -113,7 +113,7 @@ assert_rc "an unresolved durable launch intent refuses restoration" "$?" 1
 ) >/dev/null 2>&1
 assert_rc "a lost reply recovers and drains the durable process-group identity" "$?" 0
 assert_eq "the recovered process group was actually drained" "$(cat "$WORK/recovered")" drained
-assert_contains "drain proves absence with root visibility" "$(cat "$HERE/detached-harness.sh")" 'sudo -n kill -0'
+assert_contains "drain proves absence inside one checked root shell" "$(cat "$HERE/detached-harness.sh")" 'sudo -n bash -c'
 assert_contains "only the local nested runner can use parent-lock bypass" \
     "$(sed -n '/RIG_LOCK_PARENT_ACTOR/,/elif \[ "\$IT_MODE"/p' "$HERE/run.sh")" \
     'IT_MODE" = "local'

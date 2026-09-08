@@ -22,7 +22,7 @@ drain_harness() {
         done
         [ -n "$HARNESS_PID" ] || return 1
     fi
-    until on_bench "sudo -n true || exit 1; if sudo -n kill -0 -- -'$HARNESS_PID' 2>/dev/null; then sudo -n kill -TERM -- -'$HARNESS_PID' || exit 1; fi; i=0; while sudo -n kill -0 -- -'$HARNESS_PID' 2>/dev/null && test \"\$i\" -lt 30; do sleep 1; i=\$((i + 1)); done; if sudo -n kill -0 -- -'$HARNESS_PID' 2>/dev/null; then sudo -n kill -KILL -- -'$HARNESS_PID' || exit 1; fi; ! sudo -n kill -0 -- -'$HARNESS_PID' 2>/dev/null"; do
+    until on_bench "sudo -n bash -c 'p=\$1; if kill -0 -- -\$p 2>/dev/null; then kill -TERM -- -\$p || exit 1; fi; i=0; while kill -0 -- -\$p 2>/dev/null && test \"\$i\" -lt 30; do sleep 1; i=\$((i + 1)); done; if kill -0 -- -\$p 2>/dev/null; then kill -KILL -- -\$p || exit 1; fi; ! kill -0 -- -\$p 2>/dev/null' _ '$HARNESS_PID'"; do
         warn "could not prove the detached harness stopped; retaining ownership and retrying"
         sleep 5
     done
@@ -34,6 +34,6 @@ drain_harness_or_refuse() {
 }
 
 harness_finished() {
-    until on_bench "sudo -n true && ! sudo -n kill -0 -- -'$HARNESS_PID' 2>/dev/null"; do sleep 1; done
+    until on_bench "sudo -n bash -c '! kill -0 -- -\$1 2>/dev/null' _ '$HARNESS_PID'"; do sleep 1; done
     HARNESS_DONE=1
 }
