@@ -82,7 +82,29 @@ assert_contains "detached launch reads token and continuity identity from stdin"
     "$(sed -n '/printf.*IT_RIG_TOKEN.*RIG_LOCK_PARENT_NONCE/p' "$HERE/e2e.sh")" \
     "printf '%s\\n%s\\n%s\\n'"
 assert_contains "detached harness owns a process group that cleanup can drain" "$(cat "$HERE/e2e.sh")" 'nohup setsid ./.e2e-run.sh'
+assert_contains "launch waits for the durable owned process-group identity" "$(cat "$HERE/e2e.sh")" 'until grep -Fqx \"running \$p\"'
 assert_contains "restoration drains an unfinished detached harness first" "$(sed -n '/restore_all()/,/parent_lock_checkpoint restore/p' "$HERE/e2e.sh")" 'drain_harness'
+
+echo "== a lost launch acknowledgement cannot bypass the drain =="
+(
+    source "$HERE/detached-harness.sh"
+    HARNESS_PENDING=1 HARNESS_STATE=/test/state
+    on_bench() { printf 'intent\n'; }
+    warn() { :; }
+    sleep() { :; }
+    drain_harness
+) >/dev/null 2>&1
+assert_rc "an unresolved durable launch intent refuses restoration" "$?" 1
+(
+    source "$HERE/detached-harness.sh"
+    HARNESS_PENDING=1 HARNESS_STATE=/test/state
+    on_bench() { case "$1" in cat\ *) printf 'running 4242\n' ;; *) printf 'drained\n' >"$WORK/recovered" ;; esac; }
+    warn() { :; }
+    drain_harness
+    [ "$HARNESS_DONE" = 1 ]
+) >/dev/null 2>&1
+assert_rc "a lost reply recovers and drains the durable process-group identity" "$?" 0
+assert_eq "the recovered process group was actually drained" "$(cat "$WORK/recovered")" drained
 assert_contains "only the local nested runner can use parent-lock bypass" \
     "$(sed -n '/RIG_LOCK_PARENT_ACTOR/,/elif \[ "\$IT_MODE"/p' "$HERE/run.sh")" \
     'IT_MODE" = "local'

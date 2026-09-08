@@ -1,16 +1,35 @@
 # shellcheck shell=bash
 HARNESS_PID=""
 HARNESS_DONE=0
+HARNESS_PENDING=0
+HARNESS_STATE=""
+
+harness_prepare() {
+    HARNESS_STATE="$E2E_DIR/results/e2e-harness.$1.state"
+    on_bench "printf 'intent\\n' > '$HARNESS_STATE.tmp' && mv '$HARNESS_STATE.tmp' '$HARNESS_STATE'" || return 1
+    HARNESS_PENDING=1
+}
 
 drain_harness() {
-    [ -n "$HARNESS_PID" ] && [ "$HARNESS_DONE" = 0 ] || return 0
+    local state i
+    [ "$HARNESS_PENDING" = 1 ] && [ "$HARNESS_DONE" = 0 ] || return 0
     warn "detached harness is still active; terminating and draining it before restoration"
+    if [ -z "$HARNESS_PID" ]; then
+        for i in {1..10}; do
+            state="$(on_bench "cat '$HARNESS_STATE'" 2>/dev/null)" || state=""
+            [[ "$state" =~ ^running\ ([0-9]+)$ ]] && HARNESS_PID="${BASH_REMATCH[1]}" && break
+            sleep 1
+        done
+        [ -n "$HARNESS_PID" ] || return 1
+    fi
     until on_bench "kill -TERM -- -'$HARNESS_PID' 2>/dev/null || true; i=0; while kill -0 -- -'$HARNESS_PID' 2>/dev/null && test \"\$i\" -lt 30; do sleep 1; i=\$((i + 1)); done; kill -KILL -- -'$HARNESS_PID' 2>/dev/null || true; while kill -0 -- -'$HARNESS_PID' 2>/dev/null; do sleep 1; done"; do
         warn "could not prove the detached harness stopped; retaining ownership and retrying"
         sleep 5
     done
     HARNESS_DONE=1
 }
+
+drain_harness_or_refuse() { drain_harness || { warn "harness launch state is uncertain; refusing restoration"; exit 125; }; }
 
 harness_finished() {
     until on_bench "! kill -0 -- -'$HARNESS_PID' 2>/dev/null"; do sleep 1; done

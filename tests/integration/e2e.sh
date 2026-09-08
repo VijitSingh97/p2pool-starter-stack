@@ -199,7 +199,7 @@ restore_all() {
         warn "  Re-run without --keep, or restore by hand: canonical=$CANONICAL_DIR, miner cfg backup=$MINER_CFG_BACKUP"
         return
     fi
-    drain_harness
+    drain_harness_or_refuse
     parent_lock_checkpoint restore || {
         warn "Refusing an unreserved restore; preserve $MINER_CFG_BACKUP and repair the bench by hand."
         exit 1
@@ -624,7 +624,8 @@ run_harness() {
     cat >"$runner" <<'RUNNER'
 #!/usr/bin/env bash
 set -uo pipefail
-dir="$1"; workers="$2"; rearm_request="$3"; rearm_ack="$4"; rearm_id="$5"; shift 5
+state="$1"; dir="$2"; workers="$3"; rearm_request="$4"; rearm_ack="$5"; rearm_id="$6"; shift 6
+printf 'running %s\n' "$$" >"$state.tmp" && mv "$state.tmp" "$state"
 mkdir -p "$dir/results"
 IT_BORROW_REARM_REQUEST="$rearm_request" IT_BORROW_REARM_ACK="$rearm_ack" IT_BORROW_REARM_TOKEN="$rearm_id" \
     bash "$dir/tests/integration/run.sh" --local --dir "$dir" --workers "$workers" "$@" \
@@ -633,15 +634,14 @@ echo $? > "$dir/results/e2e-harness.done"
 RUNNER
     on_bench "cat > '$E2E_DIR/.e2e-run.sh' && chmod +x '$E2E_DIR/.e2e-run.sh'" <"$runner"
     rm -f "$runner"
-
     # For non-check modes, run the safe readiness + current-state assertions inline first (fast,
     # gives early signal), then the destructive phases detached.
     if [ "$MODE" != "check" ]; then
         printf '%s\n%s\n' "${RIG_LOCK_PARENT_ACTOR:-}" "${RIG_LOCK_PARENT_NONCE:-}" | on_bench "IFS= read -r a; IFS= read -r n; cd '$E2E_DIR' && RIG_LOCK_PARENT_ACTOR=\"\$a\" RIG_LOCK_PARENT_NONCE=\"\$n\" bash tests/integration/run.sh --local --dir '$E2E_DIR' --readiness --check $no_mining" ||
             warn "readiness/check reported issues (see above) — continuing to the destructive phases"
     fi
-
-    HARNESS_PID="$(printf '%s\n%s\n%s\n' "$IT_RIG_TOKEN" "${RIG_LOCK_PARENT_ACTOR:-}" "${RIG_LOCK_PARENT_NONCE:-}" | on_bench "IFS= read -r t; IFS= read -r a; IFS= read -r n; rm -f '$E2E_DIR/results/e2e-harness.done' '$rearm_request' '$rearm_ack' || exit 1; cd '$E2E_DIR' || exit 1; IT_RIG_TOKEN=\"\$t\" RIG_LOCK_PARENT_ACTOR=\"\$a\" RIG_LOCK_PARENT_NONCE=\"\$n\" nohup setsid ./.e2e-run.sh '$E2E_DIR' '$WORKERS' '$rearm_request' '$rearm_ack' '$rearm_id' $phases >/dev/null 2>&1 & echo \$!")" || die "Failed to launch the harness."
+    harness_prepare "$rearm_id" || die "Failed to record harness launch intent."
+    HARNESS_PID="$(printf '%s\n%s\n%s\n' "$IT_RIG_TOKEN" "${RIG_LOCK_PARENT_ACTOR:-}" "${RIG_LOCK_PARENT_NONCE:-}" | on_bench "IFS= read -r t; IFS= read -r a; IFS= read -r n; rm -f '$E2E_DIR/results/e2e-harness.done' '$rearm_request' '$rearm_ack' || exit 1; cd '$E2E_DIR' || exit 1; IT_RIG_TOKEN=\"\$t\" RIG_LOCK_PARENT_ACTOR=\"\$a\" RIG_LOCK_PARENT_NONCE=\"\$n\" nohup setsid ./.e2e-run.sh '$HARNESS_STATE' '$E2E_DIR' '$WORKERS' '$rearm_request' '$rearm_ack' '$rearm_id' $phases >/dev/null 2>&1 & p=\$!; i=0; until grep -Fqx \"running \$p\" '$HARNESS_STATE'; do test \"\$i\" -lt 50 || exit 1; sleep .1; i=\$((i + 1)); done; echo \$p")" || die "Failed to launch the harness."
     [[ "$HARNESS_PID" =~ ^[0-9]+$ ]] || die "Harness launch returned an invalid PID."
 
     # Poll the done-marker, printing a heartbeat tail of the log.
