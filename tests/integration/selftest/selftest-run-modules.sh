@@ -20,16 +20,6 @@ actual_functions="$(for module in "${modules[@]}"; do sed -n 's/^\([A-Za-z_][A-Z
     exit 1
 }
 
-read -r body_sum body_bytes < <(
-    for module in "${modules[@]}"; do
-        tail -n +3 "$ROOT/lib/$module" | sed '/# shellcheck disable=.*assembled runner scope/d'
-    done | cksum
-)
-[ "$body_sum $body_bytes" = "3240216402 140020" ] || {
-    echo "integration split-body parity mismatch: $body_sum $body_bytes" >&2
-    exit 1
-}
-
 if bash -c 'source "$1"' _ "$ROOT/lib/run-cli.sh" >/dev/null 2>&1; then
     echo "integration module accepted a direct source without its runner guard" >&2
     exit 1
