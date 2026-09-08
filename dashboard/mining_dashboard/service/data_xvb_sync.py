@@ -30,27 +30,8 @@ logger = logging.getLogger("DataService")
 # (~5 min) this is ~15 min of sustained failure.
 _XVB_REGISTER_FAIL_ALERT = 3
 
-# v1.7 telemetry backbone (#196 Wave-0) capture cadences. All wall-clock gated (`time.time() -
-# last >= N`), NOT `iteration_count % k` — the latter silently changes cadence if UPDATE_INTERVAL
-# is ever reconfigured.
-_XVB_HISTORY_CAPTURE_SEC = 300  # ~5 min
-_HOURLY_CAPTURE_SEC = 3600  # disk_growth + network_history
-_WORKER_HISTORY_CAPTURE_SEC = 300  # ~5 min
-
-
-# Per-worker flood cap on NEW out-of-band audit rows (#724). The enriched worker feed is
-# unauthenticated LAN input, so a rogue device presenting as a worker can report a fresh random
-# change_id every poll — each a distinct, permanent audit_events row (#530's deterministic id only
-# collapses REPEATS of one change_id, never distinct ones). At most _RIG_EDIT_CAP_PER_HOUR genuine
-# rows per worker per rolling hour; beyond that, rows are dropped and a single rate-limited marker
-# is recorded + logged. A real fleet edits a rig a handful of times an hour at most, so a
-# legitimate cadence never trips it — only a flood does.
-# ONE budget covers BOTH detections on this feed: rig-edit (#530) and revision-drift (#1551).
-# revision has the identical property — the store's dedup collapses an UNCHANGED revision and does
-# nothing about one that changes every poll — so a second window would just double what one
-# untrusted source can make permanent. See service/workers/worker_change_audit.py.
-_RIG_EDIT_CAP_PER_HOUR = 12
-_RIG_EDIT_WINDOW_SEC = 3600
+# XvB telemetry is captured at most once per five minutes.
+_XVB_HISTORY_CAPTURE_SEC = 300
 
 
 class DataXvbSyncMixin:

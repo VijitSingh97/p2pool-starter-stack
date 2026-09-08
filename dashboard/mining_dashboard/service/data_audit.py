@@ -22,20 +22,6 @@ from mining_dashboard.service.workers import worker_change_audit
 logger = logging.getLogger("DataService")
 
 
-# Consecutive XvB-registration failures (while never yet registered) before we raise the dashboard
-# "registration failing" warning (#263). A couple of transient blips during the normal first-share
-# window shouldn't alarm; a configured-but-refusing endpoint should. At one attempt per 10th poll
-# (~5 min) this is ~15 min of sustained failure.
-_XVB_REGISTER_FAIL_ALERT = 3
-
-# v1.7 telemetry backbone (#196 Wave-0) capture cadences. All wall-clock gated (`time.time() -
-# last >= N`), NOT `iteration_count % k` — the latter silently changes cadence if UPDATE_INTERVAL
-# is ever reconfigured.
-_XVB_HISTORY_CAPTURE_SEC = 300  # ~5 min
-_HOURLY_CAPTURE_SEC = 3600  # disk_growth + network_history
-_WORKER_HISTORY_CAPTURE_SEC = 300  # ~5 min
-
-
 # Per-worker flood cap on NEW out-of-band audit rows (#724). The enriched worker feed is
 # unauthenticated LAN input, so a rogue device presenting as a worker can report a fresh random
 # change_id every poll — each a distinct, permanent audit_events row (#530's deterministic id only
