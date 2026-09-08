@@ -2179,7 +2179,7 @@ run_rigforge_control() {
         return 0
     fi
 
-    local st rig supplied=0
+    local st rig supplied=0 control_rc
     st="$(api_state)"
     rig="$RIG_NAME"
     if [ -n "$rig" ]; then
@@ -2313,12 +2313,12 @@ run_rigforge_control() {
 
     [ -n "$RIGFORGE_BOOTSTRAP_VERSION" ] || run_rigforge_upgrade "$rig"
 
-    [ "$IT_FAIL" -gt "$fails_before" ] && capture_artifacts "rigforge-control" "$OUT_DIR"
-
+    control_rc=$((IT_FAIL > fails_before))
+    [ "$control_rc" = 0 ] || capture_artifacts "rigforge-control" "$OUT_DIR"
     # Restore: baseline config drops the injected descriptor + turns control back off (the end-of-run
     # restore_baseline would too; doing it here keeps the box clean even if a later phase is added).
     it_step "restoring baseline (control off, descriptor dropped)…"
-    _restore_rig_control_baseline
+    _restore_rig_control_baseline && return "$control_rc"
 }
 
 # Predicate: the rig is present in the live feed with its enriched block parsed.
