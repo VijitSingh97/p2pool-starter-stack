@@ -14,6 +14,7 @@ Mutation-kill notes:
     the "stops on first matching version" test asserts the call count stops short of the cap.
 """
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -36,7 +37,10 @@ class FakeWorkerClient:
         version = self._versions.pop(0) if self._versions else self._versions_last()
         if version is None:
             return {}
-        return {"rigforge": {"version": version}}
+        return {
+            "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "rigforge": {"version": version},
+        }
 
     def _versions_last(self):
         return None
@@ -95,7 +99,10 @@ class TestRefreshWorkerAfterUpgrade:
                 self.calls += 1
                 if self.calls == 1:
                     raise TimeoutError("no route to host")
-                return {"rigforge": {"version": "1.12.0"}}
+                return {
+                    "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "rigforge": {"version": "1.12.0"},
+                }
 
         client = FlakyClient()
         ok = await worker_refresh.refresh_worker_after_upgrade(
@@ -115,6 +122,27 @@ class TestRefreshWorkerAfterUpgrade:
         )
         assert ok is True
         assert len(client.calls) == 2
+
+    async def test_matching_version_with_stale_stamp_is_not_success(self):
+        entry = {"name": "rig1", "ip": "10.0.0.5"}
+
+        class StaleClient:
+            async def get_stats(self, ip, name):
+                return {
+                    "generated_at": "2000-01-01T00:00:00Z",
+                    "rigforge": {"version": "1.12.0"},
+                }
+
+        ok = await worker_refresh.refresh_worker_after_upgrade(
+            {"workers": [entry]},
+            "rig1",
+            "v1.12.0",
+            worker_client=StaleClient(),
+            attempts=1,
+            sleep=_fake_sleep,
+        )
+        assert ok is False
+        assert entry["rigforge"]["stale"] is True
 
 
 class TestMaybeRefreshAfterUpgrade:

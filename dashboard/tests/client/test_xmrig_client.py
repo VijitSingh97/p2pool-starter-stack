@@ -99,12 +99,11 @@ class FakeSession:
 
 
 async def test_success_returns_payload_with_api_ok_and_single_call():
-    session = FakeSession(
-        response=FakeResponse(200, {"kind": "proxy", "hashrate": {"total": [10]}})
-    )
+    body = {"kind": "proxy", "hashrate": {"total": [10]}}
+    session = FakeSession(response=FakeResponse(200, body))
     client = XMRigWorkerClient(session)
     result = await client.get_stats("10.0.0.1", "rig1")
-    assert result == {"kind": "proxy", "hashrate": {"total": [10]}, "api_ok": True}
+    assert result == {**body, "api_ok": True, "adopted": False}
     assert len(session.calls) == 1  # exactly one probe — never multiple auth combinations
     assert session.calls[0][0] == "http://10.0.0.1:8080/1/summary"
 
@@ -121,20 +120,20 @@ async def test_failure_status_returns_api_ok_false_single_call():
     session = FakeSession(response=FakeResponse(401))
     client = XMRigWorkerClient(session)
     result = await client.get_stats("10.0.0.1", "rig1")
-    assert result == {"api_ok": False}
+    assert result == {"api_ok": False, "adopted": False}
     assert len(session.calls) == 1  # no retry with a different credential
 
 
 async def test_exception_returns_api_ok_false():
     session = FakeSession(exc=OSError("connection refused"))
     client = XMRigWorkerClient(session)
-    assert await client.get_stats("10.0.0.1", "rig1") == {"api_ok": False}
+    assert await client.get_stats("10.0.0.1", "rig1") == {"api_ok": False, "adopted": False}
 
 
 async def test_non_dict_200_body_is_a_failure():
     session = FakeSession(response=FakeResponse(200, ["not", "a", "dict"]))
     client = XMRigWorkerClient(session)
-    assert await client.get_stats("10.0.0.1", "rig1") == {"api_ok": False}
+    assert await client.get_stats("10.0.0.1", "rig1") == {"api_ok": False, "adopted": False}
 
 
 # --- Auth modes (the "rest defined through config") --------------------------------------------
@@ -253,7 +252,7 @@ async def test_real_miner_ip_is_probed(ip):
     session = FakeSession(response=FakeResponse(200, {"ok": True}))
     client = XMRigWorkerClient(session)
     result = await client.get_stats(ip, "rig")
-    assert result == {"ok": True, "api_ok": True}
+    assert result == {"ok": True, "api_ok": True, "adopted": False}
     host = ip.split(":")[0]
     assert session.calls[0][0] == f"http://{host}:8080/1/summary"
 
@@ -333,20 +332,6 @@ async def test_override_token_beats_fleet_name_auth(monkeypatch):
     assert session.calls[0][1]["Authorization"] == "Bearer per-rig-secret"
 
 
-async def test_masked_sentinel_token_falls_through_to_fleet_name_auth(monkeypatch):
-    # The container reads the MASKED config (#440): a per-worker token is the {"__secret__": true}
-    # sentinel, which must NOT be sent as a bearer (stringifying the dict 401s). It means "a token
-    # exists but the container doesn't hold it", so the read probe falls through to the fleet auth
-    # mode; the host-side runner uses the real token for control (#508).
-    monkeypatch.setattr(xc, "XMRIG_API_AUTH", "name")
-    _with_overrides(
-        monkeypatch, [{"name": "rig1", "host": "10.0.0.1", "token": {"__secret__": True}}]
-    )
-    session = FakeSession(response=FakeResponse(200, {"ok": True}))
-    await XMRigWorkerClient(session).get_stats("10.0.0.1", "rig1")
-    assert session.calls[0][1]["Authorization"] == "Bearer rig1"
-
-
 async def test_match_is_by_stratum_name_before_plus_suffix(monkeypatch):
     _with_overrides(monkeypatch, [{"name": "rig1", "port": 18088}])
     session = FakeSession(response=FakeResponse(200, {"ok": True}))
@@ -397,7 +382,7 @@ async def test_operator_host_is_probed_even_when_ip_is_unusable(monkeypatch):
     _with_overrides(monkeypatch, [{"name": "rig1", "host": "192.168.7.9", "token": "s3cr3t"}])
     session = FakeSession(response=FakeResponse(200, {"ok": True}))
     result = await XMRigWorkerClient(session).get_stats("", "rig1")
-    assert result == {"ok": True, "api_ok": True}
+    assert result == {"ok": True, "api_ok": True, "adopted": True}
     url, headers = session.calls[0]
     assert url == "http://192.168.7.9:8080/1/summary"
     assert headers["Authorization"] == "Bearer s3cr3t"

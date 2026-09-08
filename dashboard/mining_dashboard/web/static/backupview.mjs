@@ -13,16 +13,21 @@ import { Component, html } from "./preact.mjs";
 import { fmtEpoch } from "./securityview.mjs";
 
 const CONTROL_HEADERS = { "Content-Type": "application/json", "X-Pithead-Control": "1" };
-const BACKUP_POLL_MAX = 90; // 3 minutes — backup stops and restarts the whole stack, dashboard included
+const BACKUP_POLL_MAX = 450; // 15 minutes — appliance testing exceeded the old 3-minute wait
+const BACKUP_TIMEOUT =
+  "Stopped waiting for the backup. The host keeps trying, but this dashboard did not return; restart the stack from the host, then check Backup again.";
+const APPLIANCE_BACKUP_TIMEOUT =
+  "Stopped waiting for the backup. The host keeps trying, but this dashboard did not return; restart the appliance to recover the normal startup path, then check Backup again.";
 
 // POST the backup intent, then poll past the runner's interim "running" to a terminal result.
 // Exported for node --test — this network flow is the logic; BackupPanel only maps its outcome
 // onto UI state.
-export async function runBackup() {
+export async function runBackup(appliance = false) {
   const res = await fetch("/api/control/backup", { method: "POST", headers: CONTROL_HEADERS });
   if (!res.ok && res.status !== 202) throw new Error(`HTTP ${res.status}`);
   const { id } = await res.json();
-  const result = await pollResult(id, "running", BACKUP_POLL_MAX);
+  const timeout = appliance ? APPLIANCE_BACKUP_TIMEOUT : BACKUP_TIMEOUT;
+  const result = await pollResult(id, "running", BACKUP_POLL_MAX, timeout);
   return { id, ...result };
 }
 
@@ -59,7 +64,7 @@ export class BackupPanel extends Component {
   async run() {
     this.setState({ phase: "creating" });
     try {
-      const out = await runBackup();
+      const out = await runBackup(this.props.appliance);
       this.setState({
         id: out.id,
         result: out,
@@ -76,8 +81,8 @@ export class BackupPanel extends Component {
             <h3>Create a backup</h3>
             <p>The host stops the stack, archives config.json, .env, the Tor onion-service keys
             and the dashboard database into an encrypted file, then starts the stack again.
-            Mining pauses for the duration — usually under a minute. Blockchains are excluded;
-            they re-sync.</p>
+            Mining and this dashboard pause while the stack restarts. Appliance tests took roughly
+            three to four minutes; leave this page open. Blockchains are excluded; they re-sync.</p>
             <p>The passphrase is generated on the host and shown once, right after this. There is
             no way to see it again — download the kit or write it down when it appears.</p>
             <div class="config-modal-actions">
@@ -128,6 +133,20 @@ export class BackupPanel extends Component {
 
   render() {
     if (!this.props.enabled) {
+      // The appliance has no shell, so the host-CLI remedy below is advice its operator cannot
+      // act on (#1854) — but "wait for the channel" was the WRONG replacement. `enabled` is
+      // DASHBOARD_CONTROL_ENABLED, a config constant with no liveness in it, and an appliance
+      // reaches this branch only in the "No login" case: apply_appliance_defaults turns the
+      // channel on when the key is null AND the dashboard password is non-empty, so an empty
+      // password leaves it off DELIBERATELY and permanently. Nothing returns. Name the login.
+      if (this.props.appliance) {
+        return html`<div class="card">
+            <h3>Backup</h3>
+            <p>Backup is off because this machine was set up without a dashboard login. The
+            control channel it exports through sits behind that login, so it stays off until
+            this machine has one — set a password under Set up again in the boot menu.</p>
+        </div>`;
+      }
       return html`<div class="card">
           <h3>Backup</h3>
           <p>Backup export is off with the rest of the control channel. To enable it, set
@@ -146,6 +165,9 @@ export class BackupPanel extends Component {
         <p>Export an encrypted archive of config.json, .env, the Tor onion-service keys, and the
         dashboard database — the state a dead box takes with it. Blockchains are excluded; they
         re-sync.</p>
+        <p class="text-muted text-xs">Keep both halves: the archive, and the kit that carries the
+        passphrase opening it. Neither is any use without the other, and setting a machine up
+        later asks for this same pair.</p>
         <button class="btn-toggle active" disabled=${phase !== "idle"}
                 onClick=${() => this.setState({ phase: "confirm" })}>Back up now</button>
     </div>${modal}`;

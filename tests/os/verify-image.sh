@@ -31,7 +31,9 @@ rigforge_ref_matches() { # <image-root> <dockerfile> — 0 iff the recorded ref 
     pin=$(sed -n 's/^ARG RIGFORGE_REF=\([^ ]*\).*/\1/p' "$2" 2>/dev/null)
     [ -n "$rec" ] && [ "$rec" = "$pin" ]
 }
-# Sourcing defines the helper and runs nothing, so the self-test drives the REAL comparison.
+# shellcheck source=tests/os/verify-image-artifact-helpers.sh
+. "$SCRIPT_DIR/verify-image-artifact-helpers.sh"
+# Sourcing defines the helpers and runs nothing, so the self-tests drive the REAL comparisons.
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then return 0; fi
 
 IMAGE="${1:-}"
@@ -106,9 +108,9 @@ mount -o ro "${LOOP}p1" "$ESP" || {
 echo "==> boot path (each location burned us once)"
 chk "BOOTX64.EFI at the fallback path" '[ -s "$ESP/EFI/BOOT/BOOTX64.EFI" ]'
 chk "grub.cfg in the prefix dir" '[ -s "$ESP/grub/grub.cfg" ]'
-# load_env reads \$prefix/grubenv; at the ESP root it is a silent no-op and updates never take.
 chk "grubenv in the prefix dir, not the ESP root" '[ -s "$ESP/grub/grubenv" ] && [ ! -e "$ESP/grubenv" ]'
 chk "grubenv seeds slot A good" 'grub-editenv "$ESP/grub/grubenv" list | grep -q "A_OK=1"'
+chk "grubenv names slot A's version and records slot B empty" 'grub-editenv "$ESP/grub/grubenv" list | grep -q "^A_VERSION=$(tr -d "[:space:]" <"$ROOT/opt/pithead/VERSION")$" && grub-editenv "$ESP/grub/grubenv" list | grep -q "^B_VERSION=$"'
 chk "kernel root by probed PARTUUID, never label" 'grep -q "probe --set=PU --part-uuid" "$ESP/grub/grub.cfg"'
 # The console carries the token and the password; chatter that scrolls them away is a defect.
 chk "console is quieted so the token stays readable" 'grep -q "loglevel=4" "$ESP/grub/grub.cfg"'
@@ -147,6 +149,8 @@ chk "data-reset unit enabled (local-fs transaction)" 'test -L "$ROOT/etc/systemd
 chk "data-reset script present and executable" 'test -x "$ROOT/usr/local/sbin/pithead-data-reset"'
 chk "data-reset ordered before /data mounts (a mounted partition cannot be reformatted)" \
     'grep -q "^Before=data.mount local-fs.target" "$ROOT/etc/systemd/system/pithead-data-reset.service"'
+chk "data-reset's repair tools are baked (e2fsck + mkfs.ext4, #1069 W11)" \
+    'data_reset_repair_tools_present "$ROOT"'
 # Hugepages: the sysctl the Dockerfile calls load-bearing for the memory caps.
 chk "hugepage reservation baked (RandomX dataset must land in hugetlbfs)" 'grep -q "vm.nr_hugepages=3072" "$ROOT/etc/sysctl.d/99-pithead-hugepages.conf"'
 # The low-RAM sizing that corrects that sysctl at boot: without it a small machine gets the
@@ -268,7 +272,12 @@ fi
 if [ -f ./pithead ] && [ -f dashboard/mining_dashboard/wizard.py ]; then
     echo "==> the artifact matches the tree it was built from"
     chk "shipped pithead is the tree's pithead" 'cmp -s "$ROOT/opt/pithead/pithead" ./pithead'
-    chk "shipped compose file matches" 'cmp -s "$ROOT/opt/pithead/docker-compose.yml" ./docker-compose.yml'
+    # The compose file is staged from the STACK_VERSION tag when that tag exists (#1215), so the
+    # tree is the wrong reference then. The stamp says which; compose_reference refuses the rest.
+    COMPOSE_REF=$(mktemp)
+    chk "shipped compose file matches its stamped source ($(cat "$ROOT/opt/pithead/COMPOSE_SOURCE" 2>/dev/null || echo missing))" \
+        'compose_reference "$ROOT" "$COMPOSE_REF" && cmp -s "$ROOT/opt/pithead/docker-compose.yml" "$COMPOSE_REF"'
+    rm -f "$COMPOSE_REF"
     chk "shipped config reference matches" 'cmp -s "$ROOT/opt/pithead/config.reference.json" ./config.reference.json'
 
     # The wizard is the part that shipped stale, and it lives inside a container archive rather
@@ -277,19 +286,35 @@ if [ -f ./pithead ] && [ -f dashboard/mining_dashboard/wizard.py ]; then
     WIZ_ARCHIVE=$(ls "$ROOT"/opt/pithead/images/*.tar.gz 2>/dev/null | head -1)
     WIZ_TMP=$(mktemp -d)
     WIZ_SHIPPED=""
-    if [ -n "$WIZ_ARCHIVE" ] && tar -xzf "$WIZ_ARCHIVE" -C "$WIZ_TMP" 2>/dev/null; then
-        for layer in "$WIZ_TMP"/blobs/sha256/* "$WIZ_TMP"/*/layer.tar; do
-            [ -f "$layer" ] || continue
-            member=$(tar -tf "$layer" 2>/dev/null | grep -m1 'mining_dashboard/wizard\.py$') || continue
-            tar -xOf "$layer" "$member" >"$WIZ_TMP/shipped-wizard.py" 2>/dev/null && {
-                # shellcheck disable=SC2034  # read inside chk's eval'd condition below
-                WIZ_SHIPPED="$WIZ_TMP/shipped-wizard.py"
-                break
-            }
-        done
+    # #1935: this check reddened once in a battery, re-passed on the same image, and the log could not
+    # say which step produced no file — so each step names itself, and a mismatch prints cmp's verdict.
+    WIZ_WHY="no *.tar.gz under opt/pithead/images"
+    if [ -n "$WIZ_ARCHIVE" ]; then
+        if tar -xzf "$WIZ_ARCHIVE" -C "$WIZ_TMP" 2>"$WIZ_TMP/untar.err"; then
+            WIZ_WHY="no layer lists mining_dashboard/wizard.py"
+            for layer in "$WIZ_TMP"/blobs/sha256/* "$WIZ_TMP"/*/layer.tar; do
+                [ -f "$layer" ] || continue
+                # sed, not grep -m1: an early exit would SIGPIPE tar and, under pipefail, skip the layer.
+                member=$(tar -tf "$layer" 2>/dev/null | grep 'mining_dashboard/wizard\.py$' | sed -n '1p')
+                [ -n "$member" ] || continue
+                if tar -xOf "$layer" "$member" >"$WIZ_TMP/shipped-wizard.py" 2>"$WIZ_TMP/extract.err"; then
+                    # shellcheck disable=SC2034  # read inside chk's eval'd condition below
+                    WIZ_SHIPPED="$WIZ_TMP/shipped-wizard.py"
+                    break
+                fi
+                WIZ_WHY="tar -xOf $member from $(basename "$layer" | cut -c1-12) failed: $(head -c 120 "$WIZ_TMP/extract.err" | tr -c '[:print:]' '?')"
+            done
+        else
+            WIZ_WHY="tar -xzf $(basename "$WIZ_ARCHIVE") failed: $(head -c 120 "$WIZ_TMP/untar.err" | tr -c '[:print:]' '?')"
+        fi
     fi
     chk "the baked wizard image contains the tree's wizard.py" \
         '[ -n "$WIZ_SHIPPED" ] && cmp -s "$WIZ_SHIPPED" dashboard/mining_dashboard/wizard.py'
+    if [ -z "$WIZ_SHIPPED" ]; then
+        echo "     · wizard.py was not extracted: $WIZ_WHY"
+    elif ! cmp -s "$WIZ_SHIPPED" dashboard/mining_dashboard/wizard.py; then
+        echo "     · shipped wizard.py differs from the tree's: $(cmp "$WIZ_SHIPPED" dashboard/mining_dashboard/wizard.py 2>&1 | head -1)"
+    fi
     rm -rf "$WIZ_TMP"
 else
     skip "the artifact matches the tree it was built from" "not run from the repo root"

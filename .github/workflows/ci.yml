@@ -83,11 +83,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "20"
-      # Pure client logic (worker sort, tooltip formatting) lives in static/logic.mjs and is
-      # tested with Node's built-in runner — no package.json/node_modules/build step. Component
-      # rendering is covered by a manual browser smoke test, not here.
+      # Pure client logic uses Node's built-in runner; the Make target first builds the generated
+      # CLI read by cross-surface drift tests. There is no package.json/node_modules build step.
+      # Component rendering is covered by a manual browser smoke test, not here.
       - name: Run frontend logic tests
-        run: node --test dashboard/tests/frontend/*.test.mjs
+        run: make test-frontend
 
   dashboard-image:
     name: Dashboard image (Docker test stage)
@@ -483,7 +483,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Validate docker-compose.yml interpolation + hardening invariants (#90)
-        run: bash tests/stack/test_compose.sh
+        run: make test-compose
 
   lint-surfaces:
     name: Lint per-surface (biome, yaml, markdown, proto, toml)
@@ -508,6 +508,6 @@ jobs:
           export UV_INSTALL_DIR="$HOME/.local/bin"
           curl -LsSf https://astral.sh/uv/0.10.10/install.sh -o /tmp/uv-install.sh; sh /tmp/uv-install.sh # never a pipe — see the dashboard job's copy (#1788)
           echo "$UV_INSTALL_DIR" >> "$GITHUB_PATH"
-      - name: Lint docs voice, operator strings, topology classes, file budget, trivy parity, then JS/CSS (Biome), YAML, Markdown, proto (buf), TOML (taplo)
-        # Single source of truth: the Makefile targets. REPO-LOCAL GATES FIRST (#1746): the five bash ones cost under 6s between them, while the five after them fetch via npx/uvx/docker and have eaten the whole 15-minute timeout on a slow registry.
-        run: make lint-docs-voice lint-operator-strings lint-topology lint-file-budget lint-trivy-parity lint-js lint-yaml lint-md lint-proto lint-toml
+      - name: Lint docs voice, operator strings, topology classes, file budget, pithead build/trivy parity, then JS/CSS (Biome), YAML, Markdown, proto (buf), TOML (taplo)
+        # Single source of truth: the Makefile targets. REPO-LOCAL GATES FIRST (#1746): local checks run before network-backed surface linters.
+        run: make lint-docs-voice lint-operator-strings lint-topology lint-file-budget lint-pithead-build lint-trivy-parity lint-js lint-yaml lint-md lint-proto lint-toml

@@ -72,6 +72,28 @@ test("runBackup surfaces a host-side rejection as the outcome, not a throw", asy
   assert.match(out.error, /10 minutes/);
 });
 
+const timeoutFetch = async (url) =>
+  url === "/api/control/backup"
+    ? { status: 202, ok: false, json: async () => ({ id: ID, status: "pending" }) }
+    : { status: 202, ok: false };
+
+test("runBackup uses appliance recovery text when its own wait expires (#1965)", async () => {
+  await assert.rejects(withFastPoll(timeoutFetch, () => runBackup(true)), (error) => {
+    assert.match(error.message, /Stopped waiting for the backup/);
+    assert.match(error.message, /restart the appliance/);
+    assert.doesNotMatch(error.message, /version is unchanged/);
+    return true;
+  });
+});
+
+test("runBackup gives a DIY host its own timeout recovery (#1965)", async () => {
+  await assert.rejects(withFastPoll(timeoutFetch, () => runBackup(false)), (error) => {
+    assert.match(error.message, /restart the stack from the host/);
+    assert.doesNotMatch(error.message, /restart the appliance/);
+    return true;
+  });
+});
+
 test("buildKitText carries the passphrase, archive, and contents — the whole one-time kit", () => {
   const text = buildKitText({
     archive: "pithead-backup-20260813-000000.tar.gz.enc",
@@ -108,6 +130,8 @@ test("BackupPanel confirm phase shows the disruption notice with Cancel/Create",
   c.state.phase = "confirm";
   const out = renderToString(c.render());
   assert.match(out, /stops the stack/);
+  assert.match(out, /three to four minutes/);
+  assert.match(out, /dashboard pause/);
   assert.match(out, /Create backup/);
   assert.match(out, /Cancel/);
 });
@@ -138,4 +162,28 @@ test("BackupPanel failed phase surfaces the host's error", () => {
   const c = inst({ enabled: true });
   c.state = { phase: "failed", id: null, result: { status: "failed", error: "boom" } };
   assert.match(renderToString(c.render()), /boom/);
+});
+
+// #1854: the appliance has no shell, so the host-CLI remedy in the explainer above is advice its
+// operator cannot act on. The card has to say something true for a box you cannot log into —
+// and "wait for the channel" was not true. `enabled` carries no liveness, and the only way an
+// appliance reaches this branch is the "No login" setup, where the off state is permanent.
+test("BackupPanel on the appliance names the login, not a channel that is coming back (#1854)", () => {
+  const out = renderToString(inst({ enabled: false, appliance: true }).render());
+  assert.match(out, /set up without a dashboard login/);
+  // The defect this replaced: telling an operator to wait for something that never arrives.
+  assert.doesNotMatch(out, /not answering|returns with the channel/);
+  assert.doesNotMatch(out, /pithead apply/);
+  assert.doesNotMatch(out, /config\.json/);
+});
+
+test("BackupPanel off a non-appliance host keeps the remedy — the appliance branch is narrow (#1854)", () => {
+  const out = renderToString(inst({ enabled: false, appliance: false }).render());
+  assert.match(out, /pithead apply/);
+});
+
+test("BackupPanel names both halves the operator has to keep — archive and kit (#1854)", () => {
+  const out = renderToString(inst({ enabled: true }).render());
+  assert.match(out, /Keep both halves/);
+  assert.match(out, /passphrase/);
 });

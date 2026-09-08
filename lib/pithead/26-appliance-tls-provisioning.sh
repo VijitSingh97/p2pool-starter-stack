@@ -67,9 +67,9 @@ appliance_base_name() {
     fi
 }
 
-# "auto" (dashboard.host unset) expands to every address the appliance actually answers on — a
+# "auto" or a machine-name label expands to the appliance's local addresses — a
 # headless box reached by mDNS name, by IP, or from the console must have all three certified. An
-# explicit pin stays a single name on purpose: the site list collapsing was never the #1132 bug,
+# explicit DNS/IP pin stays a single name on purpose: the site list collapsing was never the #1132 bug,
 # only the certificate not following suit was.
 #
 # Deliberately engine-free: this runs from BOTH generate_caddyfile (render, always BEFORE `up`
@@ -87,7 +87,7 @@ appliance_site_names() {
     local base
     base=$(appliance_base_name)
     local names="$base"
-    if is_appliance && [ -z "${DASHBOARD_HOST:-}" ]; then
+    if is_appliance && { [ -z "${DASHBOARD_HOST:-}" ] || [ -n "$(appliance_hostname_label)" ]; }; then
         local extra
         for extra in $(hostname -I 2>/dev/null) localhost; do
             case " $names " in *" $extra "*) continue ;; esac
@@ -241,6 +241,9 @@ appliance_mint_cert() { # -> prints the SHA-256 fingerprint
             log "Re-minting the dashboard certificate — the machine now answers to a different set of names than the one it was minted for. Your browser will need to trust the new certificate."
         names=$(appliance_site_names)
         primary="${names%% *}"
+        # X.509's legacy display CN is limited to 64 characters. SAN retains the full DNS name,
+        # including .local when a valid 63-character machine label exceeds that display limit.
+        primary="${primary:0:64}"
         openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
             -keyout "$d/wizard.key" -out "$d/wizard.crt" \
             -subj "/CN=$primary" -addext "subjectAltName=$alt" \
@@ -254,10 +257,8 @@ wizard_mint_cert() { # <spool-dir>  -> prints the fingerprint
     d=$(appliance_tls_dir)
     fp=$(appliance_mint_cert) || return 1
     # The container reads its copy from the spool; the canonical pair stays on /data.
-    cp "$d/wizard.crt" "$spool/wizard.crt" 2>/dev/null || return 1
-    cp "$d/wizard.key" "$spool/wizard.key" 2>/dev/null || return 1
-    chown 1000:1000 "$spool/wizard.key" "$spool/wizard.crt" 2>/dev/null || true
-    chmod 640 "$spool/wizard.key" 2>/dev/null || true
+    wizard_spool_publish "$spool" wizard.crt cat "$d/wizard.crt" || return 1
+    wizard_spool_publish "$spool" wizard.key cat "$d/wizard.key" || return 1
     printf '%s' "$fp"
 }
 
@@ -273,7 +274,7 @@ ensure_appliance_dashboard_password() { # [spool-dir]
     [ -z "$(jq -r '.dashboard.auth.password // ""' "$CONFIG_FILE")" ] || return 0
     # The operator's explicit "no login" is honoured — an empty password is also what "not
     # chosen" looks like, so the choice cannot live in the config and rides beside it.
-    if [ -n "${1:-}" ] && [ "$(cat "$1/auth-mode" 2>/dev/null)" = "none" ]; then
+    if [ -n "${1:-}" ] && [ "$(wizard_spool_read "$1" auth-mode 2>/dev/null)" = "none" ]; then
         warn "Dashboard login disabled at the operator's request — anyone on this network can open it."
         return 0
     fi

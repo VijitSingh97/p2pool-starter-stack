@@ -255,25 +255,23 @@ HOST_REFERENCE_PATH = os.environ.get("HOST_REFERENCE_PATH", "/host-config/config
 # the form instead of hand-maintaining a duplicate list. A missing/unreadable file degrades to no
 # core group (control_service.read_config falls back to an empty list).
 HOST_CORE_KEYS_PATH = os.environ.get("HOST_CORE_KEYS_PATH", "/host-config/config.core-keys.json")
-# The appliance OS-update state, host-written into the read-only results/ mount under a fixed
-# name (never a request id). Only a Pithead OS appliance seeds it, so its presence is also the
-# container's "render the OS update control" signal; a DIY install simply never has the file.
 OS_UPDATE_STATE_PATH = os.environ.get(
     "OS_UPDATE_STATE_PATH", "/control/results/os-update-state.json"
 )
 
-# --- Per-worker endpoint descriptors (#172, config.json: workers.list[]) + dashboard.energy
-# (#260) --- Both are JSON-config loaders (not env vars), split into worker_endpoints.py to keep
-# this file under its budget ceiling (#1285); see that module for the field-by-field rationale.
-DASHBOARD_WORKERS = load_worker_endpoints(HOST_CONFIG_PATH)
+WORKER_READ_TOKENS_PATH, DASHBOARD_WORKERS = "/control/masked/worker-read-tokens.json", None
+
+
+def current_worker_endpoints():
+    return (
+        DASHBOARD_WORKERS
+        if DASHBOARD_WORKERS is not None
+        else load_worker_endpoints(HOST_CONFIG_PATH, WORKER_READ_TOKENS_PATH)
+    )
+
+
 DASHBOARD_ENERGY = load_energy_config(HOST_CONFIG_PATH)
-# How long a preview/commit POST waits for the host-side runner's result before returning 202 and
-# leaving the client to poll /api/control/result. The systemd path unit fires within seconds.
 CONTROL_WAIT_S = float(os.environ.get("CONTROL_WAIT_S", 30))
-# A worker-upgrade POST never waits inline (a rig rebuild can run minutes) — it returns 202 at
-# once and a background task records the terminal outcome once the host runner writes it. This
-# bounds that background wait; matches the client's own polling budget (workerview.mjs
-# UPGRADE_POLL_MAX = 150 * 2s = 300s), well past the host's own ~90s dial+poll cap.
 CONTROL_WORKER_UPGRADE_WAIT_S = float(os.environ.get("CONTROL_WORKER_UPGRADE_WAIT_S", 300))
 GITHUB_RELEASES_API = os.environ.get(
     "GITHUB_RELEASES_API",
