@@ -15,6 +15,7 @@
 #   --stage-only   stage os/build/stage/ (the compose file and its stamp, see stage_compose) and
 #                  stop before docker: the CI rootfs scan runs the Dockerfile itself and needs
 #                  exactly this step first, since the Dockerfile COPYs from that directory.
+#   PITHEAD_RIGFORGE_REF=<40-hex-commit> temporarily tests an unreleased immutable RigForge tree.
 # The compose file is NOT taken from the working tree when the release it names already exists:
 # stage_compose below copies it from the tag STACK_VERSION resolves to, and falls back to the tree
 # only while that tag does not exist yet (mid release-prep). See the function for why.
@@ -64,6 +65,15 @@ apt_fetch_failure_hint() {
         echo "==> rerun with: os/build-image.sh --fresh-index" >&2
     fi
 }
+
+rigforge_build_args=()
+if [ -n "${PITHEAD_RIGFORGE_REF:-}" ]; then
+    [[ "$PITHEAD_RIGFORGE_REF" =~ ^[0-9a-f]{40}$ ]] || {
+        echo "PITHEAD_RIGFORGE_REF must be a full lowercase 40-hex commit" >&2
+        exit 1
+    }
+    rigforge_build_args=(--build-arg "RIGFORGE_REF=$PITHEAD_RIGFORGE_REF")
+fi
 
 is_immutable_image_ref() { [[ "$1" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]; }
 
@@ -216,6 +226,7 @@ if ! docker build -f os/rootfs/Dockerfile -t "$ROOTFS_TAG" \
     --build-arg PITHEAD_TEST_SSH_PUBKEY="${PITHEAD_TEST_SSH_PUBKEY:-}" \
     --build-arg PITHEAD_TEST_MARKER="${PITHEAD_TEST_MARKER:-}" \
     --build-arg PITHEAD_UPDATER="${PITHEAD_UPDATER:-rauc}" \
+    "${rigforge_build_args[@]}" \
     --build-arg APT_INDEX_STAMP="$apt_index_stamp" . 2>&1 | tee "$build_log"; then
     apt_fetch_failure_hint "$(cat "$build_log")"
     exit 1

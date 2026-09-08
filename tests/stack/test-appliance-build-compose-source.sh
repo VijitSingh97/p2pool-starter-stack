@@ -125,6 +125,11 @@ echo "== unit: build-image --stage-only parses, and stops after staging, before 
 # the order row goes red.
 assert_eq "--stage-only is accepted and recorded" \
     "$( (export PITHEAD_BUILD_IMAGE_TEST=1 && set -- --stage-only && source "$ROOT/os/build-image.sh" && echo "STAGE_ONLY=${STAGE_ONLY:-unset}") 2>&1)" "STAGE_ONLY=1"
+rigforge_test_ref=0123456789abcdef0123456789abcdef01234567
+rigforge_args_out="$( (export PITHEAD_BUILD_IMAGE_TEST=1 PITHEAD_RIGFORGE_REF="$rigforge_test_ref" && set -- && source "$ROOT/os/build-image.sh" && printf '%s' "${rigforge_build_args[*]}") 2>&1)"
+assert_eq "an immutable RigForge test ref reaches docker build" "$rigforge_args_out" "--build-arg RIGFORGE_REF=$rigforge_test_ref"
+(export PITHEAD_BUILD_IMAGE_TEST=1 PITHEAD_RIGFORGE_REF=main && set -- && source "$ROOT/os/build-image.sh" >/dev/null 2>&1)
+assert_rc "a mutable RigForge ref is refused" "$?" "1"
 bi_line() { grep -n -F -- "$1" "$ROOT/os/build-image.sh" | head -1 | cut -d: -f1; }
 l_stage=$(bi_line 'COMPOSE_SOURCE="$(stage_compose "$STACK_VERSION" os/build/stage)" || exit 1')
 l_build=$(bi_line 'bash scripts/build-pithead.sh')
