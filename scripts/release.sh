@@ -21,7 +21,7 @@
 #   scripts/release.sh [options]              (or: make release ARGS="...")
 #
 # Options:
-#   --dry-run            Preflight + print the full plan (images, tags, manifest). No build/push/publish.
+#   --dry-run            Build the local CLI, run preflight, and print the plan. No image build/push/publish.
 #   --rc N               Staging release-candidate number (default: 1) -> :vX.Y.Z-rc.N.
 #   --skip-tests         Skip `make test` (NOT recommended; the gate is what makes a release trustworthy).
 #   --skip-integration   Skip the #54 live integration matrix (still runs `make test`).
@@ -363,9 +363,10 @@ check_verifier_image() {
 
 preflight() {
     stage "1/7  Preflight"
-
     REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || die "Not inside a git repository."
     cd "$REPO_ROOT"
+    log "Building the generated pithead CLI"
+    bash scripts/build-pithead.sh || die "Could not build the pithead CLI."
     [ -f VERSION ] && [ -f docker-compose.yml ] || die "VERSION / docker-compose.yml not found at the repo root."
     command -v docker >/dev/null 2>&1 || die "docker is required."
     docker buildx version >/dev/null 2>&1 || die "docker buildx is required (for digest-level promotion)."
@@ -387,7 +388,6 @@ preflight() {
     GIT_COMMIT="$(git rev-parse HEAD)"
     GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
     BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
     if [ "$ALLOW_DIRTY" -eq 0 ] && [ -n "$(git status --porcelain)" ]; then
         die "Working tree is dirty. Commit/stash first, or pass --allow-dirty."
     fi

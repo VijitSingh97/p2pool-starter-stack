@@ -1,5 +1,9 @@
 # Local test entry points (mirror the GitHub Actions CI jobs).
-.PHONY: test test-dashboard test-frontend test-patch-coverage test-stack test-compose test-integration test-integration-selftest test-fakes test-mini-stack lint lint-sh lint-py lint-js lint-yaml lint-md lint-proto lint-toml lint-topology lint-file-budget lint-pithead-parity lint-trivy-parity print-shellcheck-version print-shfmt-version release release-smoke
+.DEFAULT_GOAL := pithead
+.PHONY: test test-dashboard test-frontend test-patch-coverage test-stack test-compose test-integration test-integration-selftest test-fakes test-mini-stack lint lint-sh lint-py lint-js lint-yaml lint-md lint-proto lint-toml lint-topology lint-file-budget lint-pithead-build lint-trivy-parity print-shellcheck-version print-shfmt-version release release-smoke
+
+pithead: scripts/build-pithead.sh $(wildcard lib/pithead/*.sh) ## Build the generated CLI
+	bash scripts/build-pithead.sh
 
 test: lint test-dashboard test-frontend test-stack test-compose test-integration-selftest test-fakes ## Run everything that doesn't need a server/docker
 
@@ -13,14 +17,14 @@ test-frontend: ## Frontend logic tests with Node's built-in runner (#632; same i
 test-patch-coverage: ## diff-cover (#286) minus its vacuous pass (#1000): >=90% on changed lines (run after test-dashboard)
 	bash scripts/patch-coverage.sh
 
-test-stack: ## pithead shell test suite
+test-stack: pithead ## pithead shell test suite
 	bash tests/stack/run.sh
 	bash tests/stack/test_data_reset.sh
 	bash tests/stack/test_os_update_recovery.sh
 	bash tests/stack/test_firstboot_journal.sh
 	bash tests/stack/test_appliance_hugepages.sh
 
-test-compose: ## Validate docker-compose.yml interpolation + hardening invariants (#90)
+test-compose: pithead ## Validate docker-compose.yml interpolation + hardening invariants (#90)
 	bash tests/stack/test_compose.sh
 
 test-integration-selftest: ## Integration harness pure-logic self-test (no server needed)
@@ -41,7 +45,7 @@ test-inventory: ## Write the test coverage inventory to docs/dev/test-inventory.
 # connection + options through ARGS, e.g.:
 #   make test-integration ARGS="--host miner@10.0.0.5 --dir pithead --lifecycle"
 # See docs/dev/integration-testing.md.
-test-integration: ## Run the live config-matrix integration suite (requires a test box; pass ARGS=...)
+test-integration: pithead ## Run the live config-matrix integration suite (requires a test box; pass ARGS=...)
 	bash tests/integration/run.sh $(ARGS)
 
 # The shellcheck version this repo's lint gate MEANS, and the ONE place it is written (#1679).
@@ -63,7 +67,7 @@ print-shellcheck-version: ## Print the pinned shellcheck version (ci.yml's insta
 print-shfmt-version: ## Print the pinned shfmt version (ci.yml's installer reads this)
 	@echo $(SHFMT_VERSION)
 
-lint: lint-sh lint-py lint-js lint-yaml lint-md lint-docs-voice lint-operator-strings lint-topology lint-file-budget lint-pithead-parity lint-trivy-parity lint-proto lint-toml ## Lint/format-check every surface
+lint: lint-sh lint-py lint-js lint-yaml lint-md lint-docs-voice lint-operator-strings lint-topology lint-file-budget lint-pithead-build lint-trivy-parity lint-proto lint-toml ## Lint/format-check every surface
 
 # Two shellcheck invocations, not one, and the split is load-bearing. shellcheck resolves a
 # `# shellcheck source=` directive only when the sourced file is ALSO named on the same command
@@ -75,7 +79,7 @@ lint: lint-sh lint-py lint-js lint-yaml lint-md lint-docs-voice lint-operator-st
 # caps the whole target at that one analysis — which now shrinks with every #1105 module instead
 # of being conserved by the split. The file SET is unchanged: every path below was in the old
 # single invocation, and none is listed twice.
-lint-sh: ## shellcheck + shfmt over the CLI, build/* + dashboard/ container scripts, release + test scripts
+lint-sh: pithead ## shellcheck + shfmt over the CLI, build/* + dashboard/ container scripts, release + test scripts
 	@# Refuse a version that is not the pin BEFORE linting anything: a different shellcheck reports
 	@# different findings over identical files, so its verdict is not this gate's (#1679).
 	@have=$$(shellcheck --version 2>/dev/null | awk '/^version:/ {print $$2}'); \
@@ -111,12 +115,13 @@ lint-sh: ## shellcheck + shfmt over the CLI, build/* + dashboard/ container scri
 # make this target worse, not stricter. Those files are the slices `scripts/build-pithead.sh`
 # concatenates into `pithead` (#1105 Phase 2), and `pithead` is the first name on the line above —
 # so shellcheck already reads every one of their lines, in context, which is strictly more than it
-# can learn from the fragments. `make lint-pithead-parity` is what proves the artifact it reads IS
-# the slices. Checking them separately would instead re-create the SC2034 pairing problem this
+# can learn from the fragments. The `pithead` prerequisite builds the artifact from the slices.
+# Checking them separately would instead re-create the SC2034 pairing problem this
 # comment already describes, one slice boundary at a time, and add an ~12k-line second analysis
 # root to the target that has OOM-killed sessions on this box. shfmt DOES cover them, via the
 # `git ls-files '*.sh'` glob below: format is a per-file property, so it transfers; the semantic
-# checks do not. If you came here to add them, that is the argument to beat.
+# checks do not. `lint-pithead-build` checks the concatenation invariants. If you came here to add
+# the slices, that is the argument to beat.
 	shellcheck --severity=warning tests/stack/run.sh
 	@# Three non-.sh files are named outright below, so a dead enumeration still hands shfmt
 	@# three real arguments and exits 0 — 3 files checked of 100, reported as a pass. Guard the
@@ -142,7 +147,7 @@ lint-docs-voice: ## Fail if banned marketing words appear in prose docs (house v
 	bash scripts/lint-docs-voice.sh --self-test
 	bash scripts/lint-docs-voice.sh
 
-lint-operator-strings: ## Fail if a #NNN issue/PR number or a bare docs/ path leaks into pithead or dashboard operator-facing text (#755, #1024)
+lint-operator-strings: pithead ## Fail if a #NNN issue/PR number or a bare docs/ path leaks into pithead or dashboard operator-facing text (#755, #1024)
 	bash scripts/lint-operator-strings.sh --self-test
 	bash scripts/lint-operator-strings.sh
 
@@ -154,9 +159,8 @@ lint-file-budget: ## Fail if a tracked file crosses the 800-line hard ceiling, o
 	bash scripts/lint-file-budget.sh --self-test
 	bash scripts/lint-file-budget.sh
 
-lint-pithead-parity: ## Fail if the shipped pithead artifact is not exactly what lib/pithead/*.sh builds (#1105 Phase 2)
+lint-pithead-build: ## Test the generated CLI build and its ordering/refusal guards
 	bash scripts/build-pithead.sh --self-test
-	bash scripts/build-pithead.sh --check
 
 lint-trivy-parity: ## Fail if ci.yml's and os-rootfs.yml's trivy-action steps drift from the version scripts/trivyignore-watch.sh scans with (#1290)
 	bash scripts/trivyignore-watch.sh --self-test

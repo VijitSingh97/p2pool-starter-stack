@@ -15,9 +15,7 @@ BUILD="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)/b
 
 # --- self-test: every failure mode against fixtures, in a throwaway directory -------------------
 #
-# Each case states what it proves. The two that matter most are the FIRING controls: a gate that
-# only ever passes is indistinguishable from no gate at all, so the mutation cases assert both
-# that the mutation actually landed in the file AND that --check went red because of it.
+# Each case states what it proves and drives the builder as a subprocess.
 self_test() {
     local tmp fail=0
 
@@ -49,7 +47,7 @@ self_test() {
     #    Compared with `cmp` on real files, NOT via `$(...)`: command substitution strips trailing
     #    newlines from both operands, which would make this case blind to any defect at the
     #    artifact's tail — a stray or missing final newline is exactly a join defect.
-    printf '#!/usr/bin/env bash\n# GENERATED FILE — do not edit. Built from lib/pithead/*.sh (3 slices, LC_ALL=C name order) by:\n#   scripts/build-pithead.sh\n# A drifted copy fails `scripts/build-pithead.sh --check` (make lint-pithead-parity).\nset -Eeuo pipefail\n\nmiddle() { :; }\n\nmain "$@"\n' >"$tmp/expected"
+    printf '#!/usr/bin/env bash\n# GENERATED FILE — do not edit. Built from lib/pithead/*.sh (3 slices, LC_ALL=C name order) by:\n#   scripts/build-pithead.sh\n# Run `make` to rebuild this file.\nset -Eeuo pipefail\n\nmiddle() { :; }\n\nmain "$@"\n' >"$tmp/expected"
     PITHEAD_BUILD_ROOT="$tmp" bash "$BUILD" >/dev/null 2>&1 || true
     if cmp -s "$tmp/pithead" "$tmp/expected"; then
         echo "  ok   — build joins the slices in sort order, one blank line between each pair"
@@ -58,65 +56,29 @@ self_test() {
         fail=1
     fi
 
-    # 2. --check passes on a freshly built artifact.
-    rc=0
-    PITHEAD_BUILD_ROOT="$tmp" bash "$BUILD" --check >/dev/null 2>&1 || rc=$?
-    _case "--check passes when artifact and sources agree" 0 "$rc"
-
-    # 3. FIRING CONTROL, source side: mutate a slice; assert the mutation applied, then that
-    #    --check goes red. Without the "applied" half a mutant that failed to write reads exactly
-    #    like a gate that held.
-    local before after
-    before=$(cat "$tmp/lib/pithead/10-middle.sh")
-    printf 'middle() { echo mutated; }\n' >"$tmp/lib/pithead/10-middle.sh"
-    after=$(cat "$tmp/lib/pithead/10-middle.sh")
-    if [ "$before" = "$after" ]; then
-        echo "  FAIL — the source-side mutation did not change the file; its control proves nothing"
-        fail=1
-    fi
-    rc=0
-    PITHEAD_BUILD_ROOT="$tmp" bash "$BUILD" --check >/dev/null 2>&1 || rc=$?
-    _case "--check FAILS when a source slice is edited without rebuilding" 1 "$rc"
-    printf '%s\n' "$before" >"$tmp/lib/pithead/10-middle.sh"
-
-    # 4. FIRING CONTROL, artifact side: the drift the gate exists to catch is someone hand-editing
-    #    the shipped file, which is exactly how it was edited before Phase 2.
-    before=$(cat "$tmp/pithead")
-    printf 'hand_edited() { :; }\n' >>"$tmp/pithead"
-    after=$(cat "$tmp/pithead")
-    if [ "$before" = "$after" ]; then
-        echo "  FAIL — the artifact-side mutation did not change the file; its control proves nothing"
-        fail=1
-    fi
-    rc=0
-    PITHEAD_BUILD_ROOT="$tmp" bash "$BUILD" --check >/dev/null 2>&1 || rc=$?
-    _case "--check FAILS when the artifact is hand-edited" 1 "$rc"
-    printf '%s\n' "$before" >"$tmp/pithead"
-
-    # 5. An empty enumeration is refused rather than building an empty artifact.
+    # 2. An empty enumeration is refused rather than building an empty artifact.
     local empty
     empty=$(mktemp -d)
     mkdir -p "$empty/lib/pithead"
     touch "$empty/pithead"
     rc=0
-    PITHEAD_BUILD_ROOT="$empty" bash "$BUILD" --check >/dev/null 2>&1 || rc=$?
-    _case "--check REFUSES an empty lib/pithead (no vacuous pass)" 1 "$rc"
+    PITHEAD_BUILD_ROOT="$empty" bash "$BUILD" >/dev/null 2>&1 || rc=$?
+    _case "a build REFUSES an empty lib/pithead (no vacuous pass)" 1 "$rc"
     rm -rf "$empty"
 
-    # 6. A first slice without the shebang is refused: sort order and file order have diverged.
+    # 3. A first slice without the shebang is refused: sort order and file order have diverged.
     local noshebang
     noshebang=$(mktemp -d)
     mkdir -p "$noshebang/lib/pithead"
     printf 'middle() { :; }\n' >"$noshebang/lib/pithead/00-not-the-prelude.sh"
     touch "$noshebang/pithead"
     rc=0
-    PITHEAD_BUILD_ROOT="$noshebang" bash "$BUILD" --check >/dev/null 2>&1 || rc=$?
-    _case "--check REFUSES when the first slice does not carry the shebang" 1 "$rc"
+    PITHEAD_BUILD_ROOT="$noshebang" bash "$BUILD" >/dev/null 2>&1 || rc=$?
+    _case "a build REFUSES when the first slice does not carry the shebang" 1 "$rc"
     rm -rf "$noshebang"
 
-    # 7. A slice carrying the separator at either edge is refused BY NAME. This is the failure a
-    #    future Phase-2 cut will actually hit: shfmt strips those blank lines, so a slice cut that
-    #    way silently stops matching the artifact. Both edges, because they fail for one reason.
+    # 4. A slice carrying the separator at either edge is refused BY NAME. Both edges fail for
+    #    one reason: the build owns the separator.
     local edge
     for edge in leading trailing; do
         local blank
@@ -130,12 +92,12 @@ self_test() {
         fi
         touch "$blank/pithead"
         rc=0
-        PITHEAD_BUILD_ROOT="$blank" bash "$BUILD" --check >/dev/null 2>&1 || rc=$?
-        _case "--check REFUSES a slice with a $edge blank line (the separator is the build's)" 1 "$rc"
+        PITHEAD_BUILD_ROOT="$blank" bash "$BUILD" >/dev/null 2>&1 || rc=$?
+        _case "a build REFUSES a slice with a $edge blank line (the separator is the build's)" 1 "$rc"
         rm -rf "$blank"
     done
 
-    # 8. A rebuild exits cleanly and keeps the artifact executable (#1722).
+    # 5. A rebuild exits cleanly and keeps the artifact executable (#1722).
     chmod 0755 "$tmp/pithead"
     rc=0
     PITHEAD_BUILD_ROOT="$tmp" bash "$BUILD" >/dev/null 2>&1 || rc=$?
@@ -144,7 +106,7 @@ self_test() {
     [ -x "$tmp/pithead" ] || rc=1
     _case "a rebuild preserves the artifact's executable bit" 0 "$rc"
 
-    # 9. The slice order is LC_ALL=C LEXICAL, not numeric or version ordering. NO case above can
+    # 6. The slice order is LC_ALL=C LEXICAL, not numeric or version ordering. NO case above can
     #    see this: 00/10/99 sort identically under `sort` and `sort -V`, so a mutant that swapped
     #    the algorithm passes every one of them. A single-digit prefix beside a double-digit one is
     #    the smallest input that tells them apart — lexically `10-` sorts BEFORE `2-`, numerically
@@ -156,7 +118,7 @@ self_test() {
     printf '#!/usr/bin/env bash\nfirst\n' >"$order/lib/pithead/00-prelude.sh"
     printf 'ten\n' >"$order/lib/pithead/10-ten.sh"
     printf 'two\n' >"$order/lib/pithead/2-two.sh"
-    printf '#!/usr/bin/env bash\n# GENERATED FILE — do not edit. Built from lib/pithead/*.sh (3 slices, LC_ALL=C name order) by:\n#   scripts/build-pithead.sh\n# A drifted copy fails `scripts/build-pithead.sh --check` (make lint-pithead-parity).\nfirst\n\nten\n\ntwo\n' >"$order/expected"
+    printf '#!/usr/bin/env bash\n# GENERATED FILE — do not edit. Built from lib/pithead/*.sh (3 slices, LC_ALL=C name order) by:\n#   scripts/build-pithead.sh\n# Run `make` to rebuild this file.\nfirst\n\nten\n\ntwo\n' >"$order/expected"
     PITHEAD_BUILD_ROOT="$order" bash "$BUILD" >/dev/null 2>&1 || true
     if cmp -s "$order/pithead" "$order/expected"; then
         echo "  ok   — slices are ordered by LC_ALL=C lexical sort, not a numeric or version sort"
@@ -166,10 +128,10 @@ self_test() {
     fi
     rm -rf "$order"
 
-    # 10-15. The six refusals that guard a silently MALFORMED join, or a misleading diagnosis.
+    # 7-15. The refusals that guard a silently MALFORMED join, or a misleading diagnosis.
     #
-    # Driven on the BUILD path rather than through `--check`, and each asserts THREE things: the
-    # rc, the stated REASON, and that the previous artifact survived. All three are needed, because
+    # Each asserts THREE things: the rc, the stated REASON, and that the previous artifact
+    # survived. All three are needed, because
     # **rc does not discriminate on two of the three fixtures** — which is the trap this block is
     # shaped to avoid rather than a belt-and-braces flourish:
     #
@@ -179,10 +141,6 @@ self_test() {
     #     still fails, because `head -n 1` yields nothing for both and the leading-blank-line test
     #     trips instead. A case asserting only rc=1 would stay GREEN with the guard deleted. What
     #     those two guards actually buy is an accurate reason, so the reason is what gets asserted.
-    #
-    # Driving any of them through `--check` would make ALL THREE vacuous: the fixture artifact
-    # cannot equal what the malformed sources build, so `--check` returns 1 on the parity
-    # comparison whether or not a refusal exists.
     #
     # The artifact-survived half catches a build that writes DIRECTLY into the artifact: `>` opens
     # and truncates before the refusal is ever reached, so the operator loses `./pithead` to a
@@ -194,9 +152,8 @@ self_test() {
     # buys — an interruption (SIGKILL, full disk) part-way through writing the real artifact. That
     # needs a race to reproduce deterministically and no case here attempts it.
     #
-    # dup-readonly and trap-before-def are #1463's two: both reproduce faithfully from source to
-    # artifact (so a `--check`-driven case would prove nothing here either, same reasoning as
-    # above), and neither is a structural defect in any ONE slice — each needs two, so both
+    # dup-readonly and trap-before-def are #1463's two: neither is a structural defect in any ONE
+    # slice — each needs two, so both
     # override the shared 00-prelude/99-tail fixture instead of adding a lone 10-bad.sh. Case B
     # is written to fail for the right reason and not by coincidence: on_err genuinely exists in
     # the build (in 99-tail, textually AFTER the trap that targets it), so a check that merely
@@ -335,6 +292,46 @@ self_test() {
     PITHEAD_BUILD_ROOT="$plain" bash "$BUILD" >/dev/null 2>&1 || rc=$?
     _case "a build ACCEPTS the same name declared -a (not -r) in two slices (readonly, not declare)" 0 "$rc"
     rm -rf "$plain"
+
+    # The distribution contract: a clean checkout carries no generated CLI, and plain `make`
+    # creates an executable ignored copy. Apply the caller's working diff so this case is useful
+    # before commit as well as in CI.
+    local repo clone patch
+    repo=$(git -C "$(dirname "$BUILD")/.." rev-parse --show-toplevel)
+    clone=$(mktemp -d)
+    patch="$clone/working.patch"
+    git clone -q "$repo" "$clone/repo"
+    git -C "$repo" diff --binary HEAD >"$patch"
+    [ ! -s "$patch" ] || git -C "$clone/repo" apply --index "$patch"
+    rc=0
+    [ ! -e "$clone/repo/pithead" ] || rc=1
+    _case "a clean checkout does not contain the generated pithead" 0 "$rc"
+    rc=0
+    make -s -C "$clone/repo" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || [ -x "$clone/repo/pithead" ] || rc=1
+    _case "plain make in a clean checkout builds an executable pithead" 0 "$rc"
+    rc=0
+    git -C "$clone/repo" check-ignore -q pithead || rc=$?
+    _case "the generated pithead is git-ignored" 0 "$rc"
+
+    rm "$clone/repo/pithead"
+    rc=0
+    local release_out
+    release_out=$(grep -F 'log "Building the generated pithead CLI"' "$clone/repo/scripts/release.sh") || rc=$?
+    [ "$rc" -ne 0 ] || bash "$clone/repo/scripts/build-pithead.sh" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || [ -x "$clone/repo/pithead" ] || rc=1
+    _case "the release preflight builds the missing CLI, including for a dry run" 0 "$rc"
+    case "$release_out" in
+    *"Building the generated pithead CLI"*) _case "the release plan names its CLI build step" 0 0 ;;
+    *) _case "the release plan names its CLI build step" 0 1 ;;
+    esac
+    local build_line files_line
+    build_line=$(grep -n 'Building the generated pithead CLI' "$clone/repo/scripts/release.sh" | tail -1 | cut -d: -f1)
+    files_line=$(grep -n '\[ -f VERSION \]' "$clone/repo/scripts/release.sh" | cut -d: -f1)
+    rc=0
+    [ -n "$build_line" ] && [ "$build_line" -lt "$files_line" ] || rc=1
+    _case "release preflight builds the CLI before reading bundle inputs" 0 "$rc"
+    rm -rf "$clone"
 
     if [ "$fail" -ne 0 ]; then
         echo "build-pithead --self-test: FAILED"

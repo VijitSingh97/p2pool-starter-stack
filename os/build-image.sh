@@ -103,6 +103,10 @@ if [ "${PITHEAD_BUILD_IMAGE_TEST:-0}" = "1" ]; then
     return 0 2>/dev/null || exit 0
 fi
 
+# The root CLI is generated and git-ignored. Build it before either the stage-only CI path or the
+# full Docker build consumes the repository root as its context.
+bash scripts/build-pithead.sh
+
 # Bake the wizard's container image into the appliance: first boot must reach the setup page
 # without a registry (the operator may have no working network config yet, and the plan's
 # offline-first-boot property depends on it). The rest of the release's images are pulled at
