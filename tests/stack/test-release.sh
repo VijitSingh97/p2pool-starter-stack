@@ -109,6 +109,7 @@ grep -q '^pithead/$' "$SANDBOX/bundle.list" && ok "bundle unpacks to versionless
 _bundle_docs=$(sed -n 's|^pithead/docs/||p' "$SANDBOX/bundle.list" | grep -vE '^$|/$' | sort)
 _expected_docs=$(printf '%s\n' configuration.md dashboard.md faq.md getting-started.md hardware.md monitoring.md operations.md privacy.md telegram.md workers.md | sort)
 assert_eq "bundle ships exactly the operator docs, no developer or appliance material" "$_bundle_docs" "$_expected_docs"
+assert_eq "bundled operator docs have no unresolved relative links or images" "$(grep -ERh '](\(\.\.?/|\([[:alnum:]_-]+(\.md|/))|src(set)?="\./' "$SANDBOX/bundle/pithead/docs" 2>/dev/null | wc -l | tr -d ' ')" "0"
 assert_eq "bundle excludes source, test, dashboard and appliance trees" "$(grep -Ec '^pithead/(lib|os|scripts|tests|dashboard|\.github)/' "$SANDBOX/bundle.list" || true)" "0"
 _bundle_unpinned=$(grep -E 'pithead-(tor|monero|p2pool|xmrig-proxy|dashboard):' "$SANDBOX/bundle-compose.yml" 2>/dev/null | grep -cv '@sha256:')
 [ "${_bundle_unpinned:-1}" -eq 0 ] && ok "bundle compose digest-pins all 5 first-party images (#376)" || bad "bundle digest-pins first-party images (#376)" "unpinned lines: ${_bundle_unpinned:-?}"

@@ -48,8 +48,9 @@ not the generated file.
      with `make lint-<surface>`): `lint-sh` (shellcheck + shfmt), `lint-py` (ruff), `lint-js` (Biome),
      `lint-yaml` (yamllint), `lint-md` (markdownlint), `lint-docs-voice` (banned-word check),
      `lint-operator-strings` (no issue/PR numbers in operator-facing `pithead`/dashboard text, and
-     no bare `docs/` paths in `pithead` operator text — release bundles ship no `docs/`, so point at
-     `$DOCS_URL/docs/<file>.md#anchor` instead; comments keep the plain path),
+     no bare `docs/` paths in `pithead` operator text — release bundles carry a curated operator-doc
+     subset, not arbitrary repo paths, so point at `$DOCS_URL/docs/<file>.md#anchor` instead; comments
+     keep the plain path),
      `lint-topology` (no real-looking IPv6/IPv4 literal, `/home/<name>` path, `.lan`/`.internal`/
      `.local` hostname, or `user@host` string — a public repo, so every one of those has to stay a
      generic class, not a trace of whoever's actual box; `tests/` and `docs/` are an accepted

@@ -1,6 +1,6 @@
 # Local test entry points (mirror the GitHub Actions CI jobs).
 .DEFAULT_GOAL := pithead
-.PHONY: test test-dashboard test-frontend test-patch-coverage test-stack test-compose test-integration test-integration-selftest test-fakes test-mini-stack lint lint-sh lint-py lint-js lint-yaml lint-md lint-proto lint-toml lint-topology lint-file-budget lint-pithead-build lint-trivy-parity print-shellcheck-version print-shfmt-version release release-smoke
+.PHONY: pithead test test-dashboard test-frontend test-patch-coverage test-stack test-compose test-integration test-integration-selftest test-fakes test-mini-stack lint lint-sh lint-py lint-js lint-yaml lint-md lint-proto lint-toml lint-topology lint-file-budget lint-pithead-build lint-trivy-parity print-shellcheck-version print-shfmt-version release release-smoke
 
 pithead: scripts/build-pithead.sh $(wildcard lib/pithead/*.sh) ## Build the generated CLI
 	bash scripts/build-pithead.sh
@@ -27,7 +27,7 @@ test-stack: pithead ## pithead shell test suite
 test-compose: pithead ## Validate docker-compose.yml interpolation + hardening invariants (#90)
 	bash tests/stack/test_compose.sh
 
-test-integration-selftest: ## Integration harness pure-logic self-test (no server needed)
+test-integration-selftest: pithead ## Integration harness pure-logic self-test (no server needed)
 	# Globbed, not enumerated — the same reason as ci.yml: an enumerated list silently omits
 	# any self-test added later, and a check that never runs reads exactly like one that passed.
 	for t in tests/integration/selftest*.sh; do bash "$$t" || exit 1; done

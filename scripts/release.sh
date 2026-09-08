@@ -733,16 +733,15 @@ compose_build_mounts() {
 # ./build/* path the compose mounts at runtime (compose_build_mounts) IS shipped, so the pulled
 # containers find the config templates they render at setup.
 make_bundle() {
-    # Unpacks to a versionless "pithead/" dir so the documented quick start can `cd pithead` and so a
-    # later bundle re-download upgrades it in place. Ships both config templates and only the
-    # operator docs needed to install, configure, monitor and maintain this Compose stack.
+    # Unpacks to a versionless "pithead/" dir. Ships only the operator docs needed to run the stack.
     local out="$1" d="$WORKDIR/pithead"
     mkdir -p "$d"
-    # cosign.pub rides in the bundle (#376) so a release install (no git checkout) has the verifier
-    # next to pithead; preflight guarantees it exists on a real run.
     cp pithead pithead-completion.bash VERSION docker-compose.yml config.minimal.json config.reference.json config.core-keys.json cosign.pub "$d/" 2>/dev/null || true
     mkdir -p "$d/docs"
-    cp docs/{configuration,dashboard,faq,getting-started,hardware,monitoring,operations,privacy,telegram,workers}.md "$d/docs/"
+    local doc docs_url="https://github.com/p2pool-starter-stack/pithead/blob/$TAG"
+    for doc in docs/{configuration,dashboard,faq,getting-started,hardware,monitoring,operations,privacy,telegram,workers}.md; do
+        sed -E -e "s|]\\(\\.\\./([^):]+)\\)|]($docs_url/\\1)|g" -e "s|]\\(([^#./][^):]*)\\)|]($docs_url/docs/\\1)|g" -e "s|]\\(\\./([^):]+)\\)|]($docs_url/docs/\\1)|g" -e "s|(src(set)?=\")\\./images/|\\1https://raw.githubusercontent.com/p2pool-starter-stack/pithead/$TAG/docs/images/|g" "$doc" >"$d/$doc"
+    done
     local m
     while IFS= read -r m; do
         [ -e "$m" ] || {

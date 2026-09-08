@@ -55,10 +55,9 @@ scan_pithead() {
     msg_lines "$1" "$WIDE" | sed 's|\$DOCS_URL/[^ "]*||g' | grep -E '#[0-9]+' || true
 }
 
-# Rule 2: no bare repo doc path in operator text (issue #1024). Release bundles ship the CLI, the
-# compose file, the config files and cosign.pub — no docs/ — so a message naming a repo-relative
-# doc sends the reader to a file that is not on their disk. Messages point at $DOCS_URL instead,
-# which is stripped before the check so a correctly-formed pointer reads as clean.
+# Rule 2: no bare repo doc path in operator text (issue #1024). Release bundles carry only a curated
+# operator-doc subset, so a repo-relative path is not guaranteed to exist. Messages point at
+# $DOCS_URL instead, which is stripped before the check so a correctly-formed pointer reads as clean.
 scan_pithead_docs() {
     msg_lines "$1" "$WIDE" | sed 's|\$DOCS_URL/docs/||g' | grep -E 'docs/' || true
 }
@@ -295,7 +294,7 @@ if
     hits=$(scan_pithead_docs pithead)
     [ -n "$hits" ]
 then
-    echo "operator strings: repo-relative docs/ path in pithead operator text — release bundles ship no docs/."
+    echo "operator strings: repo-relative docs/ path in pithead operator text — release bundles carry only curated operator docs."
     echo "Point at the published copy instead: \"\$DOCS_URL/docs/<file>.md#anchor\"."
     echo "$hits"
     fail=1
