@@ -263,9 +263,8 @@ check_source_agreement tests/stack/run.sh tests/stack \
 # either direction for any of them (the measured before/after is on #1595). The exclusions:
 #   selftest*.sh          harness self-tests, run by their own target and gated per-file above;
 #                         a glob because this lane adds one routinely (see the note in the loop).
-#   e2e.sh                the release-gate driver — it sources run.sh's directory, not vice versa.
-#   restore-proof.sh
-#   rig-supply.sh         sourced by e2e.sh, not by run.sh.
+#   e2e.sh, borrow-fixture.sh, detached-harness.sh, parent-lock.sh
+#   restore-proof.sh, rig-supply.sh   release-gate driver/helpers sourced by e2e.sh, not run.sh.
 #   skip-accounting.sh    sourced by lib.sh, by a `${BASH_SOURCE[0]%/*}` path with its own
 #                         fail-closed guard (lib.sh:49-55), so run.sh reaches it transitively.
 #   build-pruned-chain.sh
@@ -274,7 +273,8 @@ check_source_agreement tests/stack/run.sh tests/stack \
 # Floor 5 against the 8 expected today — the same "generous, but a collapse to a lone survivor
 # still fires" margin the stack pair carries, sized for a set an order of magnitude smaller.
 check_source_agreement tests/integration/run.sh tests/integration \
-    "selftest*.sh e2e.sh restore-proof.sh rig-supply.sh skip-accounting.sh \
+    "selftest*.sh e2e.sh borrow-fixture.sh detached-harness.sh parent-lock.sh \
+    restore-proof.sh rig-supply.sh skip-accounting.sh \
     build-pruned-chain.sh compact-chain.sh system-info.sh" 5
 
 # --- emit -----------------------------------------------------------------
