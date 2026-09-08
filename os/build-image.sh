@@ -81,18 +81,19 @@ is_immutable_image_ref() { [[ "$1" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]; }
 # verify-image compares the shipped file against exactly what was staged.
 stage_compose() { # <version-tag> <stage-dir>  -> prints the COMPOSE_SOURCE line
     local tag="$1" dir="$2" sha
-    mkdir -p "$dir"
+    mkdir -p "$dir" || return 1
+    rm -f "$dir/docker-compose.yml" "$dir/COMPOSE_SOURCE" || return 1
     if [ -n "${PITHEAD_OS_COMPOSE_FILE:-}" ]; then
         [ -r "$PITHEAD_OS_COMPOSE_FILE" ] && [ -f "$PITHEAD_OS_COMPOSE_FILE" ] && [ ! -L "$PITHEAD_OS_COMPOSE_FILE" ] || {
             echo "PITHEAD_OS_COMPOSE_FILE: $PITHEAD_OS_COMPOSE_FILE is not a readable file" >&2
             return 1
         }
-        cp "$PITHEAD_OS_COMPOSE_FILE" "$dir/docker-compose.yml"
-        sha="$(sha256sum "$dir/docker-compose.yml" | cut -d' ' -f1)"
-        printf 'file sha256:%s\n' "$sha" >"$dir/COMPOSE_SOURCE"
+        cp "$PITHEAD_OS_COMPOSE_FILE" "$dir/docker-compose.yml" || return 1
+        sha="$(sha256sum "$dir/docker-compose.yml" | cut -d' ' -f1)" || return 1
+        printf 'file sha256:%s\n' "$sha" >"$dir/COMPOSE_SOURCE" || return 1
     elif sha=$(git rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null); then
-        git show "$sha:docker-compose.yml" >"$dir/docker-compose.yml"
-        printf 'tag %s %s\n' "$tag" "$sha" >"$dir/COMPOSE_SOURCE"
+        git show "$sha:docker-compose.yml" >"$dir/docker-compose.yml" || return 1
+        printf 'tag %s %s\n' "$tag" "$sha" >"$dir/COMPOSE_SOURCE" || return 1
     else
         # ls-remote's rc 0 means the tag exists on origin. Anything else (no such tag, no remote,
         # no network) leaves the tree as the source — a build must not hang on the network here.
@@ -100,10 +101,10 @@ stage_compose() { # <version-tag> <stage-dir>  -> prints the COMPOSE_SOURCE line
             echo "==> tag $tag exists on origin but not in this clone; refusing to bake the tree's compose file under a released version. Run: git fetch --tags" >&2
             return 1
         fi
-        cp docker-compose.yml "$dir/docker-compose.yml"
-        printf 'tree\n' >"$dir/COMPOSE_SOURCE"
+        cp docker-compose.yml "$dir/docker-compose.yml" || return 1
+        printf 'tree\n' >"$dir/COMPOSE_SOURCE" || return 1
     fi
-    cat "$dir/COMPOSE_SOURCE"
+    cat "$dir/COMPOSE_SOURCE" || return 1
 }
 
 # Test seam: `PITHEAD_BUILD_IMAGE_TEST=1 source os/build-image.sh [args...]` parses args and

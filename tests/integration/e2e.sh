@@ -169,7 +169,7 @@ case "$MODE" in check | targeted | matrix) ;; *) die "--mode must be check|targe
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=8 -o StrictHostKeyChecking=accept-new)
 # NOTE (testbench README): avoid literal shell parens '()' in remote command strings — they break the
 # non-interactive remote shell. jq filters (quoted) are fine; shell subshells are not.
-on_bench() { ssh "${SSH_OPTS[@]}" "$BENCH_HOST" "$1"; }
+on_bench() { parent_lock_on_bench "$BENCH_HOST" "$1"; }
 on_miner() { ssh "${SSH_OPTS[@]}" "$MINER_HOST" "$1"; }
 
 # State captured for the restore trap.
@@ -618,14 +618,14 @@ run_harness() {
     log "Running the live harness on $BENCH_HOST (mode=$MODE, detached so an SSH drop can't kill it)"
     step "phases: $phases  (workers=$WORKERS)"
 
-    # Push a tiny runner that captures the harness exit code into a done-marker, then nohup it.
     local runner
     runner="$(mktemp)"
     cat >"$runner" <<'RUNNER'
 #!/usr/bin/env bash
 set -uo pipefail
 state="$1"; dir="$2"; workers="$3"; rearm_request="$4"; rearm_ack="$5"; rearm_id="$6"; shift 6
-printf 'running %s\n' "$$" >"$state.tmp" && mv "$state.tmp" "$state"
+start=$(awk '{print $22}' "/proc/$$/stat") || exit 1
+printf 'running %s %s\n' "$$" "$start" >"$state.tmp" && mv "$state.tmp" "$state"
 mkdir -p "$dir/results"
 IT_BORROW_REARM_REQUEST="$rearm_request" IT_BORROW_REARM_ACK="$rearm_ack" IT_BORROW_REARM_TOKEN="$rearm_id" \
     bash "$dir/tests/integration/run.sh" --local --dir "$dir" --workers "$workers" "$@" \
@@ -641,7 +641,7 @@ RUNNER
             warn "readiness/check reported issues (see above) — continuing to the destructive phases"
     fi
     harness_prepare "$rearm_id" || die "Failed to record harness launch intent."
-    HARNESS_PID="$(printf '%s\n%s\n%s\n' "$IT_RIG_TOKEN" "${RIG_LOCK_PARENT_ACTOR:-}" "${RIG_LOCK_PARENT_NONCE:-}" | on_bench "IFS= read -r t; IFS= read -r a; IFS= read -r n; rm -f '$E2E_DIR/results/e2e-harness.done' '$rearm_request' '$rearm_ack' || exit 1; cd '$E2E_DIR' || exit 1; IT_RIG_TOKEN=\"\$t\" RIG_LOCK_PARENT_ACTOR=\"\$a\" RIG_LOCK_PARENT_NONCE=\"\$n\" nohup setsid ./.e2e-run.sh '$HARNESS_STATE' '$E2E_DIR' '$WORKERS' '$rearm_request' '$rearm_ack' '$rearm_id' $phases >/dev/null 2>&1 & p=\$!; i=0; until grep -Fqx \"running \$p\" '$HARNESS_STATE'; do test \"\$i\" -lt 50 || exit 1; sleep .1; i=\$((i + 1)); done; echo \$p")" || die "Failed to launch the harness."
+    HARNESS_PID="$(printf '%s\n%s\n%s\n' "$IT_RIG_TOKEN" "${RIG_LOCK_PARENT_ACTOR:-}" "${RIG_LOCK_PARENT_NONCE:-}" | on_bench "IFS= read -r t; IFS= read -r a; IFS= read -r n; rm -f '$E2E_DIR/results/e2e-harness.done' '$rearm_request' '$rearm_ack' || exit 1; cd '$E2E_DIR' || exit 1; IT_RIG_TOKEN=\"\$t\" RIG_LOCK_PARENT_ACTOR=\"\$a\" RIG_LOCK_PARENT_NONCE=\"\$n\" nohup setsid ./.e2e-run.sh '$HARNESS_STATE' '$E2E_DIR' '$WORKERS' '$rearm_request' '$rearm_ack' '$rearm_id' $phases >/dev/null 2>&1 & p=\$!; i=0; until grep -Eq \"^running \$p [0-9]+\$\" '$HARNESS_STATE'; do test \"\$i\" -lt 50 || exit 1; sleep .1; i=\$((i + 1)); done; echo \$p")" || die "Failed to launch the harness."
     [[ "$HARNESS_PID" =~ ^[0-9]+$ ]] || die "Harness launch returned an invalid PID."
 
     # Poll the done-marker, printing a heartbeat tail of the log.
@@ -654,7 +654,7 @@ RUNNER
         fi
         if on_bench "test -f '$E2E_DIR/results/e2e-harness.done'"; then
             rc="$(on_bench "cat '$E2E_DIR/results/e2e-harness.done'")"
-            harness_finished
+            harness_finished || die "Detached harness identity changed before it stopped."
             break
         fi
         sleep 20

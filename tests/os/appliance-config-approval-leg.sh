@@ -105,7 +105,7 @@ done'
 
 approval_fixture_disarm() {
     local rc=0
-    approval_fixture_quiesce || rc=1
+    approval_fixture_quiesce || return 1
     [ "${APPROVAL_FIXTURE_ARMED:-0}" -ne 0 ] || return "$rc"
     _ssh "set -eu
 owned=0

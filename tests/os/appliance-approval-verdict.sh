@@ -112,6 +112,10 @@ _approval_fixture_failure_self_test() (
     *) f=$((f + 1)) ;;
     esac
     case "$command" in *"-name '*.json' -exec mv"*) f=$((f + 1)) ;; esac
+    _ssh() { ssh_called=1; }
+    approval_fixture_quiesce() { return 1; }
+    APPROVAL_FIXTURE_ARMED=1 ssh_called=0
+    ! approval_fixture_disarm && [ "$APPROVAL_FIXTURE_ARMED" -eq 1 ] && [ "$ssh_called" -eq 0 ] || f=$((f + 1))
     [ "$f" -eq 0 ]
 )
 

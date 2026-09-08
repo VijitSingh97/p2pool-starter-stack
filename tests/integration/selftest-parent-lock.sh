@@ -10,10 +10,11 @@ export RIG_LOCK_FILE="$WORK/rig.lock"
 export RIG_LOCK_HOLDER="$WORK/rig.holder"
 export RIG_LOCK_PARENT_ACTOR=e2e-controller
 export RIG_LOCK_PARENT_NONCE=0123456789abcdef0123456789abcdef
+export RIG_LOCK_PARENT_FD=9
 
 echo "== a real parent lock carries an exact, unspoofable identity =="
 : >"$RIG_LOCK_FILE"
-exec 9<"$RIG_LOCK_FILE"
+exec 9<>"$RIG_LOCK_FILE"
 flock -n -x 9
 printf '%s nonce=%s parent continuity selftest\n' "$RIG_LOCK_PARENT_ACTOR" "$RIG_LOCK_PARENT_NONCE" >"$RIG_LOCK_HOLDER"
 assert_eq "lock is a regular non-symlink file" "$([ -f "$RIG_LOCK_FILE" ] && [ ! -L "$RIG_LOCK_FILE" ] && echo yes)" yes
@@ -27,6 +28,16 @@ busy_rc=$?
 assert_rc "the held kernel flock reports the protocol's busy rc" "$busy_rc" 75
 rig_lock_parent_verify
 assert_rc "the matching parent identity verifies against the busy flock" "$?" 0
+sleep 30 &
+lease_child=$!
+exec 9>&-
+flock -E 75 -n -x "$RIG_LOCK_FILE" true 2>/dev/null
+lease_rc=$?
+kill "$lease_child" 2>/dev/null || true
+wait "$lease_child" 2>/dev/null || true
+assert_rc "an inherited descriptor keeps the lease after its parent copy closes" "$lease_rc" 75
+exec 9<>"$RIG_LOCK_FILE"
+flock -n -x 9
 
 verify_fails() {
     rig_lock_parent_verify >/dev/null 2>&1
@@ -82,7 +93,8 @@ assert_contains "detached launch reads token and continuity identity from stdin"
     "$(sed -n '/printf.*IT_RIG_TOKEN.*RIG_LOCK_PARENT_NONCE/p' "$HERE/e2e.sh")" \
     "printf '%s\\n%s\\n%s\\n'"
 assert_contains "detached harness owns a process group that cleanup can drain" "$(cat "$HERE/e2e.sh")" 'nohup setsid ./.e2e-run.sh'
-assert_contains "launch waits for the durable owned process-group identity" "$(cat "$HERE/e2e.sh")" 'until grep -Fqx \"running \$p\"'
+assert_contains "launch waits for the durable owned process-group identity" "$(cat "$HERE/e2e.sh")" 'until grep -Eq \"^running \$p [0-9]+\$\"'
+assert_contains "parent mode keeps the inherited lock descriptor instead of crossing SSH" "$(cat "$HERE/e2e.sh" "$HERE/parent-lock.sh")" 'parent-held lock descriptor cannot cross SSH'
 assert_contains "restoration drains an unfinished detached harness first" "$(sed -n '/restore_all()/,/parent_lock_checkpoint restore/p' "$HERE/e2e.sh")" 'drain_harness'
 
 echo "== a lost launch acknowledgement cannot bypass the drain =="
@@ -107,7 +119,7 @@ assert_rc "an unresolved durable launch intent refuses restoration" "$?" 1
 (
     source "$HERE/detached-harness.sh"
     HARNESS_PENDING=1 HARNESS_STATE=/test/state HARNESS_PID=123
-    on_bench() { case "$1" in cat\ *) printf 'running 4242\n' ;; *) printf '%s\n' "$1" >"$WORK/recovered" ;; esac }
+    on_bench() { case "$1" in cat\ *) printf 'running 4242 99\n' ;; *) printf '%s\n' "$1" >"$WORK/recovered" ;; esac }
     warn() { :; }
     drain_harness
     [ "$HARNESS_DONE" = 1 ]
@@ -118,13 +130,14 @@ assert_contains "the durable process group replaced the partial reply" "$(cat "$
     source "$HERE/detached-harness.sh"
     # shellcheck disable=SC2034 # deliberate untrusted reply; drain must replace it
     HARNESS_PENDING=1 HARNESS_STATE=/test/state HARNESS_PID=partial
-    on_bench() { case "$1" in cat\ *) printf 'running 4242\n' ;; *) printf '%s\n' "$1" >"$WORK/recovered-malformed" ;; esac }
+    on_bench() { case "$1" in cat\ *) printf 'running 4242 99\n' ;; *) printf '%s\n' "$1" >"$WORK/recovered-malformed" ;; esac }
     warn() { :; }
     drain_harness
 ) >/dev/null 2>&1
 assert_rc "a malformed reply recovers the durable process-group identity" "$?" 0
 assert_contains "the durable process group replaced the malformed reply" "$(cat "$WORK/recovered-malformed")" "_ '4242'"
 assert_contains "drain proves absence inside one checked root shell" "$(cat "$HERE/detached-harness.sh")" 'sudo -n bash -c'
+assert_contains "drain binds root signals to the recorded process start" "$(cat "$HERE/detached-harness.sh")" '/proc/\$p/stat'
 assert_contains "only the local nested runner can use parent-lock bypass" \
     "$(sed -n '/RIG_LOCK_PARENT_ACTOR/,/elif \[ "\$IT_MODE"/p' "$HERE/run.sh")" \
     'IT_MODE" = "local'

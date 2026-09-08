@@ -1,8 +1,7 @@
 # shellcheck shell=bash
-rig_lock_parent_verify() {
+rig_lock_parent_claim_verify() {
     local actor="${RIG_LOCK_PARENT_ACTOR:-}" nonce="${RIG_LOCK_PARENT_NONCE:-}"
     local lf="${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}" hf="${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}" got_actor got_nonce _ rc
-    [ -n "$actor" ] || [ -n "$nonce" ] || return 0
     [[ "$actor" =~ ^[A-Za-z0-9._:-]+$ && "$nonce" =~ ^[0-9a-f]{32}$ ]] || return 1
     [ -f "$lf" ] && [ ! -L "$lf" ] && [ -f "$hf" ] && [ ! -L "$hf" ] || return 1
     IFS=' ' read -r got_actor got_nonce _ <"$hf" || return 1
@@ -12,6 +11,28 @@ rig_lock_parent_verify() {
     rc=$?
     exec 7<&-
     [ "$rc" -eq 75 ]
+}
+
+rig_lock_parent_verify() {
+    local fd="${RIG_LOCK_PARENT_FD:-}"
+    [[ "$fd" =~ ^[3-9][0-9]*$ ]] && [ -w "/dev/fd/$fd" ] || return 1
+    rig_lock_parent_claim_verify
+}
+
+parent_lock_on_bench() { # <host> <command>; inherited lock descriptors cannot cross SSH
+    local host="$1"
+    shift
+    if [ -n "${RIG_LOCK_PARENT_ACTOR:-}${RIG_LOCK_PARENT_NONCE:-}${RIG_LOCK_PARENT_FD:-}" ]; then
+        case "$host" in
+        localhost | 127.0.0.1 | "$(hostname)" | "$(hostname -s)" | "$(hostname -f)") bash -c "$1" ;;
+        *)
+            printf 'parent-held lock descriptor cannot cross SSH to %s\n' "$host" >&2
+            return 1
+            ;;
+        esac
+    else
+        ssh "${SSH_OPTS[@]}" "$host" "$1"
+    fi
 }
 
 rig_lock_parent_use() {
@@ -25,12 +46,20 @@ rig_lock_parent_use() {
 }
 
 parent_lock_checkpoint() { # <phase> [host]; e2e-side remote verification
-    local phase="$1" host="${2:-$BENCH_HOST}"
+    local phase="$1" host="${2:-$BENCH_HOST}" miner_fd="${RIG_LOCK_PARENT_MINER_FD:-}"
     [ -n "${RIG_LOCK_PARENT_ACTOR:-}" ] || [ -n "${RIG_LOCK_PARENT_NONCE:-}" ] || return 0
+    case "$host" in
+    localhost | 127.0.0.1 | "$(hostname)" | "$(hostname -s)" | "$(hostname -f)")
+        rig_lock_parent_verify || return 1
+        step "parent-held lock verified on $host before $phase"
+        return
+        ;;
+    esac
+    [[ "$miner_fd" =~ ^[3-9][0-9]*$ ]] && [ -w "/dev/fd/$miner_fd" ] || return 1
     # shellcheck disable=SC2029 # quote_arg makes each client-side expansion one remote word.
     {
-        declare -f rig_lock_parent_verify
-        printf 'rig_lock_parent_verify\n'
+        declare -f rig_lock_parent_claim_verify
+        printf 'rig_lock_parent_claim_verify\n'
     } | ssh "${SSH_OPTS[@]}" "$host" "RIG_LOCK_PARENT_ACTOR=$(quote_arg "${RIG_LOCK_PARENT_ACTOR:-}") RIG_LOCK_PARENT_NONCE=$(quote_arg "${RIG_LOCK_PARENT_NONCE:-}") RIG_LOCK_FILE=$(quote_arg "${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}") RIG_LOCK_HOLDER=$(quote_arg "${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}") bash -s" || {
         warn "parent-held lock continuity failed on $host before $phase"
         return 1

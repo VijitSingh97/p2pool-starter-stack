@@ -83,6 +83,23 @@ cs_out="$(PITHEAD_OS_COMPOSE_FILE="$CS/missing-compose.yml" cs_stage v0.0.1 "$CS
 assert_contains "a missing explicit compose file is refused" "$cs_out" "rc=1"
 assert_contains "the missing-file refusal names PITHEAD_OS_COMPOSE_FILE" "$cs_out" "PITHEAD_OS_COMPOSE_FILE"
 
+mkdir -p "$CS/copy-failure"
+printf 'stale\n' >"$CS/copy-failure/docker-compose.yml"
+printf 'tree\n' >"$CS/copy-failure/COMPOSE_SOURCE"
+cs_out="$(
+    {
+        export PITHEAD_BUILD_IMAGE_TEST=1 PITHEAD_OS_COMPOSE_FILE="$CS/external-compose.yml"
+        set --
+        source "$ROOT/os/build-image.sh"
+        set +e
+        cp() { return 44; }
+        stage_compose v0.0.1 "$CS/copy-failure"
+    } 2>&1
+    printf 'rc=%s' "$?"
+)"
+assert_contains "a failed explicit compose copy is propagated" "$cs_out" "rc=1"
+assert_eq "a failed copy leaves no stale compose or stamp" "$(ls -A "$CS/copy-failure")" ""
+
 cs_out=$(cs_stage v0.0.2 "$CS/unfetched")
 assert_contains "a tag on origin that this clone lacks is REFUSED, not built from the tree" "$cs_out" "rc=1"
 assert_contains "the refusal names the tag and the remedy" "$cs_out" "tag v0.0.2 exists on origin but not in this clone"
@@ -118,7 +135,7 @@ printf 'stale\n' >"$caller/os/build/stage/docker-compose.yml"
 printf 'tree\n' >"$caller/os/build/stage/COMPOSE_SOURCE"
 (cd "$caller" && PITHEAD_OS_COMPOSE_FILE="$caller/missing.yml" bash os/build-image.sh --stage-only >/dev/null 2>&1)
 assert_rc "the build caller fails closed when explicit compose staging fails" "$?" 1
-assert_eq "a staging failure cannot be reported as successful over stale files" "$(cat "$caller/os/build/stage/docker-compose.yml")" stale
+assert_eq "a staging failure removes stale files before a later COPY can use them" "$(ls -A "$caller/os/build/stage")" ""
 
 echo "== unit: verify-image compose_reference — the stamp names the file the shipped compose must equal (#1215) =="
 # A fake image root: only the two files the helper reads. Driven from inside the scratch repo so
