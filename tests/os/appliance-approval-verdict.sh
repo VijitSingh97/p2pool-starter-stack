@@ -59,9 +59,9 @@ approval_fixture_post() { # <route> <body>; unique actor lets cleanup recover an
 approval_fixture_preview() {
     local body="$1" deadline status
     approval_fixture_arm || return 1
-    APPROVAL_PREVIEW=$(approval_fixture_post preview "$body") || return 1
+    APPROVAL_PREVIEW=$(approval_fixture_post preview "$body") || { approval_fixture_disarm || true; return 1; }
     APPROVAL_REQUEST_ID=$(printf '%s' "$APPROVAL_PREVIEW" | jq -r '.id // ""')
-    approval_fixture_bind "$APPROVAL_REQUEST_ID" || return 1
+    approval_fixture_bind "$APPROVAL_REQUEST_ID" || { approval_fixture_disarm || true; return 1; }
     deadline=$(($(date +%s) + 240))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         status=$(printf '%s' "$APPROVAL_PREVIEW" | jq -r '.status // "pending"' 2>/dev/null) || status=pending
@@ -69,6 +69,7 @@ approval_fixture_preview() {
         sleep 3
         APPROVAL_PREVIEW=$(dashboard_curl -sSk -m 8 "https://$ip/api/control/result?id=$APPROVAL_REQUEST_ID" 2>/dev/null)
     done
+    approval_fixture_disarm || true
     return 1
 }
 
@@ -132,10 +133,14 @@ _approval_preview_lifecycle_self_test() (
         printf 'bind ' >>"$order_file"
         return 1
     }
+    approval_fixture_disarm() {
+        APPROVAL_FIXTURE_ARMED=0
+        printf 'disarm ' >>"$order_file"
+    }
     APPROVAL_FIXTURE_ARMED=0
     approval_fixture_preview '{}' && return 1
-    [ "$APPROVAL_FIXTURE_ARMED" -eq 1 ] || return 1
-    [ "$(cat "$order_file")" = "arm preview bind " ]
+    [ "$APPROVAL_FIXTURE_ARMED" -eq 0 ] || return 1
+    [ "$(cat "$order_file")" = "arm preview bind disarm " ]
 )
 
 _approval_fixture_cleanup_self_test() (

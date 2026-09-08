@@ -4,7 +4,7 @@
 diagnostics_doctor_verdict() { # <result-json> <healthy|nonzero>
     printf '%s' "$1" | jq -e --arg mode "$2" '
         .status == "applied" and (.doctor.exit | type == "number") and
-        (if $mode == "nonzero" then .doctor.exit > 0 else true end) and
+        (if $mode == "nonzero" then .doctor.exit > 0 else .doctor.exit == 0 end) and
         (.doctor.checks | type == "array" and length > 0) and
         all(.doctor.checks[]; (.status | type == "string") and (.message | type == "string"))' >/dev/null
 }
@@ -59,6 +59,8 @@ phase_provision_failed_doctor_regression() { # <dashboard-user> <dashboard-passw
 _diagnostics_self_test() {
     local good='{"status":"applied","doctor":{"exit":2,"checks":[{"status":"fail","message":"node down"}]}}' f=0 over json
     diagnostics_doctor_verdict "$good" nonzero || f=$((f + 1))
+    diagnostics_doctor_verdict "$good" healthy && f=$((f + 1))
+    diagnostics_doctor_verdict '{"status":"applied","doctor":{"exit":0,"checks":[{"status":"pass","message":"healthy"}]}}' healthy || f=$((f + 1))
     diagnostics_doctor_verdict "${good/\"checks\"/\"lost\"}" nonzero && f=$((f + 1))
     diagnostics_doctor_verdict "${good/\"message\"/\"detail\"}" nonzero && f=$((f + 1))
     diagnostics_doctor_verdict "${good/\"exit\":2/\"exit\":0}" nonzero && f=$((f + 1))

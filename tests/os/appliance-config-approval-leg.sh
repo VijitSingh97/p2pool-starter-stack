@@ -314,7 +314,7 @@ phase_provision_sensitive_regressions() { # <dashboard-user> <dashboard-password
         any(.preview_values[]; .key == "monero.remote.host" and .new == $mh) and
         any(.preview_values[]; .key == "tari.remote.host" and .new == $th)' >/dev/null; then
         bad "reserved-node preview did not expose endpoints behind the combined approval gate"
-        return
+        approval_fixture_require_disarm; return
     fi
     rid=$APPROVAL_REQUEST_ID
     result=$(dashboard_control_request commit "$(jq -nc --arg id "$rid" '{id:$id,approve:true,payout_suffixes:{}}')")
@@ -329,7 +329,7 @@ phase_provision_sensitive_regressions() { # <dashboard-user> <dashboard-password
     preview=$APPROVAL_PREVIEW rid=$APPROVAL_REQUEST_ID
     approval_capture_restore_snapshot || {
         bad "could not preserve the original raw configuration for guaranteed restore"
-        return
+        approval_fixture_require_disarm; return
     }
     result=$(approval_commit "$rid")
     prompt=$(_ssh 'cat /data/pithead/.os-approval-fixture/prompt.json 2>/dev/null' | jq -r '.text // ""' 2>/dev/null)

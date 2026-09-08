@@ -16,16 +16,15 @@ hostname_identity_verdict() { # <label> <ip> <kernel> <env-host> <state-host> <c
         printf 'state=%s' "${state_host:-empty}"
         return 1
     }
-    case "$sans" in *"DNS:$label.local"*) ;; *)
+    sans="${sans#*Subject Alternative Name:}"
+    if ! printf '%s\n' "$sans" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -qxF "DNS:$label.local"; then
         printf 'cert-missing-dns'
         return 1
-        ;;
-    esac
-    case "$sans" in *"IP Address:$ip"*) ;; *)
+    fi
+    if ! printf '%s\n' "$sans" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -qxF "IP Address:$ip"; then
         printf 'cert-missing-ip'
         return 1
-        ;;
-    esac
+    fi
     [ "$avahi" = active ] || {
         printf 'avahi=%s' "${avahi:-empty}"
         return 1
@@ -98,6 +97,7 @@ _hostname_self_test() {
     [ "$(hostname_identity_verdict fixture-box 192.0.2.10 fixture-box fixture-box.local fixture-box.local "$good" active 192.0.2.10)" = ready ] || f=$((f + 1))
     hostname_identity_verdict fixture-box 192.0.2.10 old fixture-box.local fixture-box.local "$good" active 192.0.2.10 >/dev/null && f=$((f + 1))
     hostname_identity_verdict fixture-box 192.0.2.10 fixture-box fixture-box.local fixture-box.local 'DNS:fixture-box.local' active 192.0.2.10 >/dev/null && f=$((f + 1))
+    hostname_identity_verdict fixture-box 192.0.2.10 fixture-box fixture-box.local fixture-box.local 'DNS:fixture-box.local.evil, IP Address:192.0.2.100' active 192.0.2.10 >/dev/null && f=$((f + 1))
     hostname_identity_verdict fixture-box 192.0.2.10 fixture-box fixture-box.local fixture-box.local "$good" inactive 192.0.2.10 >/dev/null && f=$((f + 1))
     hostname_identity_verdict fixture-box 192.0.2.10 fixture-box fixture-box.local fixture-box.local "$good" active 192.0.2.11 >/dev/null && f=$((f + 1))
     [ "$f" -eq 0 ] || {
