@@ -12,6 +12,8 @@ provisioning_units() { # the two units' states, one line, space-separated: "<fir
         tr -d '\r' | tr '\n' ' '
 }
 
+provisioning_terminal_state() { case "$1" in active | inactive | failed | deactivating) return 0 ;; *) return 1 ;; esac }
+
 provisioning_settled() { # $1 seconds -> 0 once no provisioning unit is activating, 1 at the deadline
     local deadline=$(($(date +%s) + $1)) st
     while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -25,7 +27,7 @@ provisioning_settled() { # $1 seconds -> 0 once no provisioning unit is activati
         case " $st " in
         *" activating "*) sleep "${PROVISIONING_POLL_S:-15}" ;;
         *)
-            [ "$#" -eq 2 ] && return 0
+            [ "$#" -eq 2 ] && provisioning_terminal_state "$1" && provisioning_terminal_state "$2" && return 0
             sleep "${PROVISIONING_POLL_S:-15}"
             ;;
         esac

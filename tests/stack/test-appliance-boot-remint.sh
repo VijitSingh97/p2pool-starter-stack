@@ -234,6 +234,8 @@ ps_run 'inactive\n' 1 settled
 assert_rc "a partial one-unit probe is not a settled machine" "$?" "1"
 PS_RC=255 ps_run 'inactive\ninact' 1 settled
 assert_rc "a transport-truncated two-word probe is not a settled machine" "$?" "1"
+ps_run 'unknown\nunknown\n' 1 settled
+assert_rc "two unknown unit states are not a settled machine" "$?" "1"
 PS_FLIP=1 ps_run 'activating\ninactive\n' 5 settled
 assert_rc "activating on the first read, inactive on the next: settled after one poll" "$?" "0"
 ps_out=$(PS_ERR='[ERROR] Stack failed to start — see the error above.' ps_run 'activating\ninactive\n' 0 state)

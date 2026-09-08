@@ -9,7 +9,6 @@
 # own bundle-signature check and its trailing control-disabled probe live in test-control-upgrade.sh
 # in full: that section runs the control-run-pending verb against the $C control sandbox, the same
 # run-against-its-own-sandbox reasoning module 4 used for apply --dry-run/symlink-invocation.)
-
 echo "== black-box: verify_release_images fail-closed gate (#376) =="
 # The verification decision itself, against a fake docker on a PINNED PATH ($VRI/bin:/usr/bin:/bin
 # — coreutils stay, so the host can never decide the outcome). Since #1072 the verifier is a
@@ -220,10 +219,14 @@ printf '#!/usr/bin/env bash\necho "      --tlog-upload   upload to the transpare
 printf '#!/usr/bin/env bash\necho "      --yes   skip confirmation"\nexit 0\n' >"$SGN/v3/cosign"
 chmod +x "$SGN/bin/cosign" "$SGN/v3/cosign"
 : >"$SGN/cosign.key"
-# One resolve_signing decision, rendered as "rc=N <message> enabled=N". The env arrives as a string
-# because release.sh's option parser needs an empty argv (`set --`), which eats positional args; and
-# COSIGN_ENABLED — the variable that actually drives whether anything gets signed — is reported from
-# an EXIT trap, because die() exits this subshell before a trailing read of it could run.
+bundle_without_pub() {
+    # shellcheck disable=SC2034  # consumed by make_bundle from the sourced release script
+    WORKDIR="$SGN/nopub-bundle" TAG=v9.9.9 REGISTRY=ghcr.io/test DRY_RUN=0
+    get_digest() { printf 'ghcr.io/test/pithead-%s@sha256:%064d' "$1" 1; }
+    make_bundle "$SGN/nopub.tar.gz" >/dev/null
+    ! tar tzf "$SGN/nopub.tar.gz" | grep -qx 'pithead/cosign.pub'
+}
+# One resolve decision, reporting COSIGN_ENABLED from EXIT even when die() stops the cut.
 signing_decide() { # <cwd> <env-assignments>
     _action="${3:-}"
     _out="$(
@@ -236,7 +239,7 @@ signing_decide() { # <cwd> <env-assignments>
         eval "$_envs"
         trap 'printf " enabled=%s" "${COSIGN_ENABLED:-unset}"' EXIT
         resolve_signing 2>&1
-        [ "$_action" != bundle ] || WORKDIR="$SGN/nopub-bundle" TAG=v9.9.9 DRY_RUN=1 make_bundle "$SGN/nopub.tar.gz" 2>&1
+        [ "$_action" != bundle ] || bundle_without_pub 2>&1
     )"
     printf 'rc=%s %s' "$?" "$_out"
 }
@@ -289,7 +292,6 @@ assert_contains "a dry run rehearses the real decision, not a fixed OFF (#1108)"
 assert_contains "a dry run reports signing will be ON, not OFF (#1108)" "$sg" "enabled=1"
 sg="$(signing_decide "$ROOT" "${SGN_OK/DRY_RUN=0/DRY_RUN=1}; unset COSIGN_KEY")"
 assert_contains "a dry run on an unconfigured box fails the rehearsal (#1108)" "$sg" "rc=1"
-
 echo "== unit: release.sh takes the release box's key defaults (#77 phase 1, #1115) =="
 # The release box keeps the key and its passphrase at fixed paths under $HOME, so a cut there needs
 # no exports — that convenience is what the appliance lane runs on, and losing it in the twin sync
@@ -303,7 +305,6 @@ DEF="$SANDBOX/signdefaults"
 mkdir -p "$DEF/keydir" "$DEF/nokeydir"
 : >"$DEF/keydir/cosign.key"
 printf 'correct horse\n' >"$DEF/keydir/cosign.passphrase"
-
 signing_defaults() { # <env-assignments> -> "key=<COSIGN_KEY> pass=<value|unset> gaps=<...>"
     (
         _envs="$1" # saved first: release.sh's option parser needs an empty argv, and `set --` eats it
@@ -316,7 +317,6 @@ signing_defaults() { # <env-assignments> -> "key=<COSIGN_KEY> pass=<value|unset>
         printf 'key=%s pass=%s gaps=%s' "${COSIGN_KEY:-}" "${COSIGN_PASSWORD-unset}" "$(signing_env_gaps | tr '\n' ';')"
     )
 }
-
 sd="$(signing_defaults "RELEASE_KEY_DIR=$DEF/keydir; unset COSIGN_KEY; unset COSIGN_PASSWORD")"
 assert_contains "an unset COSIGN_KEY falls back to the release box's key" "$sd" "key=$DEF/keydir/cosign.key"
 assert_contains "the passphrase file satisfies COSIGN_PASSWORD" "$sd" "pass=correct horse"
