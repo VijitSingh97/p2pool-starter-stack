@@ -157,6 +157,15 @@ CS_TREE_SHA="$(sha256sum "$CS/repo/docker-compose.yml" | cut -d' ' -f1)"
 assert_eq "a file stamp validates and uses the shipped compose" \
     "$(cs_ref "file sha256:$CS_TREE_SHA" 0.0.1)" "rc=0
 $(cat "$CS/repo/docker-compose.yml")"
+mkdir -p "$CS/toctou/opt/pithead"
+printf 'file sha256:%s\n' "$CS_FILE_SHA" >"$CS/toctou/opt/pithead/COMPOSE_SOURCE"
+toctou_rc="$({
+    source "$ROOT/tests/os/verify-image-artifact-helpers.sh"
+    cp() { printf 'swapped\n' >"$1"; command cp "$1" "$2"; }
+    PITHEAD_OS_COMPOSE_FILE="$CS/external-compose.yml" compose_reference "$CS/toctou" "$CS/ref-swapped"
+} 2>/dev/null; printf '%s' "$?")"
+assert_eq "a source swap between validation and copy is refused" "$toctou_rc" "1"
+assert_eq "a mismatched verifier-owned copy is removed" "$(test -e "$CS/ref-swapped" && echo present || echo absent)" absent
 mkdir -p "$CS/no-ledger/opt/pithead"
 printf 'file sha256:%s\n' "$CS_TREE_SHA" >"$CS/no-ledger/opt/pithead/COMPOSE_SOURCE"
 missing_source_rc="$({ source "$ROOT/tests/os/verify-image-artifact-helpers.sh"; PITHEAD_OS_COMPOSE_FILE='' compose_reference "$CS/no-ledger" "$CS/ref-missing"; } 2>/dev/null; printf '%s' "$?")"
