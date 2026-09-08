@@ -15,6 +15,7 @@ import { test } from "node:test";
 
 import {
   editableCandidate,
+  graftHidden,
   isHidden,
   restoreHidden,
 } from "../../mining_dashboard/web/static/confighidden.mjs";
@@ -83,6 +84,25 @@ test("editableCandidate: a deep copy — editing the candidate cannot rewrite th
   const candidate = editableCandidate(cfg);
   candidate.monero.wallet_address = "4BBBB";
   assert.equal(cfg.monero.wallet_address, "4AAAA");
+});
+
+test("config projection drops keys that control object prototypes", () => {
+  const hostile = JSON.parse(
+    '{"__proto__":{"polluted":true},"constructor":{"prototype":{"polluted":true}},"network":{"mtu":1500}}',
+  );
+  const out = editableCandidate(hostile);
+  assert.equal(Object.getPrototypeOf(out), Object.prototype);
+  assert.equal(Object.hasOwn(out, "constructor"), false);
+  assert.equal(Object.prototype.polluted, undefined);
+  assert.deepEqual(out.network, { mtu: 1500 }, "ordinary config survives the projection");
+});
+
+test("hidden-key grafting cannot assign through prototype control keys", () => {
+  const out = {};
+  graftHidden(out, JSON.parse('{"__proto__":{"polluted":true},"constructor":{"polluted":true}}'), ["ssh"]);
+  assert.equal(Object.getPrototypeOf(out), Object.prototype);
+  assert.equal(Object.hasOwn(out, "constructor"), false);
+  assert.equal(Object.prototype.polluted, undefined);
 });
 
 test("restoreHidden: the server's hidden subtree comes back verbatim beside the operator's edits", () => {

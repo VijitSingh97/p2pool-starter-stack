@@ -47,6 +47,7 @@ export function editableCandidate(cfg) {
 function withoutHidden(node, path) {
   const out = {};
   for (const [k, v] of Object.entries(node)) {
+    if (k === "__proto__" || k === "constructor") continue;
     const p = [...path, k];
     if (isHidden(p.join("."))) continue;
     out[k] = isPlainObject(v) ? withoutHidden(v, p) : v;
@@ -66,8 +67,9 @@ export function restoreHidden(proposed, source) {
   return out;
 }
 
-function graftHidden(out, src, path) {
+export function graftHidden(out, src, path) {
   for (const [k, v] of Object.entries(src)) {
+    if (k === "__proto__" || k === "constructor") continue;
     const p = [...path, k];
     if (isHidden(p.join("."))) out[k] = v;
     else if (isPlainObject(v) && isPlainObject(out[k])) graftHidden(out[k], v, p);
