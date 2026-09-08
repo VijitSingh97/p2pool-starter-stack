@@ -75,9 +75,12 @@ stack, clone the repo. pithead sees the `build/` context and builds locally, tag
 
 ```bash
 git clone https://github.com/p2pool-starter-stack/pithead.git
-cd pithead && chmod +x pithead
+cd pithead && make
 cp config.minimal.json config.json   # then set your payout addresses
 ```
+
+Release archives already include the generated `pithead` executable. Git clones keep only its
+numbered sources, so `make` builds the executable before the first `./pithead` command.
 
 > Changed your mind later? You can convert a clone to the published images in place. See
 > [Switching a source checkout to release images](operations.md#switching-a-source-checkout-to-release-images).

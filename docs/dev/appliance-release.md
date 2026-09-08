@@ -446,7 +446,8 @@ one version and one GitHub Release.
    ```
 
    Run it **from the repo checkout you built**, because it compares the artifact against these
-   files: the shipped `pithead` and config reference must be byte-identical to the tree, the
+   files: the shipped `pithead` must match the generated root copy and the config reference must
+   be byte-identical to the tree, the
    shipped compose file must be byte-identical to the source its own `COMPOSE_SOURCE` stamp names
    (the tree at a cut; the staged tag's commit in a dev build), and the baked container archive
    is unpacked to confirm it carries this tree's `wizard.py`.

@@ -104,6 +104,8 @@ cp config.minimal.json config.json   # then set your Monero + Tari payout addres
 
 > For every tunable, copy `config.reference.json` instead. To build from source (a `dev`
 > build), e.g. to contribute, see [Install from source](docs/getting-started.md#alternative-build-from-source).
+> Release archives include the generated `pithead` executable and offline operator guides; source
+> clones build the executable with `make`.
 
 > NOTE: Prereqs are Ubuntu Server 24.04 LTS, 16 GB+ RAM, an SSD (~330 GB pruned / ~530 GB full
 > minimum with both nodes local; the chains grow ~100+ GB/year, so 2–4 TB avoids a later resize),

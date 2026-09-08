@@ -84,12 +84,15 @@ assert_eq "--stage-only is accepted and recorded" \
     "$( (export PITHEAD_BUILD_IMAGE_TEST=1 && set -- --stage-only && source "$ROOT/os/build-image.sh" && echo "STAGE_ONLY=${STAGE_ONLY:-unset}") 2>&1)" "STAGE_ONLY=1"
 bi_line() { grep -n -F -- "$1" "$ROOT/os/build-image.sh" | head -1 | cut -d: -f1; }
 l_stage=$(bi_line 'echo "==> compose file staged from: $(stage_compose "$STACK_VERSION" os/build/stage)"')
+l_build=$(bi_line 'bash scripts/build-pithead.sh')
 l_stop=$(bi_line 'if [ "${STAGE_ONLY:-0}" = 1 ]; then')
 l_wizard=$(bi_line 'echo "==> staging wizard image $WIZARD_IMAGE"')
+assert_eq "the generated CLI is built before staging can stop" \
+    "$([ "${l_build:-0}" -lt "${l_stage:-0}" ] && echo ordered)" "ordered"
 assert_eq "the stop sits after the staging line and before the wizard image step" \
     "$([ "${l_stage:-0}" -lt "${l_stop:-0}" ] && [ "${l_stop:-0}" -lt "${l_wizard:-0}" ] && echo ordered)" "ordered"
 unset -f bi_line
-unset l_stage l_stop l_wizard
+unset l_build l_stage l_stop l_wizard
 
 echo "== unit: verify-image compose_reference — the stamp names the file the shipped compose must equal (#1215) =="
 # A fake image root: only the two files the helper reads. Driven from inside the scratch repo so
@@ -133,6 +136,9 @@ CS_VI="$(cat "$ROOT/tests/os/verify-image.sh")"
 assert_contains "build-image stages into os/build/stage from STACK_VERSION" "$CS_BI" 'stage_compose "$STACK_VERSION" os/build/stage'
 assert_contains "the Dockerfile copies the STAGED compose file" "$CS_DF" 'os/build/stage/docker-compose.yml'
 assert_contains "the Dockerfile copies the stamp beside it" "$CS_DF" 'os/build/stage/COMPOSE_SOURCE'
+assert_eq "the appliance carries no documentation or source-only trees" "$(grep -cE '^COPY (docs|lib|scripts|tests|dashboard|\.github)/' "$ROOT/os/rootfs/Dockerfile" || true)" "0"
+assert_contains "the appliance copies only Monero's runtime-mounted template" "$CS_DF" 'COPY build/monero/bitmonero.conf.template'
+assert_not_contains "the appliance excludes Monero image-build sources" "$CS_DF" 'COPY build/monero/ /opt/pithead/build/monero/'
 assert_not_contains "the Dockerfile no longer copies the tree's compose file" "$CS_DF" 'VERSION docker-compose.yml'
 assert_contains "verify-image compares against what the stamp resolves to, not the tree" "$CS_VI" 'compose_reference "$ROOT" "$COMPOSE_REF"'
 assert_not_contains "verify-image's old tree comparison is gone" "$CS_VI" 'docker-compose.yml" ./docker-compose.yml'

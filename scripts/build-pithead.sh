@@ -1,20 +1,13 @@
 #!/usr/bin/env bash
 #
-# Build the shipped `pithead` CLI from its sources in lib/pithead/ (#1105 Phase 2).
+# Build the `pithead` CLI from its sources in lib/pithead/ (#1105 Phase 2).
 #
-# `pithead` is a SHIPPED ARTIFACT: a release bundle carries the single file and nothing else,
-# and an operator runs `./pithead` straight out of a checkout. So the split into sources cannot
-# introduce a runtime `source` — the file has to keep working as one self-contained script. It is
-# therefore built by CONCATENATION: lib/pithead/*.sh in LC_ALL=C name order, byte for byte, into
-# the committed `pithead`, under a banner naming this script as the generator. Both the sources
-# and the artifact are committed, and the artifact is the thing that ships.
+# Release bundles and appliance images carry the single generated file, so the split into sources
+# cannot introduce a runtime `source`. Build by concatenating lib/pithead/*.sh in LC_ALL=C name
+# order, byte for byte, under a banner naming this script as the generator. The output is ignored
+# by git and rebuilt by make, release.sh, and os/build-image.sh where it is consumed.
 #
-# That design is only honest if the two cannot drift, which is what `--check` is for: it rebuilds
-# into a temporary file and refuses on any difference. `make lint` runs it, so a slice edited
-# without rebuilding fails the gate rather than shipping an artifact nobody generated.
-#
-#   scripts/build-pithead.sh              rebuild `pithead` in place (preserves its mode)
-#   scripts/build-pithead.sh --check      fail if the committed artifact is not what the sources build
+#   scripts/build-pithead.sh              rebuild `pithead` in place
 #   scripts/build-pithead.sh --self-test  run the fixtures in scripts/build-pithead-selftest.sh
 #
 # Concatenation order is the whole contract: the artifact's ordering constraints (`set -Eeuo
@@ -50,8 +43,7 @@ list_slices() {
 # format-clean. Since the artifact separates its top-level blocks with exactly one blank line
 # anyway, joining on one puts the separator where both tools agree: every slice is independently
 # shfmt-clean, and cutting a new slice at any blank line between two top-level blocks reproduces
-# the artifact byte for byte. A boundary at two blank lines or none does NOT, and `--check` says so
-# on the spot.
+# the artifact byte for byte. A boundary at two blank lines or none is refused on the spot.
 #
 # Refusals, each guarding a way the build could look like it worked:
 #   - an empty enumeration (a moved or mistyped source dir builds an empty "artifact"; every later
@@ -59,7 +51,7 @@ list_slices() {
 #   - a first slice without the shebang (whatever sorts first carries it; if it does not, sort
 #     order and file order have come apart and the artifact would not be executable)
 #   - a slice with a blank first or last line, which is the separator rule above being broken —
-#     caught here by name, rather than as an unexplained one-line diff from `--check`
+#     caught here by name rather than as a malformed generated file
 #   - an entry that is not a regular file (a directory named `*.sh` matches the glob). This one
 #     fails closed either way, so it is about the REASON given: checked before the shebang test,
 #     because `head` on a directory reads as a missing shebang and sends the reader hunting a
@@ -70,12 +62,11 @@ list_slices() {
 #     blank-line checks above use `tail -n 1`, which returns the last line's CONTENT for a file
 #     that simply stops without a newline, so neither of them fires. The join then runs that
 #     slice's last line straight into the next slice's first with NO separator at all — and once
-#     that state is committed, `--check` compares the build against itself and blesses it forever.
+#     that state is generated into a broken script.
 # Cross-slice semantic ordering (#1463): concatenation preserves BYTE order (proven above, and by
-# `--check`), but nothing before this proved it preserves the ordering INVARIANTS the header above
-# names. Two shapes reproduce faithfully from source to artifact — they build, `--check` passes
-# (source and artifact agree, because the defect is IN the source), and shellcheck is silent at
-# both `--severity=warning` and `-S info` — and break only when the artifact RUNS:
+# the byte checks), but nothing before this proved it preserves the ordering INVARIANTS the header
+# above names. Two shapes reproduce faithfully from source to artifact and shellcheck is silent at
+# both `--severity=warning` and `-S info`, but they break when the artifact RUNS:
 #
 #   - the same `readonly` name declared in two slices (a line copied to both sides of a boundary
 #     instead of moved, e.g. two adjacent slices each declaring `readonly FOO="bar"`): a second
@@ -109,7 +100,7 @@ validate_ordering() {
     function record(name) {
         if (name !~ /^[A-Za-z_][A-Za-z0-9_]*$/) return
         if (name in seen_readonly) {
-            printf "build-pithead: FATAL — readonly %s is declared more than once (first %s, again %s:%d). A second `readonly` on an already-readonly name is a fatal error when the artifact RUNS, though it builds, passes --check, and is silent under shellcheck at both severities.\n", name, seen_readonly[name], FILENAME, FNR > "/dev/stderr"
+            printf "build-pithead: FATAL — readonly %s is declared more than once (first %s, again %s:%d). A second `readonly` on an already-readonly name is a fatal error when the artifact RUNS, though it is silent under shellcheck at both severities.\n", name, seen_readonly[name], FILENAME, FNR > "/dev/stderr"
             bad = 1
         } else {
             seen_readonly[name] = FILENAME ":" FNR
@@ -217,13 +208,13 @@ build() {
     done <<<"$slices"
     validate_ordering "${ordered_files[@]}" || return 1
 
-    # Line 2 names the generator deterministically, so `--check` stays a byte comparison.
+    # Line 2 names the generator so every distributed copy carries its provenance.
     local i=0
     while IFS= read -r f; do
         [ "$i" -eq 0 ] || printf '\n'
         cat "$f"
         i=$((i + 1))
-    done <<<"$slices" | awk -v n="$(printf '%s\n' "$slices" | wc -l | tr -d ' ')" 'NR == 1 { print; printf "# GENERATED FILE — do not edit. Built from lib/pithead/*.sh (%s slices, LC_ALL=C name order) by:\n#   scripts/build-pithead.sh\n# A drifted copy fails `scripts/build-pithead.sh --check` (make lint-pithead-parity).\n", n; next } 1'
+    done <<<"$slices" | awk -v n="$(printf '%s\n' "$slices" | wc -l | tr -d ' ')" 'NR == 1 { print; printf "# GENERATED FILE — do not edit. Built from lib/pithead/*.sh (%s slices, LC_ALL=C name order) by:\n#   scripts/build-pithead.sh\n# Run `make` to rebuild this file.\n", n; next } 1'
 }
 
 write_artifact() {
@@ -249,41 +240,15 @@ write_artifact() {
     # shellcheck disable=SC2064  # expand now: the trap must name THIS file, not whatever $tmp is later
     trap "rm -f -- '$tmp'" EXIT
     build >"$tmp"
-    # Always 0755: the artifact is tracked at that mode, an operator runs `./pithead`, release.sh
-    # bundles it as-is, and `chmod --reference` (carrying a mode across) is GNU-only — macOS refuses.
+    # Always 0755: operators run `./pithead`, release.sh bundles it as-is, and
+    # `chmod --reference` (carrying a mode across) is GNU-only — macOS refuses.
     chmod 0755 "$tmp"
     mv -f "$tmp" "$ARTIFACT"
     echo "build-pithead: wrote $ARTIFACT from $(list_slices | wc -l | tr -d ' ') slice(s)."
 }
 
-check_artifact() {
-    local tmp rc=0
-    if [ ! -f "$ARTIFACT" ]; then
-        echo "build-pithead: FAIL — $ARTIFACT does not exist." >&2
-        return 1
-    fi
-    tmp=$(mktemp)
-    build >"$tmp" || {
-        rm -f "$tmp"
-        return 1
-    }
-    if ! cmp -s "$tmp" "$ARTIFACT"; then
-        echo "build-pithead: FAIL — $ARTIFACT is not what lib/pithead/*.sh builds."
-        echo "The sources and the shipped artifact have drifted. Edit the slice, then run:"
-        echo "    scripts/build-pithead.sh"
-        echo "and commit both. First differing lines:"
-        diff <(cat "$ARTIFACT") <(cat "$tmp") | head -n 20 || true
-        rc=1
-    else
-        echo "pithead parity OK — the committed artifact is exactly what $(list_slices | wc -l | tr -d ' ') slice(s) build."
-    fi
-    rm -f "$tmp"
-    return "$rc"
-}
-
 case "${1:-}" in
 "") write_artifact ;;
---check) check_artifact ;;
 --self-test)
     # The fixtures live in build-pithead-selftest.sh, which runs THIS script against them (#1463
     # split, see that file's header). readlink -f first: through a symlink, `dirname "$0"` is the
@@ -291,7 +256,7 @@ case "${1:-}" in
     exec bash "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/build-pithead-selftest.sh"
     ;;
 *)
-    echo "usage: ${BASH_SOURCE[0]##*/} [--check | --self-test]" >&2
+    echo "usage: ${BASH_SOURCE[0]##*/} [--self-test]" >&2
     exit 2
     ;;
 esac

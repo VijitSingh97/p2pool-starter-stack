@@ -158,14 +158,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # STACK_VERSION tag's copy when that tag exists, else the tree's (#1215, staged by build-image.sh).
 COPY os/rootfs/BUILD_COMMIT os/build/stage/docker-compose.yml os/build/stage/COMPOSE_SOURCE /opt/pithead/
 COPY pithead pithead-completion.bash VERSION config.reference.json config.core-keys.json config.minimal.json /opt/pithead/
-# ONLY the build/ subtrees services bind-mount at runtime (config templates and wrapper
-# entrypoints). dashboard/Dockerfile isn't among them (moved out of build/, #1106; see
+# ONLY the build/ paths services bind-mount at runtime (config templates and wrapper entrypoints).
+# dashboard/Dockerfile isn't among them (moved out of build/, #1106; see
 # KNOWN-ISSUES.md) — is_source_checkout() keys off its presence here, so shipping one by accident
 # would make the appliance think it's a dev checkout, tag :dev, never pull, and SKIP cosign.
-COPY build/monero/ /opt/pithead/build/monero/
+COPY build/monero/bitmonero.conf.template /opt/pithead/build/monero/bitmonero.conf.template
 COPY build/tari/ /opt/pithead/build/tari/
 COPY build/tari-wallet/ /opt/pithead/build/tari-wallet/
-RUN rm -f /opt/pithead/build/*/Dockerfile
 RUN chmod +x /opt/pithead/pithead
 
 # The engine bridge, and the reason the appliance can provision at all: pithead drives the stack
