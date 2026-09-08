@@ -97,6 +97,8 @@ _approval_fixture_failure_self_test() (
     approval_fixture_disarm && [ "$APPROVAL_FIXTURE_ARMED" -eq 0 ] || f=$((f + 1))
     command=$(cat "$command_file")
     case "$command" in *"systemctl start pithead-control.path"*) ;; *) f=$((f + 1)) ;; esac
+    APPROVAL_FIXTURE_ARMED=1 APPROVAL_FIXTURE_OWNER=os1966-1-2-3
+    ! approval_fixture_disarm && [ "$APPROVAL_FIXTURE_ARMED" -eq 1 ] || f=$((f + 1))
     _ssh() {
         case "$1" in
         "if test -f"*) printf '%s' "$APPROVAL_FIXTURE_OWNER" ;;

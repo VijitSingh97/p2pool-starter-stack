@@ -46,14 +46,14 @@ flock -n -x 8
 lease_guardian &
 lease_child=$!
 exec 9>"$WORK/lease"
-exec 7>/dev/null
+exec 7>"$RIG_LOCK_PARENT_PROOF"
 RIG_LOCK_PARENT_FD=7
 verify_fails() {
     rig_lock_parent_verify >/dev/null 2>&1
     [ "$?" -ne 0 ]
 }
 verify_fails
-assert_rc "an unrelated writable descriptor is not accepted as the lease" "$?" 0
+assert_rc "the writable proof file is not accepted as the lease channel" "$?" 0
 printf '' >&7
 assert_rc "verification does not overwrite or close caller descriptor 7" "$?" 0
 RIG_LOCK_PARENT_FD=9

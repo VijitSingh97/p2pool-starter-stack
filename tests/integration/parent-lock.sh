@@ -14,7 +14,7 @@ rig_lock_parent_claim_verify() {
 rig_lock_parent_verify() {
     local fd="${RIG_LOCK_PARENT_FD:-}" actor="${RIG_LOCK_PARENT_ACTOR:-}" nonce="${RIG_LOCK_PARENT_NONCE:-}"
     local proof="${RIG_LOCK_PARENT_PROOF:-/run/rig-e2e.proof}" challenge
-    [[ "$fd" =~ ^[3-9][0-9]*$ ]] && [ -w "/dev/fd/$fd" ] || return 1
+    [[ "$fd" =~ ^[3-9][0-9]*$ ]] && [ -p "/dev/fd/$fd" ] && [ -w "/dev/fd/$fd" ] || return 1
     [ -f "$proof" ] && [ ! -L "$proof" ] || return 1
     rig_lock_parent_claim_verify || return 1
     challenge="$actor:$nonce:$$:$RANDOM"

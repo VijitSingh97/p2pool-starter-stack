@@ -68,7 +68,10 @@ approval_fixture_quiesce() {
     [ -n "${ip:-}" ] || return 1
     local marker
     marker=$(_ssh 'if test -f /data/pithead/data/control/.os1966-active-owner; then cat /data/pithead/data/control/.os1966-active-owner; else printf absent; fi') || return 1
-    [ "$marker" != absent ] || return 0
+    if [ "$marker" = absent ]; then
+        [ "$APPROVAL_FIXTURE_ARMED" -eq 2 ] && return 0
+        return 1
+    fi
     [ "$marker" = "$APPROVAL_FIXTURE_OWNER" ] || return 1
     _ssh 'set -eu
 systemctl stop pithead-control.path
