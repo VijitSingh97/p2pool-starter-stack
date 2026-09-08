@@ -29,7 +29,10 @@ drain_harness() {
 }
 
 drain_harness_or_refuse() {
-    until drain_harness; do warn "harness launch state is uncertain; retaining ownership and retrying"; sleep 5; done
+    until drain_harness; do
+        warn "harness launch state is uncertain; retaining ownership and retrying"
+        sleep 5
+    done
 }
 
 harness_finished() {

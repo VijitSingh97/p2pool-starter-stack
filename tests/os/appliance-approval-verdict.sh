@@ -59,9 +59,15 @@ approval_fixture_post() { # <route> <body>; unique actor lets cleanup recover an
 approval_fixture_preview() {
     local body="$1" deadline status
     approval_fixture_arm || return 1
-    APPROVAL_PREVIEW=$(approval_fixture_post preview "$body") || { approval_fixture_disarm || true; return 1; }
+    APPROVAL_PREVIEW=$(approval_fixture_post preview "$body") || {
+        approval_fixture_disarm || true
+        return 1
+    }
     APPROVAL_REQUEST_ID=$(printf '%s' "$APPROVAL_PREVIEW" | jq -r '.id // ""')
-    approval_fixture_bind "$APPROVAL_REQUEST_ID" || { approval_fixture_disarm || true; return 1; }
+    approval_fixture_bind "$APPROVAL_REQUEST_ID" || {
+        approval_fixture_disarm || true
+        return 1
+    }
     deadline=$(($(date +%s) + 240))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         status=$(printf '%s' "$APPROVAL_PREVIEW" | jq -r '.status // "pending"' 2>/dev/null) || status=pending

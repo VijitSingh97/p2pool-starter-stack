@@ -159,16 +159,28 @@ assert_eq "a file stamp validates and uses the shipped compose" \
 $(cat "$CS/repo/docker-compose.yml")"
 mkdir -p "$CS/toctou/opt/pithead"
 printf 'file sha256:%s\n' "$CS_FILE_SHA" >"$CS/toctou/opt/pithead/COMPOSE_SOURCE"
-toctou_rc="$({
-    source "$ROOT/tests/os/verify-image-artifact-helpers.sh"
-    cp() { printf 'swapped\n' >"$1"; command cp "$1" "$2"; }
-    PITHEAD_OS_COMPOSE_FILE="$CS/external-compose.yml" compose_reference "$CS/toctou" "$CS/ref-swapped"
-} 2>/dev/null; printf '%s' "$?")"
+toctou_rc="$(
+    {
+        source "$ROOT/tests/os/verify-image-artifact-helpers.sh"
+        cp() {
+            printf 'swapped\n' >"$1"
+            command cp "$1" "$2"
+        }
+        PITHEAD_OS_COMPOSE_FILE="$CS/external-compose.yml" compose_reference "$CS/toctou" "$CS/ref-swapped"
+    } 2>/dev/null
+    printf '%s' "$?"
+)"
 assert_eq "a source swap between validation and copy is refused" "$toctou_rc" "1"
 assert_eq "a mismatched verifier-owned copy is removed" "$(test -e "$CS/ref-swapped" && echo present || echo absent)" absent
 mkdir -p "$CS/no-ledger/opt/pithead"
 printf 'file sha256:%s\n' "$CS_TREE_SHA" >"$CS/no-ledger/opt/pithead/COMPOSE_SOURCE"
-missing_source_rc="$({ source "$ROOT/tests/os/verify-image-artifact-helpers.sh"; PITHEAD_OS_COMPOSE_FILE='' compose_reference "$CS/no-ledger" "$CS/ref-missing"; } 2>/dev/null; printf '%s' "$?")"
+missing_source_rc="$(
+    {
+        source "$ROOT/tests/os/verify-image-artifact-helpers.sh"
+        PITHEAD_OS_COMPOSE_FILE='' compose_reference "$CS/no-ledger" "$CS/ref-missing"
+    } 2>/dev/null
+    printf '%s' "$?"
+)"
 assert_eq "a file stamp without its external ledger source is refused" "$missing_source_rc" "1"
 assert_eq "a file stamp whose hash does not match is refused" \
     "$(cs_ref "file sha256:$(printf '%064d' 9)" 0.0.1)" "rc=1"
@@ -261,11 +273,13 @@ resume_calls="$SANDBOX/resume-calls"
     set --
     # shellcheck disable=SC1090
     source "$REL" 2>/dev/null
-    preflight() { :; }; ghcr_login() { :; }
+    preflight() { :; }
+    ghcr_login() { :; }
     manifest_digest() { printf 'sha256:%064d\n' 7; }
     smoke_test() { printf 'smoke\n' >>"$resume_calls"; }
     promote() { printf 'promote\n' >>"$resume_calls"; }
-    sign_images() { :; }; publish() { :; }
+    sign_images() { :; }
+    publish() { :; }
     DRY_RUN=0 RESUME_PROMOTE=1 IMAGES=(tor) TAG=v9.9.9 STAGING_TAG=v9.9.9-rc.1 REGISTRY=ghcr.io/test
     main
 ) >/dev/null 2>&1

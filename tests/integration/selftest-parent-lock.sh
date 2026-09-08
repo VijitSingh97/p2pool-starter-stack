@@ -107,7 +107,7 @@ assert_rc "an unresolved durable launch intent refuses restoration" "$?" 1
 (
     source "$HERE/detached-harness.sh"
     HARNESS_PENDING=1 HARNESS_STATE=/test/state HARNESS_PID=123
-    on_bench() { case "$1" in cat\ *) printf 'running 4242\n' ;; *) printf '%s\n' "$1" >"$WORK/recovered" ;; esac; }
+    on_bench() { case "$1" in cat\ *) printf 'running 4242\n' ;; *) printf '%s\n' "$1" >"$WORK/recovered" ;; esac }
     warn() { :; }
     drain_harness
     [ "$HARNESS_DONE" = 1 ]
@@ -118,7 +118,7 @@ assert_contains "the durable process group replaced the partial reply" "$(cat "$
     source "$HERE/detached-harness.sh"
     # shellcheck disable=SC2034 # deliberate untrusted reply; drain must replace it
     HARNESS_PENDING=1 HARNESS_STATE=/test/state HARNESS_PID=partial
-    on_bench() { case "$1" in cat\ *) printf 'running 4242\n' ;; *) printf '%s\n' "$1" >"$WORK/recovered-malformed" ;; esac; }
+    on_bench() { case "$1" in cat\ *) printf 'running 4242\n' ;; *) printf '%s\n' "$1" >"$WORK/recovered-malformed" ;; esac }
     warn() { :; }
     drain_harness
 ) >/dev/null 2>&1

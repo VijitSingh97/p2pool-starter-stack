@@ -67,7 +67,8 @@ drive_harness() { # <mode> <borrow_miner> [rig-token] -> "LAUNCH\t<cmd>" then "S
         step() { :; }
         warn() { :; }
         ok() { :; }
-        harness_prepare() { HARNESS_STATE=/test/state; }; harness_finished() { :; }
+        harness_prepare() { HARNESS_STATE=/test/state; }
+        harness_finished() { :; }
         die() {
             echo "DIE: $*" >&2
             exit 1
@@ -78,11 +79,10 @@ drive_harness() { # <mode> <borrow_miner> [rig-token] -> "LAUNCH\t<cmd>" then "S
             # launch FIRST — reversing these two makes every phase assertion pass vacuously.
             *nohup*)
                 printf '%s' "$1" >"$LAUNCH_FILE"
-                # The launch is the one on_bench call e2e.sh pipes the token into (#1378).
-                cat >"$STDIN_FILE"; echo 4242
+                cat >"$STDIN_FILE"
+                echo 4242
                 ;;
-            # rig_supply's proof dial. Succeeds here; the unreachable-rig path is driven separately
-            # by rc_of below, which is where the exit-code contract is asserted.
+            # rig_supply's proof dial; the unreachable-rig path is driven separately by rc_of.
             *curl*Authorization*) return 0 ;;
             *borrow-rearm.request*) return 1 ;;
             *e2e-harness.done*)

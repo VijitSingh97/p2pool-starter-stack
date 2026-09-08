@@ -17,7 +17,10 @@ compose_reference() { # <image-root> <out-file>
         file="${PITHEAD_OS_COMPOSE_FILE:-}"
         [[ "$tag" =~ ^sha256:[0-9a-f]{64}$ ]] && [ -z "$sha$extra" ] && [ -f "$file" ] && [ ! -L "$file" ] || return 1
         cp "$file" "$2" || return 1
-        [ "$(sha256sum "$2" 2>/dev/null | cut -d' ' -f1)" = "${tag#sha256:}" ] || { rm -f "$2"; return 1; }
+        [ "$(sha256sum "$2" 2>/dev/null | cut -d' ' -f1)" = "${tag#sha256:}" ] || {
+            rm -f "$2"
+            return 1
+        }
         ;;
     *) return 1 ;;
     esac
