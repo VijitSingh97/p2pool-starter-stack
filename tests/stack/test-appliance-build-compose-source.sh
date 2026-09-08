@@ -106,6 +106,17 @@ assert_contains "the refusal names the tag and the remedy" "$cs_out" "tag v0.0.2
 assert_contains "the remedy is the fetch" "$cs_out" "git fetch --tags"
 assert_eq "the refusal stages nothing a later COPY could pick up" "$(ls "$CS/unfetched" 2>/dev/null)" ""
 
+cs_out="$(
+    git() {
+        [ "$1" != ls-remote ] || return 128
+        command git "$@"
+    }
+    cs_stage v0.0.9 "$CS/remote-error"
+)"
+assert_contains "a failed remote tag query is refused, not read as tag absence" "$cs_out" "rc=1"
+assert_contains "the remote-query refusal names the uncertainty" "$cs_out" "could not determine whether tag v0.0.9 exists"
+assert_eq "the remote-query failure stages nothing" "$(ls "$CS/remote-error" 2>/dev/null)" ""
+
 echo "== unit: build-image --stage-only parses, and stops after staging, before the first docker step (#1215) =="
 # The CI rootfs scan runs the Dockerfile itself, so it needs the staging without the build. The
 # seam returns before the staging line, so the flag's parse is the driven half; the stop is asserted
@@ -280,7 +291,7 @@ mismatch_out="$({
     promote
 } 2>&1)"
 assert_rc "promotion refuses latest resolving away from the captured digest" "$?" "1"
-assert_contains "promotion mismatch names latest and the captured digest" "$mismatch_out" "ghcr.io/test/pithead-tor:latest resolves"
+assert_contains "promotion mismatch names latest and the captured digest" "$mismatch_out" "ghcr.io/test/pithead-tor:latest did not resolve to captured digest $CHAIN_DIGEST"
 
 # Resume re-captures mutable staging tags, so those bytes must pass smoke before promotion.
 resume_calls="$SANDBOX/resume-calls"

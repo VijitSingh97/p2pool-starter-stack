@@ -231,7 +231,6 @@ check_release_toolchain() {
     fi
     ok "Lint/test toolchain present (${LINT_TOOLCHAIN[*]})."
 }
-
 # --- Release signing (#376, #960) -----------------------------------------------------------------
 #
 # Signing is MANDATORY to publish, because it is mandatory to consume. Once `cosign.pub` is committed
@@ -244,7 +243,6 @@ check_release_toolchain() {
 # It also runs on --dry-run, and only the signing itself is skipped. The check used to sit inside
 # `if [ "$DRY_RUN" -eq 0 ]`, which meant the one rehearsal that exists to catch a mis-configured
 # signing box could only ever print "signing OFF" — the failure state, unconditionally (#1108).
-
 # What the signing environment is missing, one gap per line; empty output means it is complete. Pure
 # given PATH and the environment, so the tests can drive every combination without a release.
 signing_env_gaps() {
@@ -592,7 +590,7 @@ promote() {
         if [ "$DRY_RUN" -eq 0 ]; then
             expected="${digest##*@}"
             for tag_ref in "$repo:$TAG" "$repo:latest"; do
-                got="$(REGISTRY_READ_EXPECT_DIGEST="$expected" manifest_digest "$tag_ref")" || die "Promotion: could not resolve the expected digest for $tag_ref."
+                got="$(REGISTRY_READ_EXPECT_DIGEST="$expected" manifest_digest "$tag_ref")" || die "Promotion: $tag_ref did not resolve to captured digest $expected."
                 [ "$got" = "$expected" ] || die "Promotion: $tag_ref resolves to $got, expected captured digest $expected."
             done
         fi
@@ -739,7 +737,9 @@ make_bundle() {
     # Unpacks to a versionless "pithead/" dir. Ships only the operator docs needed to run the stack.
     local out="$1" d="$WORKDIR/pithead"
     mkdir -p "$d"
-    cp pithead pithead-completion.bash VERSION docker-compose.yml config.minimal.json config.reference.json config.core-keys.json cosign.pub "$d/" 2>/dev/null || die "make_bundle: failed to copy required runtime files."
+    cp pithead pithead-completion.bash VERSION docker-compose.yml config.minimal.json config.reference.json config.core-keys.json "$d/" 2>/dev/null || die "make_bundle: failed to copy required runtime files."
+    [ -e cosign.pub ] || [ "${COSIGN_ENABLED:-0}" -eq 0 ] || die "make_bundle: signing is enabled but cosign.pub is missing."
+    [ ! -e cosign.pub ] || cp cosign.pub "$d/" 2>/dev/null || die "make_bundle: failed to copy cosign.pub."
     mkdir -p "$d/docs"
     local doc docs_url="https://github.com/p2pool-starter-stack/pithead/blob/$TAG"
     for doc in docs/{configuration,dashboard,faq,getting-started,hardware,monitoring,operations,privacy,telegram,workers}.md; do

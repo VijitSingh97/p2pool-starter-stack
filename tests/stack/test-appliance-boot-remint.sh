@@ -211,7 +211,9 @@ ps_run() { # $1 is-active output (printf %b), $2 seconds, $3 settled|state
                 ;;
             *error.txt*) printf '%s' "${PS_ERR:-}" ;;
             esac
+            return "${PS_RC:-0}"
         }
+        set -o pipefail
         source "$ROOT/tests/os/provisioning-settled.sh"
         case "$3" in settled) provisioning_settled "$2" ;; state) provisioning_state ;; esac
     )
@@ -230,6 +232,8 @@ ps_run '' 1 settled
 assert_rc "an unanswered probe is not a settled machine" "$?" "1"
 ps_run 'inactive\n' 1 settled
 assert_rc "a partial one-unit probe is not a settled machine" "$?" "1"
+PS_RC=255 ps_run 'inactive\ninact' 1 settled
+assert_rc "a transport-truncated two-word probe is not a settled machine" "$?" "1"
 PS_FLIP=1 ps_run 'activating\ninactive\n' 5 settled
 assert_rc "activating on the first read, inactive on the next: settled after one poll" "$?" "0"
 ps_out=$(PS_ERR='[ERROR] Stack failed to start — see the error above.' ps_run 'activating\ninactive\n' 0 state)

@@ -80,7 +80,7 @@ is_immutable_image_ref() { [[ "$1" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]; }
 # The stamp records the resolved commit, not just the tag name: a tag can be re-pointed, and
 # verify-image compares the shipped file against exactly what was staged.
 stage_compose() { # <version-tag> <stage-dir>  -> prints the COMPOSE_SOURCE line
-    local tag="$1" dir="$2" sha
+    local tag="$1" dir="$2" sha remote_rc
     mkdir -p "$dir" || return 1
     rm -f "$dir/docker-compose.yml" "$dir/COMPOSE_SOURCE" || return 1
     if [ -n "${PITHEAD_OS_COMPOSE_FILE:-}" ]; then
@@ -95,12 +95,15 @@ stage_compose() { # <version-tag> <stage-dir>  -> prints the COMPOSE_SOURCE line
         git show "$sha:docker-compose.yml" >"$dir/docker-compose.yml" || return 1
         printf 'tag %s %s\n' "$tag" "$sha" >"$dir/COMPOSE_SOURCE" || return 1
     else
-        # ls-remote's rc 0 means the tag exists on origin. Anything else (no such tag, no remote,
-        # no network) leaves the tree as the source — a build must not hang on the network here.
-        if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+        if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then remote_rc=0; else remote_rc=$?; fi
+        if [ "$remote_rc" -eq 0 ]; then
             echo "==> tag $tag exists on origin but not in this clone; refusing to bake the tree's compose file under a released version. Run: git fetch --tags" >&2
             return 1
         fi
+        [ "$remote_rc" -eq 2 ] || {
+            echo "==> could not determine whether tag $tag exists on origin; refusing to bake the tree's compose file." >&2
+            return 1
+        }
         cp docker-compose.yml "$dir/docker-compose.yml" || return 1
         printf 'tree\n' >"$dir/COMPOSE_SOURCE" || return 1
     fi

@@ -8,14 +8,17 @@
 # Both take `_ssh` and `$ip` from run.sh; PROVISIONING_POLL_S is the fixture test's fast poll.
 
 provisioning_units() { # the two units' states, one line, space-separated: "<firstboot> <boot>"
-    _ssh "systemctl is-active pithead-firstboot.service pithead-boot.service 2>/dev/null" 2>/dev/null |
+    _ssh "systemctl is-active pithead-firstboot.service pithead-boot.service 2>/dev/null; :" 2>/dev/null |
         tr -d '\r' | tr '\n' ' '
 }
 
 provisioning_settled() { # $1 seconds -> 0 once no provisioning unit is activating, 1 at the deadline
     local deadline=$(($(date +%s) + $1)) st
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        st=$(provisioning_units)
+        if ! st=$(provisioning_units); then
+            sleep "${PROVISIONING_POLL_S:-15}"
+            continue
+        fi
         # shellcheck disable=SC2086  # intentional split: exactly two unit states must answer
         set -- $st
         # Word-anchored: `deactivating` contains `activating` and is a unit on its way OUT, not in.
