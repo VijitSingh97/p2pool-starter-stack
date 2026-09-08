@@ -34,7 +34,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from mining_dashboard.service.metrics import Metrics, SyncMetric
-from mining_dashboard.web.series_views import _mode_palette, build_hashrate
+from mining_dashboard.web.views.series_views import _mode_palette, build_hashrate
 
 _SYNC_DONE = SyncMetric(
     percent=100, current=10, target=10, remaining=0, has_target=True, done=True, down=False

@@ -149,7 +149,9 @@ Full walkthrough: [docs/getting-started.md](docs/getting-started.md)
 | **[Operations & Maintenance](docs/operations.md)** | Full command reference, upgrades, backups, and troubleshooting. |
 
 Browse the full index at **[docs/](docs/README.md)**. Contributing, or just want to know where a
-subsystem lives? See the [repo map](docs/dev/repo-map.md).
+subsystem lives? Start with the [repo map](docs/dev/repo-map.md) and
+[contribution guide](CONTRIBUTING.md). Agents share [AI_RULES.md](AI_RULES.md);
+the [AI workflow](docs/dev/ai-workflow.md) covers task ownership and appliance logs.
 
 ---
 

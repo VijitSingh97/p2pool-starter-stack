@@ -74,7 +74,7 @@ ENV CGO_ENABLED=0
 # to sit next to each other. `${COMPOSE_VERSION}` is only an ldflag, `${COMPOSE_COMMIT}` is what is
 # actually built, so bumping the version alone rebuilds the OLD code and stamps the NEW version on
 # it — and every downstream check agrees it worked: the build succeeds, `docker-compose version`
-# prints the new number, and scripts/pin-watch.sh reads the VERSION ARG and reports the component
+# prints the new number, and scripts/watch/pin-watch.sh reads the VERSION ARG and reports the component
 # current for ever. Nothing else in the tree reads `${COMPOSE_COMMIT}` at all. The clone is blobless
 # but not shallow, so the tag objects are present and this costs nothing.
 RUN git clone --filter=blob:none --no-checkout https://github.com/docker/compose /src/compose \

@@ -353,7 +353,7 @@ it, and the dashboard logs a warning.
 
 ## Archiving the XvB winners feed
 
-`scripts/xvb-winners-archive.sh` saves a dated snapshot of the public XvB winners feed
+`scripts/watch/xvb-winners-archive.sh` saves a dated snapshot of the public XvB winners feed
 (`https://xmrvsbeast.com/p2pool/winners_recent_full_pub.txt`) — the full round schedule with
 per-round prize hashrates and qualifier counts — before the feed's ~45-day rolling window drops
 the oldest rounds. The fetch runs inside the dashboard container, so it rides the stack's Tor
@@ -371,7 +371,7 @@ Run it daily from cron on the deploy box, and give it an archive directory **out
 version directories:
 
 ```
-10 0 * * * $HOME/mining/current/scripts/xvb-winners-archive.sh $HOME/mining/xvb-winners-archive
+10 0 * * * $HOME/mining/current/scripts/watch/xvb-winners-archive.sh $HOME/mining/xvb-winners-archive
 ```
 
 Snapshots land there as `winners-YYYYMMDD.txt` (UTC date). The directory argument matters:

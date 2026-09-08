@@ -13,8 +13,7 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import mining_dashboard.web.header as header
-import mining_dashboard.web.views as views
+from mining_dashboard.web.views import header, views
 
 # Pin everything machine- or time-dependent so the fixture regenerates identically on any box.
 # build_state stamps last_update via time.localtime(time.time()) and the chart x-axis is

@@ -38,10 +38,10 @@ make test-integration ARGS="--host user@box --dir pithead --check"   # tier-4 li
 | A client that parses a daemon (monerod RPC, Tari gRPC) | `tests/integration/fakes/test_contract.py` (+ extend the fakes) | 2 |
 | The control plane (sync-gate #35, failover #31) | `dashboard/tests/service/test_data_service.py` (+ a `mini-stack` scenario) | 1 + 3 |
 | `pithead` CLI behavior | `tests/stack/run.sh` | 1 |
-| A compose **security/hardening** invariant (caps, `no-new-privileges`, no secret in a healthcheck, socket-proxy scope) | the #90 section of `tests/stack/test_compose.sh` | 1 |
+| A compose **security/hardening** invariant (caps, `no-new-privileges`, no secret in a healthcheck, socket-proxy scope) | the #90 section of `tests/stack/standalone/test_compose.sh` | 1 |
 | A new `config.json` axis | one row in `tests/integration/scenarios.sh` | 4 |
 | A failure mode needing real containers | `run.sh` `--fault-injection` and/or a `mini-stack` scenario | 4 / 3 |
-| The integration harness's own logic | `tests/integration/selftest.sh` | — |
+| The integration harness's own logic | `tests/integration/selftest/selftest.sh` | — |
 
 ## Recipes
 
@@ -92,7 +92,7 @@ dashboard's look, render the real frontend in a real browser against a canned `/
 payload — no docker, no stack. The fixture half lives in the repo:
 `tests/frontend/fixtures/_gen_state.py` writes `state.json`, a real `build_state()` payload (the
 exact contract the client renders). Regenerate it whenever the payload contract changes — a
-drift guard in `tests/web/test_views.py` reruns the generator and fails on any structural
+drift guard in `tests/web/views/test_views.py` reruns the generator and fails on any structural
 difference from the checked-in fixture, down to nested keys. Then serve the real app around it:
 
 ```bash
@@ -132,7 +132,7 @@ structurally cannot.
   for seeing what already exists before you add a test.
 - Secrets: never print tokens, creds, or onions. The harness redacts artifacts and hashes secrets
   on the box. If you add a secret-bearing field to `config.reference.json`,
-  `tests/integration/selftest-redact.sh` fails until you classify it — either `redact()` covers it,
+  `tests/integration/selftest/selftest-redact.sh` fails until you classify it — either `redact()` covers it,
   or the file records why it is safe to keep. An array you add is classified as an array, whether
   or not the reference populates it.
 

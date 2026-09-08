@@ -251,7 +251,7 @@ class TestProjectedSteering:
     def _run(self, horizon_s):
         from unittest.mock import patch
 
-        with patch("mining_dashboard.service.algo_service.XVB_PROJECTION_HORIZON_S", horizon_s):
+        with patch("mining_dashboard.service.xvb.algo_service.XVB_PROJECTION_HORIZON_S", horizon_s):
             algo = build_controller()
             controller = make_algo_controller(
                 algo, p2pool_difficulty=DIFFICULTY, stamp_updates=True
@@ -288,7 +288,7 @@ class TestProjectedSteering:
 
         results = {}
         for h in (0, 1200):
-            with patch("mining_dashboard.service.algo_service.XVB_PROJECTION_HORIZON_S", h):
+            with patch("mining_dashboard.service.xvb.algo_service.XVB_PROJECTION_HORIZON_S", h):
                 algo = build_controller()
                 controller = make_algo_controller(
                     algo, p2pool_difficulty=DIFFICULTY, stamp_updates=True

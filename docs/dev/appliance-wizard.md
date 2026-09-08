@@ -13,8 +13,8 @@ is in [`appliance-release.md`](appliance-release.md).
 | Piece | Where | Job |
 |---|---|---|
 | host loop | `pithead firstboot-wizard` | mints the token and certificate, runs the container, consumes the spool, provisions |
-| server | `mining_dashboard/wizard.py` | token gate, `/api/wizard-state`, spool writes. **Renders no HTML** |
-| client | `web/static/wizard.mjs` | preact/htm views on the dashboard's stack |
+| server | `mining_dashboard/wizard/server.py` | token gate, `/api/wizard-state`, spool writes. **Renders no HTML** |
+| client | `web/static/wizard/wizard.mjs` | preact/htm views on the dashboard's stack |
 | shared logic | `web/static/configsync.mjs` | path access, typed coercion, address/pair guidance — also used by the dashboard's config tab |
 | spool | `/data/pithead/data/firstboot` | the only channel between container and host |
 
@@ -25,7 +25,7 @@ write the spool and nothing more.
 
 ## The stage machine
 
-`wizard_stage()` in `wizard.py` derives the step from **spool files only**, and the client
+`wizard_stage()` in `wizard/server.py` derives the step from **spool files only**, and the client
 renders what it is told. The client must never infer the stage.
 
 | Stage | True when | View |
@@ -420,10 +420,10 @@ had a gap between it and the next one.
 
 | Layer | File | Covers |
 |---|---|---|
-| server contracts | `tests/web/test_wizard.py` | token gate, stage machine, spool writes, install guards, TLS selection |
-| pure logic | `tests/frontend/configsync.test.mjs` | path access, typed coercion, address/pair guidance |
-| view rendering | `tests/frontend/wizard.test.mjs` (probes) | each view given its props |
-| **app orchestration** | `tests/frontend/wizard.test.mjs` (stubbed server) | **stage mapping, the handoff arriving through the poll, refresh-mid-provision, rejection round-trip, request bodies** |
+| server contracts | `tests/web/test_wizard*.py` | token gate, stage machine, spool writes, install guards, TLS selection |
+| pure logic | `tests/frontend/config/configsync.test.mjs` | path access, typed coercion, address/pair guidance |
+| view rendering | `tests/frontend/wizard/wizard.test.mjs` (probes) | each view given its props |
+| **app orchestration** | `tests/frontend/wizard/wizard-{state,install,submit}.test.mjs` (stubbed server) | **stage mapping, the handoff arriving through the poll, refresh-mid-provision, rejection round-trip, request bodies** |
 | host logic | `tests/stack/run.sh` | cert minting + idempotence, remote-node preflight, pre-seed, install requests, the digest-keyed image loader, reinstall pre-fill (secret strip + fail-open), the local-miner legs (derived config, sync seeding, boot-leg wiring), the rig-role legs (pool discovery publisher, rig request consumption, the role marker, the rig boot leg's derived config + prebuilt-first + volatile journal + refusals, and both unit conditions), restore-at-setup (`firstboot_consume_restore`: accept against a genuine backup archive, wrong passphrase, missing passphrase, oversize, malformed archive, empty spool), the data-wipe note (`data_wipe_note` reads the ESP's dated log, `publish_data_wipe_note` carries it to the spool fresh every boot, `check_data_wipe_note` is the `doctor` line) |
 | the artifact | `tests/os/verify-image.sh` | both role paths present in the shipped image: the boot script's fork, the unit conditions that admit each role, the baked prebuilt, no swap anywhere |
 | the real thing | `tests/os/run.sh --phase provision` | token from the console → submit → handoff → ack → running stack → built-in miner up and its shares accepted → reboot through a corrupted Caddyfile → no failed units → slot self-commit → miner back |

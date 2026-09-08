@@ -216,7 +216,7 @@ directory is now one rule, `control_unit_dir`, read by the writer and both reade
 Setup failures keep the config, copy it to `config.json.failed` and re-mint a token; the
 reopened page used to make an operator dig the reason out of the console. It no longer
 does: `pithead` writes the last `[ERROR]` line to `error.txt` and the failed config to
-`last-attempt.json` before reopening, and `wizard.py`/`wizard.mjs` surface both — the
+`last-attempt.json` before reopening, and `wizard/server.py`/`wizard/wizard.mjs` surface both — the
 reason as the page's error text, the config as the retry prefill.
 
 **Fixed — a failed setup no longer costs the machine its configuration (#1059).** It used

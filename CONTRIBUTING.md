@@ -4,6 +4,8 @@ The workflow for contributing bug fixes, docs changes, and features.
 
 ## Before you start
 
+- Use the [repo map](docs/dev/repo-map.md) to find a feature and its tests.
+  The [AI workflow](docs/dev/ai-workflow.md) adds scope, log, and handoff rules for agents.
 - Open an issue before writing code for anything beyond a small fix. Discuss the approach
   there first.
 - Check the [open issues](https://github.com/p2pool-starter-stack/pithead/issues) for existing
@@ -60,7 +62,7 @@ not the generated file.
      [File budget gate](#file-budget-gate)),
      `lint-pithead-build` (the generated `pithead` must build from `lib/pithead/*.sh` in a clean
      checkout — issue #1105 Phase 2), `lint-trivy-parity` (the CVE
-     gate's two trivy-action steps and `scripts/trivyignore-watch.sh` must name one trivy engine
+     gate's two trivy-action steps and `scripts/watch/trivyignore-watch.sh` must name one trivy engine
      version — issue #1290), `lint-proto` (buf),
      `lint-toml` (taplo). The
      non-Python tools run via `npx`/`uvx`/`docker`, so a contributor needs **Node, uv, and Docker**
@@ -78,6 +80,7 @@ not the generated file.
    - **test-stack** — the `pithead` shell test suite.
    - **test-compose** — `docker-compose.yml` interpolation validation.
    - **test-integration-selftest** — the integration harness's own pure logic.
+   - **test-tools** — bounded build-log sanitization, without running a build.
    - **test-fakes** — the tier-2 contract test (real dashboard clients vs controllable fakes).
 
    Bigger, infra-dependent suites run separately: `make test-mini-stack` (tier-3 docker) and
