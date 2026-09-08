@@ -19,3 +19,34 @@ kvm_preflight() {
     bad "KVM PRE-FLIGHT REFUSED: host MemAvailable ${avail} MiB is under the ${need} MiB bar — not booting the 16 GiB guest (#1059: the condition that hung the host)"
     return 1
 }
+
+vm_destroy() {
+    virsh destroy "$VM" >/dev/null 2>&1 || true
+    virsh undefine "$VM" --nvram >/dev/null 2>&1 || true
+    ! virsh dominfo "$VM" >/dev/null 2>&1
+}
+
+vm_destroy_or_refuse() {
+    vm_destroy && return
+    bad "the prior test VM survived teardown"
+    return 1
+}
+
+_vm_destroy_self_test() (
+    local present=1
+    VM=fixture
+    virsh() {
+        case "$1" in
+        destroy | undefine) return 1 ;;
+        dominfo) [ "$present" -eq 1 ] ;;
+        esac
+    }
+    ! vm_destroy_or_refuse || return 1
+    present=0
+    vm_destroy_or_refuse
+)
+
+if [ "${PITHEAD_OS_VM_DESTROY_SELF_TEST:-0}" = 1 ]; then
+    bad() { return 0; }
+    _vm_destroy_self_test
+fi

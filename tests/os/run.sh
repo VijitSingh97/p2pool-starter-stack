@@ -398,10 +398,6 @@ require_clean_bench() {
         exit 2
     }
 }
-vm_destroy() {
-    virsh destroy "$VM" >/dev/null 2>&1 || true
-    virsh undefine "$VM" --nvram >/dev/null 2>&1 || true
-}
 cleanup() {
     local approval_cleanup_rc=0
     declare -F approval_fixture_cleanup >/dev/null && approval_fixture_cleanup || approval_cleanup_rc=$?
@@ -415,8 +411,7 @@ cleanup() {
         [ "$approval_cleanup_rc" -eq 0 ] || exit "$approval_cleanup_rc"
         return
     fi
-    vm_destroy
-    rm -f "$DISK" "$SERIAL" "$SSH_ERR"
+    vm_destroy && rm -f "$DISK" "$SERIAL" "$SSH_ERR" || approval_cleanup_rc=1
     [ "$approval_cleanup_rc" -eq 0 ] || exit "$approval_cleanup_rc"
 }
 trap cleanup EXIT
@@ -432,7 +427,7 @@ wait_serial() {
 
 phase_boot() {
     info "phase: boot"
-    vm_destroy
+    vm_destroy_or_refuse || return
     cp "$IMAGE" "$DISK"
     # 16 GiB guest: the appliance reserves 6 GiB of hugepages at boot (RandomX), so a smaller VM
     # leaves too little for the stack — and the plan sizes appliance RAM to the compose caps anyway.
@@ -548,7 +543,7 @@ phase_boot() {
 
 # Boot a raw appliance disk under OVMF and return once it has a lease. Sets the global `ip`.
 _vm_boot_disk() {
-    vm_destroy
+    vm_destroy_or_refuse || return
     cp "$1" "$DISK"
     qemu-img resize "$DISK" 40G >/dev/null 2>&1 || true
     : >"$SERIAL"
@@ -1171,7 +1166,7 @@ phase_install() {
         return
     }
 
-    vm_destroy
+    vm_destroy_or_refuse || return
     rm -f "$target_disk"
     cp "$img" "$DISK"
     # 16G, the smallest real stick the docs allow: ESP + two 4 GiB slots + data's 4 GiB minimum
@@ -1292,7 +1287,7 @@ phase_install() {
         bad "machine never powered off after the ack"
         return
     fi
-    vm_destroy
+    vm_destroy_or_refuse || return
     # Boot from the TARGET alone — the stick is gone, exactly as the instructions tell the user.
     : >"$SERIAL"
     kvm_preflight || exit 1 # #1059: never boot a 16 GiB guest the host cannot back
@@ -1378,7 +1373,7 @@ phase_install() {
     }
     _ssh "systemctl poweroff" 2>/dev/null || true
     sleep 8
-    vm_destroy
+    vm_destroy_or_refuse || return
     : >"$SERIAL"
     kvm_preflight || exit 1 # #1059: never boot a 16 GiB guest the host cannot back
     virt-install --name "$VM" --memory 16384 --vcpus 4 --cpu host-passthrough \
@@ -1517,7 +1512,7 @@ phase_install() {
     ok "planted the old dashboard image ($old_dash_id) and its digest record on the target's /data"
     _ssh "systemctl poweroff" 2>/dev/null || true
     sleep 8
-    vm_destroy
+    vm_destroy_or_refuse || return
     info "building the NEWER stick (marker v2 — its dashboard archive differs)"
     img=$(_build_image v2) || {
         bad "v2 stick build failed (/tmp/os-fault-build.log)"
@@ -1600,7 +1595,7 @@ phase_install() {
         bad "keep-reinstall never powered off"
         return
     fi
-    vm_destroy
+    vm_destroy_or_refuse || return
     : >"$SERIAL"
     kvm_preflight || exit 1 # #1059: never boot a 16 GiB guest the host cannot back
     virt-install --name "$VM" --memory 16384 --vcpus 4 --cpu host-passthrough \
@@ -1751,7 +1746,7 @@ phase_install() {
     orig_onion=$(_ssh "grep MONERO_ONION_ADDRESS /data/pithead/.env" | cut -d= -f2)
     _ssh "systemctl poweroff" 2>/dev/null || true
     sleep 8
-    vm_destroy
+    vm_destroy_or_refuse || return
 
     local restore_target="/srv/code/bench-vm/pithead-restore-target.img"
     rm -f "$restore_target"
@@ -1857,7 +1852,7 @@ phase_install() {
         rm -f "$target_disk" "$restore_archive" "$restore_target"
         return
     fi
-    vm_destroy
+    vm_destroy_or_refuse || return
     : >"$SERIAL"
     kvm_preflight || exit 1 # #1059: never boot a 16 GiB guest the host cannot back
     virt-install --name "$VM" --memory 16384 --vcpus 4 --cpu host-passthrough \
