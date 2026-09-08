@@ -99,7 +99,7 @@ assert_contains "bundle ships the tari config dir" "$BUILD_MOUNTS" "./build/tari
     DRY_RUN=0
     # make_bundle now digest-pins the first-party images (#376), so it needs the promoted digests
     # promote would have captured -- a full repo@sha256 ref, as set_digest stores them.
-    for _s in "${IMAGES[@]}"; do set_digest "$_s" "ghcr.io/test/pithead-$_s@sha256:feed${_s}dad"; done
+    for _s in "${IMAGES[@]}"; do set_digest "$_s" "ghcr.io/test/pithead-$_s@sha256:$(printf '%064d' 1)"; done
     make_bundle "$WORKDIR/pithead.tar.gz" >/dev/null 2>&1
     cp "$WORKDIR/pithead/docker-compose.yml" "$SANDBOX/bundle-compose.yml" 2>/dev/null || true
     tar tzf "$WORKDIR/pithead.tar.gz" 2>/dev/null
@@ -113,7 +113,7 @@ assert_eq "bundled operator docs have no unresolved relative links or images" "$
 assert_eq "bundle excludes source, test, dashboard and appliance trees" "$(grep -Ec '^pithead/(lib|os|scripts|tests|dashboard|\.github)/' "$SANDBOX/bundle.list" || true)" "0"
 _bundle_unpinned=$(grep -E 'pithead-(tor|monero|p2pool|xmrig-proxy|dashboard):' "$SANDBOX/bundle-compose.yml" 2>/dev/null | grep -cv '@sha256:')
 [ "${_bundle_unpinned:-1}" -eq 0 ] && ok "bundle compose digest-pins all 5 first-party images (#376)" || bad "bundle digest-pins first-party images (#376)" "unpinned lines: ${_bundle_unpinned:-?}"
-if grep -q 'pithead-dashboard:${STACK_VERSION:-dev}@sha256:feeddashboarddad' "$SANDBOX/bundle-compose.yml" 2>/dev/null; then
+if grep -q 'pithead-dashboard:${STACK_VERSION:-dev}@sha256:0000000000000000000000000000000000000000000000000000000000000001' "$SANDBOX/bundle-compose.yml" 2>/dev/null; then
     ok "digest pin appends only the bare sha256, no double-repo (#376)"
 else
     bad "digest pin format (#376)" "expected tag@sha256:digest on the dashboard image line"
@@ -244,12 +244,12 @@ retry_out="$(
         local n
         n=$(($(cat "$RETRY_CNT") + 1))
         printf '%s' "$n" >"$RETRY_CNT"
-        [ "$n" -lt 3 ] && return 1                  # attempts 1 and 2 fail (tag not yet readable)
-        printf 'Name: x\nDigest: sha256:deadbeef\n' # attempt 3 resolves
+        [ "$n" -lt 3 ] && return 1                 # attempts 1 and 2 fail (tag not yet readable)
+        printf 'Name: x\nDigest: sha256:%064d\n' 1 # attempt 3 resolves
     }
     printf 'DIGEST=%s ATTEMPTS=%s\n' "$(manifest_digest some:tag)" "$(cat "$RETRY_CNT")"
 )"
-assert_contains "manifest_digest resolves after transient GHCR failures" "$retry_out" "DIGEST=sha256:deadbeef"
+assert_contains "manifest_digest resolves after transient GHCR failures" "$retry_out" "DIGEST=sha256:0000000000000000000000000000000000000000000000000000000000000001"
 assert_contains "retried until the read succeeded (3 attempts)" "$retry_out" "ATTEMPTS=3"
 # Genuinely-missing image: after the retries exhaust, manifest_digest stays empty so the caller's
 # `[ -n "$digest" ] || die` still stops the release (a missing image must not silently pass).
@@ -267,8 +267,8 @@ exhaust_out="$(
 )"
 assert_contains "exhausted retries -> empty digest (caller dies)" "$exhaust_out" "DIED-EMPTY"
 # The smoke stage's raw manifest read has the same read-after-push exposure — wire it through the retry.
-assert_contains "smoke stage reads the manifest via retry_registry_read (#429)" \
-    "$(cat "$REL")" "retry_registry_read buildx_inspect \"\$repo:\$STAGING_TAG\" --raw"
+assert_contains "smoke stage reads the captured digest via retry_registry_read (#429)" \
+    "$(cat "$REL")" 'retry_registry_read buildx_inspect "$digest" --raw'
 
 # #557: the test above disables errexit (`set +eu`, right after sourcing) to observe the bare helper
 # in isolation, which happens to mask a real bug in stage_push itself: the bare

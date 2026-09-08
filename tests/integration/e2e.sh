@@ -198,6 +198,10 @@ restore_all() {
         warn "  Re-run without --keep, or restore by hand: canonical=$CANONICAL_DIR, miner cfg backup=$MINER_CFG_BACKUP"
         return
     fi
+    parent_lock_checkpoint restore || {
+        warn "Refusing an unreserved restore; preserve $MINER_CFG_BACKUP and repair the bench by hand."
+        exit 1
+    }
     echo ""
     log "Restoring everything to the pre-run state…"
 
@@ -359,6 +363,7 @@ preflight() {
     log "Preflight"
     [ -n "$BENCH_HOST" ] || die "Set BENCH_HOST to your test-bench SSH host (env BENCH_HOST or --bench)."
     [ "$BORROW_MINER" != "1" ] || [ -n "$MINER_HOST" ] || die "Set MINER_HOST to a miner to borrow, or pass --no-miner."
+    parent_lock_checkpoint "the first bench touch" || die "Parent-held bench lock is not continuous."
     on_bench 'echo ok >/dev/null' || die "Cannot SSH to test-bench host '$BENCH_HOST'."
     ok "SSH to $BENCH_HOST"
     on_bench "test -x '$CANONICAL_DIR/pithead'" || die "No pithead at $CANONICAL_DIR on $BENCH_HOST."
@@ -426,6 +431,7 @@ preflight() {
 
 # --- Phase 1: provision the dedicated e2e checkout + check out the branch ---
 provision() {
+    parent_lock_checkpoint provision || die "Parent-held bench lock was lost before provision."
     log "Provisioning the dedicated e2e checkout ($E2E_DIR) on $BENCH_HOST"
     # Clone from the local canonical checkout (fast, no network) the first time, then point origin
     # at GitHub so we can fetch arbitrary branches.
@@ -564,6 +570,7 @@ borrow_miner() {
 
 # --- Phase 4: deploy the branch ---------------------------------------------
 deploy_branch() {
+    parent_lock_checkpoint deploy || die "Parent-held bench lock was lost before deploy."
     # #272: `pithead apply` runs `compose up --pull` (never --build), so it would test whatever images
     # were last built on the box, not this branch. `pithead upgrade` re-renders the generated configs
     # (inject_service_configs) AND rebuilds the first-party images from build/ (--build) before
@@ -630,11 +637,11 @@ RUNNER
     # For non-check modes, run the safe readiness + current-state assertions inline first (fast,
     # gives early signal), then the destructive phases detached.
     if [ "$MODE" != "check" ]; then
-        on_bench "cd '$E2E_DIR' && bash tests/integration/run.sh --local --dir '$E2E_DIR' --readiness --check $no_mining" ||
+        printf '%s\n%s\n' "${RIG_LOCK_PARENT_ACTOR:-}" "${RIG_LOCK_PARENT_NONCE:-}" | on_bench "IFS= read -r a; IFS= read -r n; cd '$E2E_DIR' && RIG_LOCK_PARENT_ACTOR=\"\$a\" RIG_LOCK_PARENT_NONCE=\"\$n\" bash tests/integration/run.sh --local --dir '$E2E_DIR' --readiness --check $no_mining" ||
             warn "readiness/check reported issues (see above) — continuing to the destructive phases"
     fi
 
-    printf '%s' "$IT_RIG_TOKEN" | on_bench "IFS= read -r t; rm -f '$E2E_DIR/results/e2e-harness.done' '$rearm_request' '$rearm_ack' || exit 1; cd '$E2E_DIR' || exit 1; IT_RIG_TOKEN=\"\$t\" nohup ./.e2e-run.sh '$E2E_DIR' '$WORKERS' '$rearm_request' '$rearm_ack' '$rearm_id' $phases >/dev/null 2>&1 & echo launched" ||
+    printf '%s\n%s\n%s\n' "$IT_RIG_TOKEN" "${RIG_LOCK_PARENT_ACTOR:-}" "${RIG_LOCK_PARENT_NONCE:-}" | on_bench "IFS= read -r t; IFS= read -r a; IFS= read -r n; rm -f '$E2E_DIR/results/e2e-harness.done' '$rearm_request' '$rearm_ack' || exit 1; cd '$E2E_DIR' || exit 1; IT_RIG_TOKEN=\"\$t\" RIG_LOCK_PARENT_ACTOR=\"\$a\" RIG_LOCK_PARENT_NONCE=\"\$n\" nohup ./.e2e-run.sh '$E2E_DIR' '$WORKERS' '$rearm_request' '$rearm_ack' '$rearm_id' $phases >/dev/null 2>&1 & echo launched" ||
         die "Failed to launch the harness."
 
     # Poll the done-marker, printing a heartbeat tail of the log.

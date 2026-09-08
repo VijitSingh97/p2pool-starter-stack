@@ -65,6 +65,8 @@ apt_fetch_failure_hint() {
     fi
 }
 
+is_immutable_image_ref() { [[ "$1" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]; }
+
 # stage_compose (#1215): put the compose file the image will ship, plus a COMPOSE_SOURCE stamp
 # naming where it came from, into <stage-dir>. Every `image:` in docker-compose.yml is pinned by
 # STACK_VERSION, which the appliance derives from its baked VERSION — so an image built from a
@@ -80,7 +82,15 @@ apt_fetch_failure_hint() {
 stage_compose() { # <version-tag> <stage-dir>  -> prints the COMPOSE_SOURCE line
     local tag="$1" dir="$2" sha
     mkdir -p "$dir"
-    if sha=$(git rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null); then
+    if [ -n "${PITHEAD_OS_COMPOSE_FILE:-}" ]; then
+        [ -r "$PITHEAD_OS_COMPOSE_FILE" ] && [ -f "$PITHEAD_OS_COMPOSE_FILE" ] && [ ! -L "$PITHEAD_OS_COMPOSE_FILE" ] || {
+            echo "PITHEAD_OS_COMPOSE_FILE: $PITHEAD_OS_COMPOSE_FILE is not a readable file" >&2
+            return 1
+        }
+        cp "$PITHEAD_OS_COMPOSE_FILE" "$dir/docker-compose.yml"
+        sha="$(sha256sum "$dir/docker-compose.yml" | cut -d' ' -f1)"
+        printf 'file sha256:%s\n' "$sha" >"$dir/COMPOSE_SOURCE"
+    elif sha=$(git rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null); then
         git show "$sha:docker-compose.yml" >"$dir/docker-compose.yml"
         printf 'tag %s %s\n' "$tag" "$sha" >"$dir/COMPOSE_SOURCE"
     else
@@ -120,6 +130,7 @@ if [ "${STAGE_ONLY:-0}" = 1 ]; then
     exit 0
 fi
 WIZARD_IMAGE="${PITHEAD_REGISTRY:-ghcr.io/p2pool-starter-stack}/pithead-dashboard:${STACK_VERSION}"
+WIZARD_SOURCE="$WIZARD_IMAGE"
 # A DEBUG build against a non-default registry pins that registry into every unit that can run
 # pithead and tells podman how to trust it — a CA file (PITHEAD_REGISTRY_CA) for a TLS registry, else an
 # insecure (HTTP) entry (#1892). The wizard archive above is NAMED with the build-time
@@ -141,7 +152,15 @@ if [ -n "${PITHEAD_TEST_SSH_PUBKEY:-}" ] && [ -n "${PITHEAD_REGISTRY:-}" ] &&
 fi
 mkdir -p os/rootfs/images
 echo "==> staging wizard image $WIZARD_IMAGE"
-if [ "${PITHEAD_WIZARD_FROM_REGISTRY:-0}" = "1" ]; then
+if [ -n "${PITHEAD_WIZARD_IMAGE:-}" ]; then
+    is_immutable_image_ref "$PITHEAD_WIZARD_IMAGE" || {
+        echo "PITHEAD_WIZARD_IMAGE must be a lowercase repo@sha256:<64 hex> reference" >&2
+        exit 1
+    }
+    WIZARD_SOURCE="$PITHEAD_WIZARD_IMAGE"
+    docker pull -q "$WIZARD_SOURCE" >/dev/null
+    docker tag "$WIZARD_SOURCE" "$WIZARD_IMAGE"
+elif [ "${PITHEAD_WIZARD_FROM_REGISTRY:-0}" = "1" ]; then
     # Release path: the published image carries the wizard module.
     docker pull -q "$WIZARD_IMAGE" >/dev/null
 else
@@ -163,7 +182,7 @@ fi
 if [ -n "${PITHEAD_TEST_MARKER:-}" ]; then
     # USER root/pithead mirrors dashboard/Dockerfile: the runtime user cannot write /app.
     printf 'FROM %s\nUSER root\nRUN printf %%s "%s" >/app/mining_dashboard/web/static/os-test-marker.txt\nUSER pithead\n' \
-        "$WIZARD_IMAGE" "$PITHEAD_TEST_MARKER" | docker build -q -t "$WIZARD_IMAGE" - >/dev/null
+        "$WIZARD_SOURCE" "$PITHEAD_TEST_MARKER" | docker build -q -t "$WIZARD_IMAGE" - >/dev/null
 fi
 docker save "$WIZARD_IMAGE" | gzip -1 >os/rootfs/images/dashboard.tar.gz
 

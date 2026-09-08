@@ -68,6 +68,21 @@ assert_eq "the tree path ships the working tree's compose file byte for byte" \
     "$(cat "$CS/untagged/docker-compose.yml")" "$(cat "$CS/repo/docker-compose.yml")"
 assert_eq "the tree path's stamp is the bare word" "$(cat "$CS/untagged/COMPOSE_SOURCE")" "tree"
 
+printf 'services:\n  immutable: {image: example.invalid/app@sha256:%064d}\n' 3 >"$CS/external-compose.yml"
+cs_out="$(PITHEAD_OS_COMPOSE_FILE="$CS/external-compose.yml" cs_stage v0.0.1 "$CS/file")"
+CS_FILE_SHA="$(sha256sum "$CS/external-compose.yml" | cut -d' ' -f1)"
+assert_contains "an explicit compose file is stamped with its content hash" "$cs_out" "file sha256:$CS_FILE_SHA"
+assert_eq "the explicit compose file is copied byte for byte" \
+    "$(
+        cmp -s "$CS/external-compose.yml" "$CS/file/docker-compose.yml"
+        echo $?
+    )" "0"
+assert_eq "the file stamp carries the exact lowercase sha256" "$(cat "$CS/file/COMPOSE_SOURCE")" "file sha256:$CS_FILE_SHA"
+
+cs_out="$(PITHEAD_OS_COMPOSE_FILE="$CS/missing-compose.yml" cs_stage v0.0.1 "$CS/missing-file")"
+assert_contains "a missing explicit compose file is refused" "$cs_out" "rc=1"
+assert_contains "the missing-file refusal names PITHEAD_OS_COMPOSE_FILE" "$cs_out" "PITHEAD_OS_COMPOSE_FILE"
+
 cs_out=$(cs_stage v0.0.2 "$CS/unfetched")
 assert_contains "a tag on origin that this clone lacks is REFUSED, not built from the tree" "$cs_out" "rc=1"
 assert_contains "the refusal names the tag and the remedy" "$cs_out" "tag v0.0.2 exists on origin but not in this clone"
@@ -106,9 +121,10 @@ cs_ref() { # <stamp-line|-> <version> -> "rc=N" then the resolved file's content
         mkdir -p "$img/opt/pithead"
         [ "$stamp" = "-" ] || printf '%s\n' "$stamp" >"$img/opt/pithead/COMPOSE_SOURCE"
         printf '%s\n' "$ver" >"$img/opt/pithead/VERSION"
+        printf 'shipped-image-copy-is-not-the-ledger\n' >"$img/opt/pithead/docker-compose.yml"
         cd "$CS/repo" || exit 1
         out="$CS/ref-$RANDOM"
-        compose_reference "$img" "$out"
+        PITHEAD_OS_COMPOSE_FILE="$CS/repo/docker-compose.yml" compose_reference "$img" "$out"
         echo "rc=$?"
         cat "$out" 2>/dev/null
     )
@@ -126,6 +142,107 @@ assert_eq "an unknown stamp kind is refused" "$(cs_ref "registry v0.0.1" 0.0.1)"
 assert_eq "a tree stamp with trailing fields is refused" "$(cs_ref "tree garbage" 0.0.1)" "rc=1"
 assert_eq "a tag stamp with trailing fields is refused" "$(cs_ref "tag v0.0.1 $CS_SHA garbage" 0.0.1)" "rc=1"
 assert_eq "a multi-line stamp is refused" "$(cs_ref $'tree\njunk' 0.0.1)" "rc=1"
+CS_TREE_SHA="$(sha256sum "$CS/repo/docker-compose.yml" | cut -d' ' -f1)"
+assert_eq "a file stamp validates and uses the shipped compose" \
+    "$(cs_ref "file sha256:$CS_TREE_SHA" 0.0.1)" "rc=0
+$(cat "$CS/repo/docker-compose.yml")"
+mkdir -p "$CS/no-ledger/opt/pithead"
+printf 'file sha256:%s\n' "$CS_TREE_SHA" >"$CS/no-ledger/opt/pithead/COMPOSE_SOURCE"
+missing_source_rc="$({ source "$ROOT/tests/os/verify-image-artifact-helpers.sh"; PITHEAD_OS_COMPOSE_FILE='' compose_reference "$CS/no-ledger" "$CS/ref-missing"; } 2>/dev/null; printf '%s' "$?")"
+assert_eq "a file stamp without its external ledger source is refused" "$missing_source_rc" "1"
+assert_eq "a file stamp whose hash does not match is refused" \
+    "$(cs_ref "file sha256:$(printf '%064d' 9)" 0.0.1)" "rc=1"
+assert_eq "an uppercase file digest is refused" \
+    "$(cs_ref "file sha256:$(printf 'A%.0s' {1..64})" 0.0.1)" "rc=1"
+assert_eq "a short file digest is refused" "$(cs_ref "file sha256:deadbeef" 0.0.1)" "rc=1"
+
+echo "== unit: build-image immutable wizard source =="
+IMMUTABLE_WIZARD="example.invalid/pithead-dashboard@sha256:$(printf '%064d' 4)"
+wizard_ref_rc() {
+    local ref="$1"
+    (
+        export PITHEAD_BUILD_IMAGE_TEST=1
+        set --
+        source "$ROOT/os/build-image.sh"
+        set +e
+        is_immutable_image_ref "$ref"
+    ) 2>/dev/null
+}
+wizard_ref_rc "$IMMUTABLE_WIZARD"
+assert_rc "lowercase repo@sha256 wizard refs are accepted" "$?" "0"
+wizard_ref_rc example.invalid/app@sha256:deadbeef
+assert_rc "short wizard digests are refused" "$?" "1"
+wizard_ref_rc "example.invalid/app@sha256:$(printf 'A%.0s' {1..64})"
+assert_rc "uppercase wizard digests are refused" "$?" "1"
+
+echo "== unit: release smoke and promotion keep one immutable digest chain =="
+REL="$ROOT/scripts/release.sh"
+CHAIN="$SANDBOX/release-digest-chain"
+mkdir -p "$CHAIN"
+CHAIN_DIGEST="sha256:$(printf '%064d' 7)"
+# shellcheck disable=SC1090,SC2034
+chain_out="$({
+    cd "$ROOT" || exit
+    set --
+    source "$REL" 2>/dev/null
+    set +eu
+    DRY_RUN=0 SKIP_SMOKE=0 ASSUME_YES=1
+    STACK_VERSION=v2.0.0 TAG=v2.0.0 STAGING_TAG=v2.0.0-rc.1
+    PLATFORMS=linux/amd64 REGISTRY=ghcr.io/test IMAGES=(tor)
+    WORKDIR="$CHAIN"
+    set_digest tor "ghcr.io/test/pithead-tor@$CHAIN_DIGEST"
+    docker() {
+        printf 'docker %s\n' "$*" >>"$CHAIN/calls"
+        [ "$1" = inspect ] && printf 'v2.0.0\n'
+        return 0
+    }
+    buildx_inspect() {
+        printf 'inspect %s\n' "$*" >>"$CHAIN/calls"
+        case " $* " in
+        *' --raw '*) printf '{"manifests":[{"platform":{"os":"linux","architecture":"amd64"}}]}\n' ;;
+        *) printf 'Digest: %s\n' "$CHAIN_DIGEST" ;;
+        esac
+    }
+    ghcr_login() { :; }
+    smoke_test
+    promote
+} 2>&1)"
+assert_rc "immutable digest smoke and promotion pass" "$?" "0"
+chain_calls="$(cat "$CHAIN/calls")"
+assert_contains "smoke pulls the captured repo@sha256 ref" "$chain_calls" "docker pull --quiet --platform linux/amd64 ghcr.io/test/pithead-tor@$CHAIN_DIGEST"
+assert_not_contains "smoke never re-reads the mutable staging tag" "$chain_calls" "v2.0.0-rc.1"
+assert_contains "promotion verifies the v2.0.0 tag" "$chain_calls" "inspect ghcr.io/test/pithead-tor:v2.0.0"
+assert_contains "promotion verifies latest" "$chain_calls" "inspect ghcr.io/test/pithead-tor:latest"
+
+# shellcheck disable=SC1090,SC2034
+mismatch_out="$({
+    cd "$ROOT" || exit
+    set --
+    source "$REL" 2>/dev/null
+    DRY_RUN=0 ASSUME_YES=1 TAG=v2.0.0 REGISTRY=ghcr.io/test IMAGES=(tor)
+    WORKDIR="$CHAIN-mismatch"
+    mkdir -p "$WORKDIR"
+    set_digest tor "ghcr.io/test/pithead-tor@$CHAIN_DIGEST"
+    ghcr_login() { :; }
+    docker() { :; }
+    buildx_inspect() {
+        if [ "$1" = ghcr.io/test/pithead-tor:latest ]; then printf 'Digest: sha256:%064d\n' 8; else printf 'Digest: %s\n' "$CHAIN_DIGEST"; fi
+    }
+    promote
+} 2>&1)"
+assert_rc "promotion refuses latest resolving away from the captured digest" "$?" "1"
+assert_contains "promotion mismatch names latest and the captured digest" "$mismatch_out" "ghcr.io/test/pithead-tor:latest resolves"
+
+# shellcheck disable=SC1090
+(
+    cd "$ROOT" || exit
+    set --
+    source "$REL" 2>/dev/null
+    set +eu
+    buildx_inspect() { printf 'Digest: sha256:%064d\n' 1 | tr 0 A; }
+    manifest_digest some:tag >/dev/null
+)
+assert_rc "manifest_digest refuses uppercase hex" "$?" "1"
 
 echo "== wiring: the build stages, the Dockerfile copies, verify-image compares (#1215) =="
 # The three scripts cannot be run together at this tier; what CAN be proven is that each end
@@ -134,6 +251,10 @@ CS_BI="$(cat "$ROOT/os/build-image.sh")"
 CS_DF="$(cat "$ROOT/os/rootfs/Dockerfile")"
 CS_VI="$(cat "$ROOT/tests/os/verify-image.sh")"
 assert_contains "build-image stages into os/build/stage from STACK_VERSION" "$CS_BI" 'stage_compose "$STACK_VERSION" os/build/stage'
+assert_contains "an immutable wizard source is pulled by digest" "$CS_BI" 'docker pull -q "$WIZARD_SOURCE"'
+assert_contains "the pulled wizard digest is tagged with the runtime name" "$CS_BI" 'docker tag "$WIZARD_SOURCE" "$WIZARD_IMAGE"'
+assert_contains "the marker layer inherits from the immutable wizard source" "$CS_BI" '"$WIZARD_SOURCE" "$PITHEAD_TEST_MARKER"'
+assert_contains "the runtime-tagged wizard image is saved" "$CS_BI" 'docker save "$WIZARD_IMAGE"'
 assert_contains "the Dockerfile copies the STAGED compose file" "$CS_DF" 'os/build/stage/docker-compose.yml'
 assert_contains "the Dockerfile copies the stamp beside it" "$CS_DF" 'os/build/stage/COMPOSE_SOURCE'
 assert_eq "the appliance carries no documentation or source-only trees" "$(grep -cE '^COPY (docs|lib|scripts|tests|dashboard|\.github)/' "$ROOT/os/rootfs/Dockerfile" || true)" "0"

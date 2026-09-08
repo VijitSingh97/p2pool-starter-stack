@@ -2467,10 +2467,8 @@ run_rigforge_rollback() { # <rig-name>
 }
 
 # --- Main -------------------------------------------------------------------
-
 main() {
     parse_args "$@"
-
     # Bench coordination (#430): take the shared-rig flock ON THE TARGET before the first
     # service/API-touching action (preflight already reads the box), and hold it for the whole
     # run — rigforge's gates and pithead runs on the same box refuse (exit 75, holder named)
@@ -2484,7 +2482,9 @@ main() {
     elif [ "$CHECK_ONLY" = "1" ]; then
         lock_suite="run.sh --check" lock_shared="shared"
     fi
-    if [ "$IT_MODE" = "local" ]; then
+    if [ -n "${RIG_LOCK_PARENT_ACTOR:-}" ] || [ -n "${RIG_LOCK_PARENT_NONCE:-}" ]; then
+        rig_lock_parent_use || exit 1
+    elif [ "$IT_MODE" = "local" ]; then
         rig_lock pithead "$lock_suite" "$lock_shared"
     else
         rig_lock_remote pithead "$lock_suite" "$lock_shared" "$IT_SSH_DEST" "${IT_SSH_OPTS[@]}"

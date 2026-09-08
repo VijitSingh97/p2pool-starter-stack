@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+_RIG_LOCK_PARENT_VERIFIED=0
 #
 # Abort-safe unwind for the RigForge writable-key legs (#1379).
 #
@@ -100,7 +101,9 @@ rig_key_atexit() {
     # breadcrumb strands. Measured — deleting this reds the NESTED case in
     # selftest-rig-key-ledger.sh, which exists to hold it here, and reds nothing else. (#1404)
     local h="${RIG_LOCK_HOLDER:-${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}.holder}"
-    rm -f "$h" 2>/dev/null || sudo -n rm -f "$h" 2>/dev/null || true
+    if [ "${_RIG_LOCK_PARENT_VERIFIED:-0}" -eq 0 ]; then
+        rm -f "$h" 2>/dev/null || sudo -n rm -f "$h" 2>/dev/null || true
+    fi
     # Whatever we displaced, in the order we displaced it (#1404) — and LAST (#1571). A captured
     # handler that calls `exit` ends the shell from inside this trap, and bash does not re-enter an
     # EXIT trap on an `exit` inside one, so anything sequenced after such a handler never runs at

@@ -42,7 +42,10 @@ drive_wrong_ack() {
         IT_FAIL=0
         it_fail() { IT_FAIL=$((IT_FAIL + 1)); }
         it_pass() { :; }
-        wait_for() { return 1; }
+        wait_for() {
+            shift 3
+            "$@"
+        }
         d="$(mktemp -d)"
         trap 'rm -rf "$d"' EXIT
         IT_BORROW_REARM_REQUEST="$d/request" IT_BORROW_REARM_ACK="$d/ack" IT_BORROW_REARM_TOKEN=run-123
