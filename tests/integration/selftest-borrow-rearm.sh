@@ -28,7 +28,8 @@ drive_rearm() { # <ack: 0|1> -> request-exists|failure-count
         trap 'rm -rf "$d"' EXIT
         IT_BORROW_REARM_REQUEST="$d/request"
         IT_BORROW_REARM_ACK="$d/ack"
-        [ "$1" = 0 ] || touch "$IT_BORROW_REARM_ACK"
+        IT_BORROW_REARM_TOKEN=run-123
+        [ "$1" = 0 ] || printf '%s' "$IT_BORROW_REARM_TOKEN" >"$IT_BORROW_REARM_ACK"
         wait_borrow_rearm || true
         printf '%s|%s\n' "$(test -f "$IT_BORROW_REARM_REQUEST" && echo yes)" "$IT_FAIL"
     )
@@ -36,9 +37,25 @@ drive_rearm() { # <ack: 0|1> -> request-exists|failure-count
 assert_eq "acknowledged re-arm writes its request and stays green" "$(drive_rearm 1)" "yes|0"
 assert_eq "missing re-arm acknowledgement blocks later phases" "$(drive_rearm 0)" "yes|1"
 
+drive_wrong_ack() {
+    (
+        IT_FAIL=0
+        it_fail() { IT_FAIL=$((IT_FAIL + 1)); }
+        it_pass() { :; }
+        wait_for() { return 1; }
+        d="$(mktemp -d)"
+        trap 'rm -rf "$d"' EXIT
+        IT_BORROW_REARM_REQUEST="$d/request" IT_BORROW_REARM_ACK="$d/ack" IT_BORROW_REARM_TOKEN=run-123
+        printf stale-run >"$IT_BORROW_REARM_ACK"
+        wait_borrow_rearm || true
+        printf '%s\n' "$IT_FAIL"
+    )
+}
+assert_eq "a stale or different run's acknowledgement is refused" "$(drive_wrong_ack)" "1"
+
 HARNESS_SRC="$(sed -n '/^run_harness() {$/,/^}$/p' "$HERE/e2e.sh")"
 controller_rearm_line="$(printf '%s\n' "$HARNESS_SRC" | grep -n 'repoint_miner ||' | cut -d: -f1)"
-controller_ack_line="$(printf '%s\n' "$HARNESS_SRC" | grep -n "touch '\$rearm_ack'" | cut -d: -f1)"
+controller_ack_line="$(printf '%s\n' "$HARNESS_SRC" | grep -n "cat > '\$rearm_ack'" | cut -d: -f1)"
 assert_eq "controller verifies the rendered pool before acknowledging re-arm" \
     "$([ "$controller_rearm_line" -lt "$controller_ack_line" ] && echo yes)" "yes"
 

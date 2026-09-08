@@ -118,7 +118,7 @@ stdin_of() { # <mode> <borrow> [token] -> what e2e.sh piped into the launch call
 
 compose_phases() { # <mode> <borrow_miner> [token] -> the phase list e2e.sh would launch run.sh with
     # Everything between the runner's positional args and the trailing redirect is the phase list.
-    launch_of "$@" | sed -n 's/.*\.e2e-run\.sh[^ ]* [^ ]* [^ ]* [^ ]* [^ ]* \(.*\) >\/dev\/null.*/\1/p'
+    launch_of "$@" | sed -n 's/.*\.e2e-run\.sh[^ ]* [^ ]* [^ ]* [^ ]* [^ ]* [^ ]* \(.*\) >\/dev\/null.*/\1/p'
 }
 
 has_phase() { # <phase-list> <flag> -> "yes" | "no"

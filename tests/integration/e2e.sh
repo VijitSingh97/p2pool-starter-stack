@@ -586,7 +586,10 @@ deploy_branch() {
 
 # --- Phase 5: run the live harness (detached on the box) --------------------
 run_harness() {
-    local phases rearm_request="$E2E_DIR/results/borrow-rearm.request" rearm_ack="$E2E_DIR/results/borrow-rearm.ack"
+    local phases rearm_id rearm_request rearm_ack
+    rearm_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    rearm_request="$E2E_DIR/results/borrow-rearm.$rearm_id.request"
+    rearm_ack="$E2E_DIR/results/borrow-rearm.$rearm_id.ack"
     case "$MODE" in
     check) phases="--check" ;;
     targeted) phases="--scenario local-pruned-main-secure-tari --auth-fail-closed --lifecycle" ;; # readiness/check run inline first (below); NOT here — run.sh returns after --readiness
@@ -614,9 +617,9 @@ run_harness() {
     cat >"$runner" <<'RUNNER'
 #!/usr/bin/env bash
 set -uo pipefail
-dir="$1"; workers="$2"; rearm_request="$3"; rearm_ack="$4"; shift 4
+dir="$1"; workers="$2"; rearm_request="$3"; rearm_ack="$4"; rearm_id="$5"; shift 5
 mkdir -p "$dir/results"
-IT_BORROW_REARM_REQUEST="$rearm_request" IT_BORROW_REARM_ACK="$rearm_ack" \
+IT_BORROW_REARM_REQUEST="$rearm_request" IT_BORROW_REARM_ACK="$rearm_ack" IT_BORROW_REARM_TOKEN="$rearm_id" \
     bash "$dir/tests/integration/run.sh" --local --dir "$dir" --workers "$workers" "$@" \
     > "$dir/results/e2e-harness.log" 2>&1
 echo $? > "$dir/results/e2e-harness.done"
@@ -631,7 +634,7 @@ RUNNER
             warn "readiness/check reported issues (see above) — continuing to the destructive phases"
     fi
 
-    printf '%s' "$IT_RIG_TOKEN" | on_bench "IFS= read -r t; rm -f '$E2E_DIR/results/e2e-harness.done' '$rearm_request' '$rearm_ack'; cd '$E2E_DIR' && IT_RIG_TOKEN=\"\$t\" nohup ./.e2e-run.sh '$E2E_DIR' '$WORKERS' '$rearm_request' '$rearm_ack' $phases >/dev/null 2>&1 & echo launched" ||
+    printf '%s' "$IT_RIG_TOKEN" | on_bench "IFS= read -r t; rm -f '$E2E_DIR/results/e2e-harness.done' '$rearm_request' '$rearm_ack' || exit 1; cd '$E2E_DIR' || exit 1; IT_RIG_TOKEN=\"\$t\" nohup ./.e2e-run.sh '$E2E_DIR' '$WORKERS' '$rearm_request' '$rearm_ack' '$rearm_id' $phases >/dev/null 2>&1 & echo launched" ||
         die "Failed to launch the harness."
 
     # Poll the done-marker, printing a heartbeat tail of the log.
@@ -640,7 +643,7 @@ RUNNER
         if [ "$BORROW_MINER" = "1" ] && on_bench "test -f '$rearm_request' && test ! -f '$rearm_ack'"; then
             step "RigForge changed rendered miner state; reapplying the borrowed-pool fixture (#1994)…"
             repoint_miner || die "Failed to reapply the borrowed-pool fixture."
-            on_bench "touch '$rearm_ack'" || die "Failed to acknowledge the borrowed-pool fixture."
+            printf '%s' "$rearm_id" | on_bench "cat > '$rearm_ack'" || die "Failed to acknowledge the borrowed-pool fixture."
         fi
         if on_bench "test -f '$E2E_DIR/results/e2e-harness.done'"; then
             rc="$(on_bench "cat '$E2E_DIR/results/e2e-harness.done'")"
