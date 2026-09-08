@@ -169,9 +169,10 @@ REGISTRY_READ_BACKOFF="${PITHEAD_REGISTRY_READ_BACKOFF:-3}"
 buildx_inspect() { docker buildx imagetools inspect "$@"; }
 
 retry_registry_read() {
-    local attempt=1 out
+    local attempt=1 out expected_digest="${REGISTRY_READ_EXPECT_DIGEST:-}"
     while :; do
-        if out="$("$@" 2>/dev/null)" && [ -n "$out" ]; then
+        if out="$("$@" 2>/dev/null)" && [ -n "$out" ] &&
+            { [ -z "$expected_digest" ] || grep -Fxq "Digest: $expected_digest" <<<"$out"; }; then
             printf '%s' "$out"
             return 0
         fi
@@ -181,7 +182,6 @@ retry_registry_read() {
         attempt=$((attempt + 1))
     done
 }
-
 # Parse and validate the manifest-list digest that promotion re-tags.
 manifest_digest() {
     local digest
@@ -592,7 +592,7 @@ promote() {
         if [ "$DRY_RUN" -eq 0 ]; then
             expected="${digest##*@}"
             for tag_ref in "$repo:$TAG" "$repo:latest"; do
-                got="$(manifest_digest "$tag_ref")" || die "Promotion: could not resolve a valid digest for $tag_ref."
+                got="$(REGISTRY_READ_EXPECT_DIGEST="$expected" manifest_digest "$tag_ref")" || die "Promotion: could not resolve the expected digest for $tag_ref."
                 [ "$got" = "$expected" ] || die "Promotion: $tag_ref resolves to $got, expected captured digest $expected."
             done
         fi

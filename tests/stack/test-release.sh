@@ -227,10 +227,7 @@ ver_pyproject="$(grep -oE '^version = "[^"]+"' "$ROOT/dashboard/pyproject.toml" 
 assert_eq "pyproject.toml version matches VERSION (#44)" "$ver_pyproject" "$ver_file"
 
 echo "== unit: release.sh registry read retries GHCR read-after-push lag (#429) =="
-# manifest_digest reads a tag GHCR just accepted, which can 404 for a few seconds (read-after-push
-# lag) — this killed stage-4 digest capture twice on v1.3.1. retry_registry_read must retry until the
-# read resolves. Stub buildx_inspect to fail the first two calls (empty + rc 1) then succeed; a counter
-# file survives the retries. Backoff forced to 0 keeps the test instant.
+# Retry valid stale digests until the expected one appears; the counter proves the bounded retry.
 RETRY_CNT="$SANDBOX/inspect.count"
 # shellcheck disable=SC1090,SC2034  # dynamic source; REGISTRY_READ_* are read by the sourced retry helper
 retry_out="$(
@@ -244,9 +241,13 @@ retry_out="$(
         local n
         n=$(($(cat "$RETRY_CNT") + 1))
         printf '%s' "$n" >"$RETRY_CNT"
-        [ "$n" -lt 3 ] && return 1                 # attempts 1 and 2 fail (tag not yet readable)
+        [ "$n" -lt 3 ] && {
+            printf 'Name: x\nDigest: sha256:%064d\n' 2
+            return
+        }                                          # attempts 1 and 2 are stale
         printf 'Name: x\nDigest: sha256:%064d\n' 1 # attempt 3 resolves
     }
+    REGISTRY_READ_EXPECT_DIGEST=sha256:$(printf '%064d' 1)
     printf 'DIGEST=%s ATTEMPTS=%s\n' "$(manifest_digest some:tag)" "$(cat "$RETRY_CNT")"
 )"
 assert_contains "manifest_digest resolves after transient GHCR failures" "$retry_out" "DIGEST=sha256:0000000000000000000000000000000000000000000000000000000000000001"
