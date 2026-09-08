@@ -215,9 +215,9 @@ restore_all() {
         # candidates where the newest is not necessarily the true pre-borrow state. The backup is
         # only safe to delete once the bytes are demonstrably back in place, and the proof runs in
         # the SAME remote call so a dropped ssh cannot land between proving and deleting.
-        # Deliberately NOT gated on miner_reload: that function ends `|| true` and `return 0`, so it
-        # cannot fail — gating on it would delete the backup whatever happened, and it is also why
-        # the `warn` arm it used to guard was unreachable.
+        # Deliberately NOT gated on miner_reload: restoring and proving the config bytes is still
+        # required if every reload mechanism fails. The caller keeps the backup until that byte
+        # proof succeeds; miner_reload's status only gates forward test progress.
         if on_miner "cp -a '$MINER_CFG_BACKUP' '$MINER_XMRIG_CONFIG' && chmod 600 '$MINER_XMRIG_CONFIG' && cmp -s '$MINER_CFG_BACKUP' '$MINER_XMRIG_CONFIG' && rm -f '$MINER_CFG_BACKUP'"; then
             miner_reload
             ok "$MINER_HOST repointed to its original pool(s); backup pruned"
@@ -336,11 +336,10 @@ wait_synced() { # <timeout_s>
 }
 
 # Nudge the miner's xmrig to reload its (rewritten) config. xmrig watches its config file and
-# reloads on change; the systemctl/SIGHUP fallbacks cover builds that don't. Whichever works, we
-# verify by polling the test bench for the worker — so the exact mechanism doesn't matter.
+# reloads on change; the systemctl/SIGHUP fallbacks cover builds that don't. At least one must work;
+# forward paths then poll the test bench for the worker, so the exact mechanism doesn't matter.
 miner_reload() {
-    on_miner "sudo -n systemctl restart xmrig >/dev/null 2>&1 || systemctl --user restart xmrig >/dev/null 2>&1 || pkill -HUP -x xmrig >/dev/null 2>&1 || true"
-    return 0
+    on_miner "sudo -n systemctl restart xmrig >/dev/null 2>&1 || systemctl --user restart xmrig >/dev/null 2>&1 || pkill -HUP -x xmrig >/dev/null 2>&1"
 }
 
 # Poll the test bench's dashboard for at least <n> workers connected.
@@ -650,6 +649,7 @@ RUNNER
         if [ "$BORROW_MINER" = "1" ] && on_bench "test -f '$rearm_request' && test ! -f '$rearm_ack'"; then
             step "RigForge changed rendered miner state; reapplying the borrowed-pool fixture (#1994)…"
             repoint_miner || die "Failed to reapply the borrowed-pool fixture."
+            wait_workers "$WORKERS" 180 || die "Borrowed miner did not reconnect after pool re-arm."
             printf '%s' "$rearm_id" | on_bench "cat > '$rearm_ack'" || die "Failed to acknowledge the borrowed-pool fixture."
         fi
         if on_bench "test -f '$E2E_DIR/results/e2e-harness.done'"; then

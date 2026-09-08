@@ -58,9 +58,10 @@ assert_eq "a stale or different run's acknowledgement is refused" "$(drive_wrong
 
 HARNESS_SRC="$(sed -n '/^run_harness() {$/,/^}$/p' "$HERE/e2e.sh")"
 controller_rearm_line="$(printf '%s\n' "$HARNESS_SRC" | grep -n 'repoint_miner ||' | cut -d: -f1)"
+controller_workers_line="$(printf '%s\n' "$HARNESS_SRC" | grep -n 'wait_workers "$WORKERS"' | tail -n1 | cut -d: -f1)"
 controller_ack_line="$(printf '%s\n' "$HARNESS_SRC" | grep -n "cat > '\$rearm_ack'" | cut -d: -f1)"
-assert_eq "controller verifies the rendered pool before acknowledging re-arm" \
-    "$([ "$controller_rearm_line" -lt "$controller_ack_line" ] && echo yes)" "yes"
+assert_eq "controller reloads and observes the worker before acknowledging re-arm" \
+    "$([ "$controller_rearm_line" -lt "$controller_workers_line" ] && [ "$controller_workers_line" -lt "$controller_ack_line" ] && echo yes)" "yes"
 
 d="$(mktemp -d)"
 trap 'rm -rf "$d"' EXIT
@@ -79,6 +80,11 @@ assert_eq "re-arm tags its injected pool for abort-safe recovery" \
 assert_eq "re-arm reloads xmrig" "$(test -f "$d/reloaded" && echo yes)" "yes"
 assert_eq "re-arm does not mint or replace the original restore anchor" \
     "$(find "$d" -name '*.e2e-orig.*' | awk 'END {print NR}')" "1"
+miner_reload() { return 1; }
+assert_eq "a failed xmrig reload refuses the re-arm" "$(
+    repoint_miner >/dev/null 2>&1
+    echo $?
+)" "1"
 
 echo "selftest-borrow-rearm: $IT_PASS passed, $IT_FAIL failed"
 [ "$IT_FAIL" -eq 0 ] || exit 1
