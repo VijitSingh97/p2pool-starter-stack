@@ -617,7 +617,7 @@ echo "== unit: the appliance battery's release gate does not lie about what it r
 # media channel; and verify-image's stale-artifact comparison was switched off in the ONE caller
 # that is not a human typing a command. MUTATION PROOF: drop a phase from the `all` arm, or drop
 # the PITHEAD_EXPECT_COMMIT prefix, and the matching assertion goes red.
-OSH="$(cat "$ROOT/tests/os/run.sh")"
+OSH="$(cat "$ROOT/tests/os/run.sh" "$ROOT/tests/os/lib/core.sh")"
 osh_all="$(printf '%s' "$OSH" | sed -n '/^all)/,/^    ;;/p')"
 for ph in boot update install provision rig media fault reset; do
     assert_contains "--phase all runs phase_$ph" "$osh_all" "phase_$ph"
