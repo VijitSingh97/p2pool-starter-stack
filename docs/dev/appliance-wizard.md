@@ -15,7 +15,7 @@ is in [`appliance-release.md`](appliance-release.md).
 | host loop | `pithead firstboot-wizard` | mints the token and certificate, runs the container, consumes the spool, provisions |
 | server | `mining_dashboard/wizard/server.py` | token gate, `/api/wizard-state`, spool writes. **Renders no HTML** |
 | client | `web/static/wizard/wizard.mjs` | preact/htm views on the dashboard's stack |
-| shared logic | `web/static/configsync.mjs` | path access, typed coercion, address/pair guidance — also used by the dashboard's config tab |
+| shared logic | `web/static/config/configsync.mjs` | path access, typed coercion, address/pair guidance — also used by the dashboard's config tab |
 | spool | `/data/pithead/data/firstboot` | the only channel between container and host |
 
 The split is deliberate: the container **asks**, the host **decides**. Every privileged
