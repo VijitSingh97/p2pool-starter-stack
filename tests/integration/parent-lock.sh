@@ -24,16 +24,31 @@ rig_lock_parent_use() {
     it_log "Verified parent-held rig lock (${RIG_LOCK_PARENT_ACTOR})."
 }
 
-parent_lock_checkpoint() { # <phase>; e2e-side remote verification
-    local phase="$1"
+parent_lock_checkpoint() { # <phase> [host]; e2e-side remote verification
+    local phase="$1" host="${2:-$BENCH_HOST}"
     [ -n "${RIG_LOCK_PARENT_ACTOR:-}" ] || [ -n "${RIG_LOCK_PARENT_NONCE:-}" ] || return 0
+    # shellcheck disable=SC2029 # quote_arg makes each client-side expansion one remote word.
     {
         declare -f rig_lock_parent_verify
         printf 'rig_lock_parent_verify\n'
-    } |
-        ssh "${SSH_OPTS[@]}" "$BENCH_HOST" "RIG_LOCK_PARENT_ACTOR=$(quote_arg "${RIG_LOCK_PARENT_ACTOR:-}") RIG_LOCK_PARENT_NONCE=$(quote_arg "${RIG_LOCK_PARENT_NONCE:-}") RIG_LOCK_FILE=$(quote_arg "${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}") RIG_LOCK_HOLDER=$(quote_arg "${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}") bash -s" || {
-        warn "parent-held bench lock continuity failed before $phase"
+    } | ssh "${SSH_OPTS[@]}" "$host" "RIG_LOCK_PARENT_ACTOR=$(quote_arg "${RIG_LOCK_PARENT_ACTOR:-}") RIG_LOCK_PARENT_NONCE=$(quote_arg "${RIG_LOCK_PARENT_NONCE:-}") RIG_LOCK_FILE=$(quote_arg "${RIG_LOCK_FILE:-/var/lock/rig-e2e.lock}") RIG_LOCK_HOLDER=$(quote_arg "${RIG_LOCK_HOLDER:-/run/rig-e2e.holder}") bash -s" || {
+        warn "parent-held lock continuity failed on $host before $phase"
         return 1
     }
-    step "parent-held bench lock verified before $phase"
+    step "parent-held lock verified on $host before $phase"
+}
+
+parent_lock_miner_borrow() {
+    if [ -n "${RIG_LOCK_PARENT_ACTOR:-}" ] || [ -n "${RIG_LOCK_PARENT_NONCE:-}" ]; then
+        parent_lock_checkpoint "loaner borrow" "$MINER_HOST" || return 1
+        ok "parent rig lock verified on $MINER_HOST (loaner)"
+    else
+        rig_lock_remote pithead "e2e.sh loaner-borrow" "" "$MINER_HOST" "${SSH_OPTS[@]}"
+        ok "rig lock held on $MINER_HOST (loaner) for the life of this run"
+    fi
+}
+
+parent_lock_miner_restore() {
+    [ "$BORROW_MINER" = 1 ] && { [ -n "${RIG_LOCK_PARENT_ACTOR:-}" ] || [ -n "${RIG_LOCK_PARENT_NONCE:-}" ]; } || return 0
+    parent_lock_checkpoint "miner restore" "$MINER_HOST"
 }

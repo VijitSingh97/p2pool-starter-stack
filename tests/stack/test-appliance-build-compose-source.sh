@@ -98,7 +98,7 @@ echo "== unit: build-image --stage-only parses, and stops after staging, before 
 assert_eq "--stage-only is accepted and recorded" \
     "$( (export PITHEAD_BUILD_IMAGE_TEST=1 && set -- --stage-only && source "$ROOT/os/build-image.sh" && echo "STAGE_ONLY=${STAGE_ONLY:-unset}") 2>&1)" "STAGE_ONLY=1"
 bi_line() { grep -n -F -- "$1" "$ROOT/os/build-image.sh" | head -1 | cut -d: -f1; }
-l_stage=$(bi_line 'echo "==> compose file staged from: $(stage_compose "$STACK_VERSION" os/build/stage)"')
+l_stage=$(bi_line 'COMPOSE_SOURCE="$(stage_compose "$STACK_VERSION" os/build/stage)" || exit 1')
 l_build=$(bi_line 'bash scripts/build-pithead.sh')
 l_stop=$(bi_line 'if [ "${STAGE_ONLY:-0}" = 1 ]; then')
 l_wizard=$(bi_line 'echo "==> staging wizard image $WIZARD_IMAGE"')
@@ -108,6 +108,17 @@ assert_eq "the stop sits after the staging line and before the wizard image step
     "$([ "${l_stage:-0}" -lt "${l_stop:-0}" ] && [ "${l_stop:-0}" -lt "${l_wizard:-0}" ] && echo ordered)" "ordered"
 unset -f bi_line
 unset l_build l_stage l_stop l_wizard
+
+caller="$CS/caller"
+mkdir -p "$caller/os/build/stage" "$caller/scripts"
+cp "$ROOT/os/build-image.sh" "$caller/os/build-image.sh"
+printf '0.0.1\n' >"$caller/VERSION"
+printf '#!/usr/bin/env bash\n' >"$caller/scripts/build-pithead.sh"
+printf 'stale\n' >"$caller/os/build/stage/docker-compose.yml"
+printf 'tree\n' >"$caller/os/build/stage/COMPOSE_SOURCE"
+(cd "$caller" && PITHEAD_OS_COMPOSE_FILE="$caller/missing.yml" bash os/build-image.sh --stage-only >/dev/null 2>&1)
+assert_rc "the build caller fails closed when explicit compose staging fails" "$?" 1
+assert_eq "a staging failure cannot be reported as successful over stale files" "$(cat "$caller/os/build/stage/docker-compose.yml")" stale
 
 echo "== unit: verify-image compose_reference — the stamp names the file the shipped compose must equal (#1215) =="
 # A fake image root: only the two files the helper reads. Driven from inside the scratch repo so
@@ -233,6 +244,25 @@ mismatch_out="$({
 assert_rc "promotion refuses latest resolving away from the captured digest" "$?" "1"
 assert_contains "promotion mismatch names latest and the captured digest" "$mismatch_out" "ghcr.io/test/pithead-tor:latest resolves"
 
+# Resume re-captures mutable staging tags, so those bytes must pass smoke before promotion.
+resume_calls="$SANDBOX/resume-calls"
+# shellcheck disable=SC1090,SC2034,SC2329
+(
+    cd "$ROOT" || exit 1
+    set --
+    # shellcheck disable=SC1090
+    source "$REL" 2>/dev/null
+    preflight() { :; }; ghcr_login() { :; }
+    manifest_digest() { printf 'sha256:%064d\n' 7; }
+    smoke_test() { printf 'smoke\n' >>"$resume_calls"; }
+    promote() { printf 'promote\n' >>"$resume_calls"; }
+    sign_images() { :; }; publish() { :; }
+    DRY_RUN=0 RESUME_PROMOTE=1 IMAGES=(tor) TAG=v9.9.9 STAGING_TAG=v9.9.9-rc.1 REGISTRY=ghcr.io/test
+    main
+) >/dev/null 2>&1
+assert_rc "--resume-promote succeeds with a captured digest" "$?" 0
+assert_eq "--resume-promote smokes newly captured bytes before promotion" "$(tr '\n' ' ' <"$resume_calls")" "smoke promote "
+
 # shellcheck disable=SC1090
 (
     cd "$ROOT" || exit
@@ -250,7 +280,7 @@ echo "== wiring: the build stages, the Dockerfile copies, verify-image compares 
 CS_BI="$(cat "$ROOT/os/build-image.sh")"
 CS_DF="$(cat "$ROOT/os/rootfs/Dockerfile")"
 CS_VI="$(cat "$ROOT/tests/os/verify-image.sh")"
-assert_contains "build-image stages into os/build/stage from STACK_VERSION" "$CS_BI" 'stage_compose "$STACK_VERSION" os/build/stage'
+assert_contains "build-image stages into os/build/stage from STACK_VERSION" "$CS_BI" 'COMPOSE_SOURCE="$(stage_compose "$STACK_VERSION" os/build/stage)" || exit 1'
 assert_contains "an immutable wizard source is pulled by digest" "$CS_BI" 'docker pull -q "$WIZARD_SOURCE"'
 assert_contains "the pulled wizard digest is tagged with the runtime name" "$CS_BI" 'docker tag "$WIZARD_SOURCE" "$WIZARD_IMAGE"'
 assert_contains "the marker layer inherits from the immutable wizard source" "$CS_BI" '"$WIZARD_SOURCE" "$PITHEAD_TEST_MARKER"'

@@ -833,8 +833,8 @@ main() {
         test_gate
         build_images
         stage_push
-        smoke_test
     fi
+    smoke_test
     promote
     sign_images # #376 — signs the digests promote re-tagged; --resume-promote reaches this too
     publish

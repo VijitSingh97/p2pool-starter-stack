@@ -124,7 +124,8 @@ bash scripts/build-pithead.sh
 STACK_VERSION="v$(tr -d ' \t\r\n' <VERSION)"
 # os/build/ is git-ignored, so staging there keeps the tree clean (the build stamps itself dirty
 # otherwise, and mkimage refuses a dirty stamp). The Dockerfile COPYs both files from this path.
-echo "==> compose file staged from: $(stage_compose "$STACK_VERSION" os/build/stage)"
+COMPOSE_SOURCE="$(stage_compose "$STACK_VERSION" os/build/stage)" || exit 1
+echo "==> compose file staged from: $COMPOSE_SOURCE"
 if [ "${STAGE_ONLY:-0}" = 1 ]; then
     echo "==> --stage-only: os/build/stage/ is ready; stopping before the build"
     exit 0

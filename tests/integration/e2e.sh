@@ -35,7 +35,8 @@ source "$HERE/borrow-fixture.sh"
 # restore-proof.sh: verify_restore_proof + the image-identity check the restore is graded on (#272).
 # shellcheck source=tests/integration/restore-proof.sh
 source "$HERE/restore-proof.sh"
-
+# shellcheck source=tests/integration/detached-harness.sh
+source "$HERE/detached-harness.sh"
 # --- Config (override via env or flags) -------------------------------------
 BENCH_HOST="${BENCH_HOST:-}"
 MINER_HOST="${MINER_HOST:-}"
@@ -198,13 +199,14 @@ restore_all() {
         warn "  Re-run without --keep, or restore by hand: canonical=$CANONICAL_DIR, miner cfg backup=$MINER_CFG_BACKUP"
         return
     fi
+    drain_harness
     parent_lock_checkpoint restore || {
         warn "Refusing an unreserved restore; preserve $MINER_CFG_BACKUP and repair the bench by hand."
         exit 1
     }
+    parent_lock_miner_restore || die "Refusing an unreserved miner restore; preserve $MINER_CFG_BACKUP."
     echo ""
     log "Restoring everything to the pre-run state…"
-
     # 1. Miner: put its original pool config back and nudge xmrig to reconnect.
     if [ -n "$MINER_CFG_BACKUP" ]; then
         step "restoring $MINER_HOST xmrig config from $MINER_CFG_BACKUP"
@@ -424,11 +426,9 @@ preflight() {
         # until this process dies. rigforge's gates on the same rig refuse (exit 75, holder named)
         # instead of colliding mid-borrow, and a busy rig fails us fast, before the bench is
         # touched. The kernel releases the lock on exit, AFTER the EXIT-trap restore has run.
-        rig_lock_remote pithead "e2e.sh loaner-borrow" "" "$MINER_HOST" "${SSH_OPTS[@]}"
-        ok "rig lock held on $MINER_HOST (loaner) for the life of this run"
+        parent_lock_miner_borrow || die "Miner lock is not continuous."
     fi
 }
-
 # --- Phase 1: provision the dedicated e2e checkout + check out the branch ---
 provision() {
     parent_lock_checkpoint provision || die "Parent-held bench lock was lost before provision."
@@ -641,8 +641,8 @@ RUNNER
             warn "readiness/check reported issues (see above) — continuing to the destructive phases"
     fi
 
-    printf '%s\n%s\n%s\n' "$IT_RIG_TOKEN" "${RIG_LOCK_PARENT_ACTOR:-}" "${RIG_LOCK_PARENT_NONCE:-}" | on_bench "IFS= read -r t; IFS= read -r a; IFS= read -r n; rm -f '$E2E_DIR/results/e2e-harness.done' '$rearm_request' '$rearm_ack' || exit 1; cd '$E2E_DIR' || exit 1; IT_RIG_TOKEN=\"\$t\" RIG_LOCK_PARENT_ACTOR=\"\$a\" RIG_LOCK_PARENT_NONCE=\"\$n\" nohup ./.e2e-run.sh '$E2E_DIR' '$WORKERS' '$rearm_request' '$rearm_ack' '$rearm_id' $phases >/dev/null 2>&1 & echo launched" ||
-        die "Failed to launch the harness."
+    HARNESS_PID="$(printf '%s\n%s\n%s\n' "$IT_RIG_TOKEN" "${RIG_LOCK_PARENT_ACTOR:-}" "${RIG_LOCK_PARENT_NONCE:-}" | on_bench "IFS= read -r t; IFS= read -r a; IFS= read -r n; rm -f '$E2E_DIR/results/e2e-harness.done' '$rearm_request' '$rearm_ack' || exit 1; cd '$E2E_DIR' || exit 1; IT_RIG_TOKEN=\"\$t\" RIG_LOCK_PARENT_ACTOR=\"\$a\" RIG_LOCK_PARENT_NONCE=\"\$n\" nohup setsid ./.e2e-run.sh '$E2E_DIR' '$WORKERS' '$rearm_request' '$rearm_ack' '$rearm_id' $phases >/dev/null 2>&1 & echo \$!")" || die "Failed to launch the harness."
+    [[ "$HARNESS_PID" =~ ^[0-9]+$ ]] || die "Harness launch returned an invalid PID."
 
     # Poll the done-marker, printing a heartbeat tail of the log.
     local rc="" waited=0
@@ -654,6 +654,7 @@ RUNNER
         fi
         if on_bench "test -f '$E2E_DIR/results/e2e-harness.done'"; then
             rc="$(on_bench "cat '$E2E_DIR/results/e2e-harness.done'")"
+            harness_finished
             break
         fi
         sleep 20
