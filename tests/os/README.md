@@ -56,9 +56,19 @@ runbook in [`docs/dev/release-server.md`](../../docs/dev/release-server.md).
   served, Tor-only egress actually enforced, built-in miner up. Before the successful attempt, an
   unreachable remote node must be refused by preflight with its safe form values retained; a
   separate injected post-validation setup fault must open a recoverable failed page and retry
-  with those values. After provisioning, the dashboard drives a benign apply, a typed approval and its
-  missing-token refusal, doctor, log tail, and an encrypted backup; the stack and dashboard must
-  answer again after the backup. Then the stack must return from a reboot with no
+  with those values. The successful wizard submission names the appliance `fixture-box`; the
+  running kernel, rendered dashboard address, served certificate and active mDNS service must all
+  agree on that identity. After provisioning, the dashboard drives a benign apply, a typed approval
+  and its missing-token refusal, structured doctor output, a capped/redacted p2pool log tail and
+  the wallet-log refusal, then an encrypted backup; the stack and dashboard must answer again after
+  the backup. Doctor must still return every structured row as an applied diagnostic when its own
+  exit is nonzero with monerod deliberately stopped. A day-two `fixture-next` hostname preview must
+  require the sensitive-change approval and leave the kernel name, mDNS activation, certificate and
+  live config byte-for-byte unchanged. Missing and wrong approval identities are refused. A fake,
+  allow-listed callback then approves the host-generated preview; the changed kernel, dashboard,
+  certificate and mDNS identity must survive both the unaided reboot and closing A/B migration
+  update. A dashboard-password edit remains physical-presence-only. The fixture `curl` recognizes
+  only its two fake Telegram calls and has no route to the real provider. Then the stack must return from a reboot with no
   hands on it, and the real commit gate — `pithead doctor --json` — must pass on that healthy
   stack yet refuse once a revenue service is down. The closing leg installs a `data_migration`
   bundle through `pithead os-update` and proves the migration hold: the chain services stay down
@@ -95,6 +105,18 @@ runbook in [`docs/dev/release-server.md`](../../docs/dev/release-server.md).
 scopes the run. A failed assertion is recorded and the run carries on, so one bench boot collects
 the whole battery; the run exits non-zero if anything failed. `all` means all eight phases,
 including fault and reset, and the full run is required once for every RC candidate.
+
+The provision phase's remote-node consumer row is mandatory and takes reserved, reachable test
+nodes from `PITHEAD_OS_MONERO_NODE_HOST`, `PITHEAD_OS_MONERO_RPC_PORT`,
+`PITHEAD_OS_MONERO_ZMQ_PORT`, `PITHEAD_OS_TARI_NODE_HOST`, and
+`PITHEAD_OS_TARI_GRPC_PORT`. `PITHEAD_OS_MONERO_NODE_USERNAME` and
+`PITHEAD_OS_MONERO_NODE_PASSWORD` may be empty when the test node allows it; when supplied they
+must be disposable test-only credentials, never an operator credential. Supply these to the
+root-run battery without overriding `HOME`. The row requires the host preflight and fake
+second-identity approval to succeed, checks the current p2pool container's narrowly extracted
+Monero and Tari endpoints, and binds the current-startup `uses chain_id` verdict to that Tari
+endpoint (or its documented SOCKS loopback bridge). It then restores the original local-node
+configuration. Missing node inputs are a counted failure, never a skipped release gate.
 
 ## Static verification
 

@@ -113,6 +113,11 @@ echo "== unit: #1936 wizard-state-poll self-test =="
 bash "$ROOT/tests/os/provision-browser-submit.sh" --self-test >/dev/null 2>&1
 assert_rc "#1936 wizard-state-poll self-test passes" "$?" "0"
 
+bash "$ROOT/tests/os/appliance-hostname-leg.sh" --self-test >/dev/null 2>&1
+assert_rc "#1966 appliance hostname verdict self-test passes" "$?" "0"
+bash "$ROOT/tests/os/appliance-diagnostics-leg.sh" --self-test >/dev/null 2>&1
+assert_rc "#1966 appliance diagnostics verdict self-test passes" "$?" "0"
+
 echo "== unit: tor healthcheck command-dependency self-test (#1372) =="
 # The #1098 pair above asks whether a healthcheck script EXISTS where its Dockerfile promises. This
 # asks the other half of the same contract: whether build/tor/healthcheck.sh can still RUN on
