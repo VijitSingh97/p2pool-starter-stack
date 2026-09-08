@@ -21,7 +21,6 @@ source "$HERE/rig-supply.sh"
 
 E2E_SRC="$HERE/e2e.sh"
 RUN_SRC="$HERE/run.sh"
-
 assert_eq "rig-supply.sh actually defines rig_supply (#1378)" \
     "$(type -t rig_supply)" "function"
 
@@ -85,6 +84,7 @@ drive_harness() { # <mode> <borrow_miner> [rig-token] -> "LAUNCH\t<cmd>" then "S
             # rig_supply's proof dial. Succeeds here; the unreachable-rig path is driven separately
             # by rc_of below, which is where the exit-code contract is asserted.
             *curl*Authorization*) return 0 ;;
+            *borrow-rearm.request*) return 1 ;;
             *e2e-harness.done*)
                 # `test -f <done>` (the poll) and `cat <done>` (the exit code) share this substring;
                 # answering 0 to both ends the loop on its first pass with a clean harness result.
@@ -118,7 +118,7 @@ stdin_of() { # <mode> <borrow> [token] -> what e2e.sh piped into the launch call
 
 compose_phases() { # <mode> <borrow_miner> [token] -> the phase list e2e.sh would launch run.sh with
     # Everything between the runner's positional args and the trailing redirect is the phase list.
-    launch_of "$@" | sed -n 's/.*\.e2e-run\.sh[^ ]* [^ ]* [^ ]* \(.*\) >\/dev\/null.*/\1/p'
+    launch_of "$@" | sed -n 's/.*\.e2e-run\.sh[^ ]* [^ ]* [^ ]* [^ ]* [^ ]* \(.*\) >\/dev\/null.*/\1/p'
 }
 
 has_phase() { # <phase-list> <flag> -> "yes" | "no"

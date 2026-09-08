@@ -31,6 +31,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/lib.sh"
 # shellcheck source=tests/integration/rig-supply.sh
 source "$HERE/rig-supply.sh"
+source "$HERE/borrow-fixture.sh"
 # restore-proof.sh: verify_restore_proof + the image-identity check the restore is graded on (#272).
 # shellcheck source=tests/integration/restore-proof.sh
 source "$HERE/restore-proof.sh"
@@ -557,25 +558,7 @@ borrow_miner() {
     MINER_CFG_BACKUP="$MINER_XMRIG_CONFIG.e2e-orig.$(on_miner 'date +%Y%m%d-%H%M%S')"
     on_miner "cp -a '$MINER_XMRIG_CONFIG' '$MINER_CFG_BACKUP'" || die "Failed to back up the miner config."
     step "miner config backed up → $MINER_CFG_BACKUP"
-    # Point the rig at the bench: inject a bench pool if the config has none (clone pool[0] so
-    # user/pass/keepalive carry over, override url→bench and force plain stratum), then reorder so the
-    # bench pool is primary and the rest stay as failover. Non-destructive, fully reversible from the
-    # backup above. ponytail: hardcodes :3333 (the seeded canonical stratum_port default, which the bench runs).
-    # The injected entry is tagged "rig-id": "pithead-e2e" (#1178) — a documented per-pool xmrig key,
-    # ignored for pool selection — which is what the restore path's belt-and-braces check keys on.
-    on_miner "
-        jq --arg b '$BENCH_HOST' '
-            (if any(.pools[]?; .url | ascii_downcase | contains(\$b)) then .
-             else .pools = ([ (.pools[0]) + {url: (\$b + \":3333\"), tls: false, daemon: false, \"rig-id\": \"pithead-e2e\"} ] + .pools) end)
-            | .pools |= ([.[] | select(.url | ascii_downcase | contains(\$b))] + [.[] | select(.url | ascii_downcase | contains(\$b) | not)])' \
-            '$MINER_XMRIG_CONFIG' > '$MINER_XMRIG_CONFIG.e2e.tmp' \
-        && mv '$MINER_XMRIG_CONFIG.e2e.tmp' '$MINER_XMRIG_CONFIG' && chmod 600 '$MINER_XMRIG_CONFIG'
-    " || die "Failed to repoint the miner config."
-    local primary
-    primary="$(on_miner "jq -r '.pools[0].url' '$MINER_XMRIG_CONFIG'")"
-    [ -n "$primary" ] && step "miner primary pool is now: $primary"
-    case "$primary" in *"$BENCH_HOST"*) ;; *) warn "primary pool ($primary) doesn't look like the test bench — does the miner config have a test-bench pool?" ;; esac
-    miner_reload
+    repoint_miner || die "Failed to repoint the miner config."
     wait_workers "$WORKERS" 180 || warn "proceeding, but the matrix's mining assertions may not pass with too few workers"
 }
 
@@ -603,7 +586,7 @@ deploy_branch() {
 
 # --- Phase 5: run the live harness (detached on the box) --------------------
 run_harness() {
-    local phases
+    local phases rearm_request="$E2E_DIR/results/borrow-rearm.request" rearm_ack="$E2E_DIR/results/borrow-rearm.ack"
     case "$MODE" in
     check) phases="--check" ;;
     targeted) phases="--scenario local-pruned-main-secure-tari --auth-fail-closed --lifecycle" ;; # readiness/check run inline first (below); NOT here — run.sh returns after --readiness
@@ -631,9 +614,10 @@ run_harness() {
     cat >"$runner" <<'RUNNER'
 #!/usr/bin/env bash
 set -uo pipefail
-dir="$1"; workers="$2"; shift 2
+dir="$1"; workers="$2"; rearm_request="$3"; rearm_ack="$4"; shift 4
 mkdir -p "$dir/results"
-bash "$dir/tests/integration/run.sh" --local --dir "$dir" --workers "$workers" "$@" \
+IT_BORROW_REARM_REQUEST="$rearm_request" IT_BORROW_REARM_ACK="$rearm_ack" \
+    bash "$dir/tests/integration/run.sh" --local --dir "$dir" --workers "$workers" "$@" \
     > "$dir/results/e2e-harness.log" 2>&1
 echo $? > "$dir/results/e2e-harness.done"
 RUNNER
@@ -647,12 +631,17 @@ RUNNER
             warn "readiness/check reported issues (see above) — continuing to the destructive phases"
     fi
 
-    printf '%s' "$IT_RIG_TOKEN" | on_bench "IFS= read -r t; rm -f '$E2E_DIR/results/e2e-harness.done'; cd '$E2E_DIR' && IT_RIG_TOKEN=\"\$t\" nohup ./.e2e-run.sh '$E2E_DIR' '$WORKERS' $phases >/dev/null 2>&1 & echo launched" ||
+    printf '%s' "$IT_RIG_TOKEN" | on_bench "IFS= read -r t; rm -f '$E2E_DIR/results/e2e-harness.done' '$rearm_request' '$rearm_ack'; cd '$E2E_DIR' && IT_RIG_TOKEN=\"\$t\" nohup ./.e2e-run.sh '$E2E_DIR' '$WORKERS' '$rearm_request' '$rearm_ack' $phases >/dev/null 2>&1 & echo launched" ||
         die "Failed to launch the harness."
 
     # Poll the done-marker, printing a heartbeat tail of the log.
     local rc="" waited=0
     while :; do
+        if [ "$BORROW_MINER" = "1" ] && on_bench "test -f '$rearm_request' && test ! -f '$rearm_ack'"; then
+            step "RigForge changed rendered miner state; reapplying the borrowed-pool fixture (#1994)…"
+            repoint_miner || die "Failed to reapply the borrowed-pool fixture."
+            on_bench "touch '$rearm_ack'" || die "Failed to acknowledge the borrowed-pool fixture."
+        fi
         if on_bench "test -f '$E2E_DIR/results/e2e-harness.done'"; then
             rc="$(on_bench "cat '$E2E_DIR/results/e2e-harness.done'")"
             break

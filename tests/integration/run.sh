@@ -31,11 +31,11 @@ source "$HERE/rig-key-ledger.sh" # must precede any module that marks a write (#
 source "$HERE/rigforge-writable-keys.sh"
 # shellcheck source=tests/integration/rigforge-upgrade.sh
 source "$HERE/rigforge-upgrade.sh"
+source "$HERE/borrow-rearm.sh"
 # shellcheck source=tests/integration/zmq-probe.sh
 source "$HERE/zmq-probe.sh"
 # shellcheck source=tests/integration/mergemine-probe.sh
 source "$HERE/mergemine-probe.sh"
-
 # --- Defaults / globals -----------------------------------------------------
 IT_MODE="ssh"
 IT_SSH_DEST=""
@@ -2162,7 +2162,6 @@ _restore_rig_control_baseline() {
         return 1
     fi
 }
-
 # Real RigForge write coverage (#513/#514/#516/#517), destructive then restored. The only descriptor
 # shape is workers.list[]; explicit borrowed-rig inputs make missing setup a failure.
 run_rigforge_control() {
@@ -2529,6 +2528,7 @@ main() {
     local rig_control_ok=1
     if [ "$RUN_RIGFORGE_CONTROL" = "1" ]; then
         run_rigforge_control || rig_control_ok=0
+        [ "$rig_control_ok" = 1 ] && wait_borrow_rearm || rig_control_ok=0
     elif [ "$RUN_RIGFORGE" = "1" ]; then
         run_rigforge_integration
     fi
