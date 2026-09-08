@@ -739,7 +739,7 @@ make_bundle() {
     # Unpacks to a versionless "pithead/" dir. Ships only the operator docs needed to run the stack.
     local out="$1" d="$WORKDIR/pithead"
     mkdir -p "$d"
-    cp pithead pithead-completion.bash VERSION docker-compose.yml config.minimal.json config.reference.json config.core-keys.json cosign.pub "$d/" 2>/dev/null || true
+    cp pithead pithead-completion.bash VERSION docker-compose.yml config.minimal.json config.reference.json config.core-keys.json cosign.pub "$d/" 2>/dev/null || die "make_bundle: failed to copy required runtime files."
     mkdir -p "$d/docs"
     local doc docs_url="https://github.com/p2pool-starter-stack/pithead/blob/$TAG"
     for doc in docs/{configuration,dashboard,faq,getting-started,hardware,monitoring,operations,privacy,telegram,workers}.md; do

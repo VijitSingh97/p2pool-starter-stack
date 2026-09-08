@@ -1,18 +1,10 @@
 # shellcheck shell=bash
 : "${STACK_SUITE:?is unset: this file is a tests/stack/run.sh fragment, not a script — run tests/stack/run.sh}"
-# Release domain (#1105 Phase 1): release.sh's side-effect-free logic (semver/image-name helpers,
-# the ingredient manifest, bundle-contents/build-mounts checks), the GHCR read-after-push retry,
-# the release-toolchain preflight, release-smoke's upgraded-install resolution, pull-vs-build mode
-# detection, and the release bundle's macOS-xattr hygiene guard. Sourced by tests/stack/run.sh
-# after lib.sh. (release.sh's signing/refusal/pinned-verifier/cosign-path tests move separately,
-# to test-release-signing.sh. Left in run.sh, despite sharing a section marker with moved content:
-# the #291 firewall-ordering assertions trailing cosign_container_path — tor/network, not release;
-# the XvB tier-threshold drift guard trailing "release.sh pure logic" — dashboard, not release; the
-# xmrig-proxy/tor-entrypoint tests trailing the bundle-hygiene section — unrelated domains; the
-# doctor-side release-verification diagnostic and the control-channel upgrade's own bundle-
-# signature check — doctor/control, by the same run-against-its-own-sandbox reasoning module 4
-# used for apply --dry-run/symlink-invocation.)
-
+# Release domain (#1105 Phase 1): release.sh's pure helpers, ingredient manifest, bundle contents,
+# registry retry, toolchain preflight, smoke resolution, pull-vs-build mode and xattr hygiene.
+# Signing/refusal/pinned-verifier/cosign-path tests live in test-release-signing.sh. This fragment
+# retains adjacent assertions whose fixtures belong here even when their product domain differs,
+# following the suite's run-against-its-own-sandbox placement rule.
 echo "== unit: release.sh pure logic (#44) =="
 # The release pipeline's side-effect-free helpers (no docker needed). Sourced from the repo root with
 # the positional args cleared (`set --`) so release.sh's own arg-parser doesn't see the test's args;
@@ -85,6 +77,21 @@ BUILD_MOUNTS="$(
 )"
 assert_contains "bundle ships monerod's config template" "$BUILD_MOUNTS" "./build/monero/bitmonero.conf.template"
 assert_contains "bundle ships the tari config dir" "$BUILD_MOUNTS" "./build/tari"
+# shellcheck disable=SC1090
+bundle_copy_fail="$(
+    (
+        cd "$ROOT" || exit
+        set --
+        source "$REL" 2>/dev/null
+        set +eu
+        WORKDIR="$SANDBOX/bundle-copy-fail" TAG=v9.9.9
+        cp() { return 1; }
+        make_bundle "$WORKDIR/pithead.tar.gz"
+    ) 2>&1
+)"
+bundle_copy_rc=$?
+assert_rc "bundle refuses a failed required-file copy" "$bundle_copy_rc" "1"
+assert_contains "bundle names the required-file copy failure" "$bundle_copy_fail" "failed to copy required runtime files"
 # Build a real bundle and inspect its runtime and operator-doc contents.
 # shellcheck disable=SC1090,SC2034  # dynamic source; TAG/REGISTRY/DRY_RUN are consumed inside make_bundle
 (
@@ -225,7 +232,6 @@ done
 ver_file="$(tr -d ' \t\r\n' <"$ROOT/VERSION")"
 ver_pyproject="$(grep -oE '^version = "[^"]+"' "$ROOT/dashboard/pyproject.toml" | head -1 | cut -d'"' -f2)"
 assert_eq "pyproject.toml version matches VERSION (#44)" "$ver_pyproject" "$ver_file"
-
 echo "== unit: release.sh registry read retries GHCR read-after-push lag (#429) =="
 # Retry valid stale digests until the expected one appears; the counter proves the bounded retry.
 RETRY_CNT="$SANDBOX/inspect.count"
@@ -270,7 +276,6 @@ assert_contains "exhausted retries -> empty digest (caller dies)" "$exhaust_out"
 # The smoke stage's raw manifest read has the same read-after-push exposure — wire it through the retry.
 assert_contains "smoke stage reads the captured digest via retry_registry_read (#429)" \
     "$(cat "$REL")" 'retry_registry_read buildx_inspect "$digest" --raw'
-
 # #557: the test above disables errexit (`set +eu`, right after sourcing) to observe the bare helper
 # in isolation, which happens to mask a real bug in stage_push itself: the bare
 # `digest="$(manifest_digest ...)"` assignment aborts under release.sh's own `set -euo pipefail`
@@ -297,7 +302,6 @@ stage_push_out="$(
 assert_rc "stage_push, real errexit: retries-exhausted digest read still aborts (#557)" "$?" "1"
 assert_contains "stage_push, real errexit: crafted die() reaches the operator (#557)" \
     "$stage_push_out" "Could not read the pushed manifest digest"
-
 # #557: main()'s --resume-promote branch has the exact same shape (a second, separately-written
 # instance of the bug — found in review, not part of the original 3 sites). Drive the real `main`
 # (preflight/ghcr_login stubbed no-op) with RESUME_PROMOTE=1 and errexit left ON.
@@ -327,7 +331,6 @@ resume_out="$(
 assert_rc "--resume-promote, real errexit: retries-exhausted digest read still aborts (#557)" "$?" "1"
 assert_contains "--resume-promote, real errexit: crafted die() reaches the operator (#557)" \
     "$resume_out" "Cannot resolve a staged digest"
-
 echo "== unit: release.sh preflight checks the lint toolchain (#426) =="
 # A reimaged release box loses shellcheck/shfmt/node/uv — the v1.3.0 cut died ~1 min in mid-gate with a
 # bare `shellcheck: not found`. check_release_toolchain must fail fast BEFORE building, naming the tool
@@ -360,7 +363,6 @@ tc_rc=$?
 assert_rc "missing tool -> preflight fails fast (rc 1)" "$tc_rc" "1"
 assert_contains "the missing tool is named" "$tc_out" "shfmt"
 assert_contains "error points at the provisioning doc" "$tc_out" "release-server.md"
-
 echo "== unit: release-smoke resolves the upgraded install at ASSERT time (#1068) =="
 # The #59 upgrade never rewrites the old install in place — it extracts a fresh pithead-v<new> and
 # repoints `current`, which is what makes rollback possible. So asserting on the directory the run
@@ -405,7 +407,6 @@ assert_eq "with current pointing at it, the same dir resolves to itself" \
 # does not mistake it for a covered behaviour.
 rm -rf "$SMK"
 unset SMK SMOKE_SH
-
 echo "== unit: pull-vs-build mode (#44) =="
 # is_source_checkout / resolve_pull_policy / STACK_VERSION key off whether the image build CONTEXTS
 # (Dockerfiles) are present: a source checkout builds locally (:dev, --pull never); a release bundle
@@ -477,7 +478,6 @@ assert_eq "STACK_VERSION v0.1.0 in a release bundle" "$(
     export_build_provenance
     printf '%s' "$STACK_VERSION"
 )" "v0.1.0"
-
 echo "== release: install bundle is free of macOS xattr pax headers (#252) =="
 # Static guard: make_bundle must keep `--no-xattrs` AND the post-bundle xattr assertion, so the
 # fix can't be silently reverted in a future edit.

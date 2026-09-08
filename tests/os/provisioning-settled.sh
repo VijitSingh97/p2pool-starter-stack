@@ -16,10 +16,15 @@ provisioning_settled() { # $1 seconds -> 0 once no provisioning unit is activati
     local deadline=$(($(date +%s) + $1)) st
     while [ "$(date +%s)" -lt "$deadline" ]; do
         st=$(provisioning_units)
+        # shellcheck disable=SC2086  # intentional split: exactly two unit states must answer
+        set -- $st
         # Word-anchored: `deactivating` contains `activating` and is a unit on its way OUT, not in.
         case " $st " in
-        *" activating "* | "  ") sleep "${PROVISIONING_POLL_S:-15}" ;;
-        *) return 0 ;;
+        *" activating "*) sleep "${PROVISIONING_POLL_S:-15}" ;;
+        *)
+            [ "$#" -eq 2 ] && return 0
+            sleep "${PROVISIONING_POLL_S:-15}"
+            ;;
         esac
     done
     return 1
