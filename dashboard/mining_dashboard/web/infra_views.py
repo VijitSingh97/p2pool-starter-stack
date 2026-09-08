@@ -223,7 +223,7 @@ _ENERGY_DISCLAIMER = (
 
 def _worker_watts_config(name):
     """The operator's manual watts estimate for a worker name (#172 descriptor ``watts``), or None."""
-    for entry in config.DASHBOARD_WORKERS:
+    for entry in config.current_worker_endpoints():
         if entry["name"] == name:
             return entry.get("watts")
     return None

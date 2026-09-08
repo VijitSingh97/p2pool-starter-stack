@@ -26,6 +26,10 @@ uv run --project dashboard pre-commit install
 runs `ruff` (plus a few hygiene hooks) on your changed files. If you change dependencies in
 `dashboard/pyproject.toml`, run `uv lock` and commit the updated `uv.lock`.
 
+The root `pithead` executable is generated and git-ignored. Plain `make` builds it from the
+numbered `lib/pithead/*.sh` sources; the test targets also build it when needed. Edit the slices,
+not the generated file.
+
 ## Development workflow
 
 1. Fork the repo and create a branch off `develop` (the integration branch; `main` holds released
@@ -44,8 +48,9 @@ runs `ruff` (plus a few hygiene hooks) on your changed files. If you change depe
      with `make lint-<surface>`): `lint-sh` (shellcheck + shfmt), `lint-py` (ruff), `lint-js` (Biome),
      `lint-yaml` (yamllint), `lint-md` (markdownlint), `lint-docs-voice` (banned-word check),
      `lint-operator-strings` (no issue/PR numbers in operator-facing `pithead`/dashboard text, and
-     no bare `docs/` paths in `pithead` operator text — release bundles ship no `docs/`, so point at
-     `$DOCS_URL/docs/<file>.md#anchor` instead; comments keep the plain path),
+     no bare `docs/` paths in `pithead` operator text — release bundles carry a curated operator-doc
+     subset, not arbitrary repo paths, so point at `$DOCS_URL/docs/<file>.md#anchor` instead; comments
+     keep the plain path),
      `lint-topology` (no real-looking IPv6/IPv4 literal, `/home/<name>` path, `.lan`/`.internal`/
      `.local` hostname, or `user@host` string — a public repo, so every one of those has to stay a
      generic class, not a trace of whoever's actual box; `tests/` and `docs/` are an accepted
@@ -53,9 +58,8 @@ runs `ruff` (plus a few hygiene hooks) on your changed files. If you change depe
      explicit value-level allowlist — see the script's own header — never a per-file exemption
      comment), `lint-file-budget` (the file-budget ratchet, issue #1105 Phase 0 — see
      [File budget gate](#file-budget-gate)),
-     `lint-pithead-parity` (the shipped `pithead` must be exactly what `lib/pithead/*.sh`
-     concatenate to: edit a slice, run `scripts/build-pithead.sh`, and commit both — issue #1105
-     Phase 2), `lint-trivy-parity` (the CVE
+     `lint-pithead-build` (the generated `pithead` must build from `lib/pithead/*.sh` in a clean
+     checkout — issue #1105 Phase 2), `lint-trivy-parity` (the CVE
      gate's two trivy-action steps and `scripts/trivyignore-watch.sh` must name one trivy engine
      version — issue #1290), `lint-proto` (buf),
      `lint-toml` (taplo). The
@@ -104,13 +108,13 @@ fails there instead of printing a note into a log nobody reads (issue #1739). A 
 refs still gets the note and still passes.
 
 Generated code, vendored files, data/config, and prose docs are exempt by glob — see `is_exempt()` in the
-script — and so is the shipped `pithead` artifact itself: it is generated, and the gate governs its
-`lib/pithead/*.sh` sources instead, now that Phase 2 has begun splitting it.
+script. The generated, git-ignored `pithead` is outside the tracked-file budget; the gate governs its
+`lib/pithead/*.sh` sources.
 
 One row was exempt from the ceilings-only-move-down half, and only that half: `lib/pithead/99-remainder.sh`
 measured how much of that generated artifact Phase 2 had not split out yet, not the size of a file anyone
-writes. Without that, `pithead`'s own exemption became a freeze — the CLI could not gain a line, because the
-row refused to rise and the file refused to grow past it (issue #1464). That row has retired, and not by
+writes. Without that, the CLI could not gain a line, because the row refused to rise and the artifact grew
+past it (issue #1464). That row has retired, and not by
 reaching the 400 target: Phase 2 split the remainder out completely, so the file was deleted at 949 lines
 and nothing in `docs/dev/file-budget.tsv` names it now. `monotonic_exempt()` in the script still carries the
 arm and the reasoning behind it.

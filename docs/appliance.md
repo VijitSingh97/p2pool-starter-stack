@@ -106,8 +106,9 @@ Windows, macOS or Linux machine, so plug it into your laptop and drop a file on 
   The machine uses that instead of printing its own, so you can open the setup page without
   ever seeing its console.
 - **`pithead-config.json`** — a complete configuration. First boot applies it and provisions
-  itself; no setup page at all. Copy `config.json` from a machine you already set up, or see
-  [configuration](configuration.md).
+  itself; no setup page at all. Copy `config.json` from a machine you already set up, see
+  [configuration](configuration.md), or build one in
+  [the configuration builder](tools/recovery-config-builder.html).
 
 A rejected file never blocks you: the machine says so on its console and opens the normal
 setup page instead.
@@ -221,7 +222,7 @@ Everything below applies to the **Pithead** and **Pithead + RigForge** roles. A 
 rig skips all of it — see [What is this machine?](#what-is-this-machine) above for its three
 questions.
 
-**Paste your payout addresses — do not type them.** A Monero address is 95 characters and a
+**Paste your payout address — do not type it.** A Monero address is 95 characters and a
 single wrong character pays a stranger. The page checks the address as you paste it and tells
 you immediately if it is the wrong kind: p2pool cannot pay a subaddress (starting `8`) or an
 integrated address, only your **primary** address, which starts with `4`.
@@ -230,11 +231,12 @@ Then a handful of choices, all with sensible defaults:
 
 | Question | Default | When to change it |
 |---|---|---|
-| Tari payout address | — | Required, like the Monero one: this stack always merge-mines both coins from the same work. |
+| Merge-mine Tari? | no | Off on a new machine. Say yes and the same work earns on both chains, at no cost in hashrate; it then asks for a Tari payout address — paste that one too — and where the Tari node runs. It cannot be turned on from the dashboard afterwards — the Configuration view does not carry this switch; set the machine up again from the boot menu to change it. |
 | P2Pool sidechain | mini | `nano` for a single low-power rig, `main` only for very large hashrate. Changeable later. |
 | Telegram bot | — | Optional. Alerts and status commands; needs both the token and the chat id. |
 | Monero node | run it here | Point at a node you already run. It has to be on your own network — a private address (10.x, 172.16–31.x, 192.168.x) or one reached over a VPN — because the machine only lets the mining containers dial private ranges; everything else goes through Tor. |
-| Tari node | run it here | Same, over a network you trust, and the same private-address requirement. Pointing Tari elsewhere is the single biggest saving on a small disk: it takes about 200 GB out of the budget. |
+| Where the Tari node runs | run it here | Only asked once you say yes above. Same private-address requirement as the Monero node, over a network you trust. Pointing Tari elsewhere is the single biggest saving on a small disk: it takes about 200 GB out of the budget. |
+| Join the XMRvsBeast raffle? | on | Off if you would rather send every hash to your own P2Pool payouts. On, the switching engine donates only enough hashrate to hold your tier and routes the rest to P2Pool; donating past a tier's threshold earns nothing extra, because the raffle picks its winners at random. Changeable later. |
 | Mine on this machine too? | on | Off if this box should only coordinate — it is the same answer as the **Pithead** role above. Nothing to install: the image carries its own [RigForge](https://github.com/p2pool-starter-stack/rigforge) miner, pointed at this machine's own pool. It starts by itself once the stack is up, comes back on every boot, and appears in the dashboard's Workers view. The box is tuned for hashrate either way — the CPU governor and the HugePages reservation are set on every boot whether or not this switch is on. |
 | First sync | private over Tor | Faster over the open internet if days of syncing is too slow; it uses Tor afterwards either way. |
 | Dashboard login | generate one for me | Or choose your own password. "No login" is offered but leaves the dashboard — payout addresses, hashrate — open to anyone on your network; never combine it with the Tor onion. It also leaves the machine **unconfigurable from the dashboard** — editing settings can change the payout address, so that stays behind a login — and on a machine with no shell that is permanent: changing it means a factory reset and setting up again. |
@@ -247,11 +249,10 @@ the time zone (detected from the machine unless set). They are still there to ch
 
 The dashboard login is also the machine's **console login**: sit at the machine, log in as
 `root` with the dashboard password. It is set fresh at every boot and never stored on disk.
-Two more switches live only in the **Advanced** view, deliberately out of the quick form:
-`ssh.enabled` with `ssh.authorized_key` turns on key-only SSH (never passwords) for remote
-debugging. Neither can be changed from the dashboard later, and its Configuration view does not
-list them at all — anyone who could flip them from a browser session would own the machine,
-wallets and all.
+Two more switches live only in the setup page's **Advanced** view, deliberately out of the quick
+form: `ssh.enabled` with `ssh.authorized_key` turns on key-only SSH (never passwords) for remote
+debugging. The day-two Configuration view does not list them and cannot approve them remotely;
+changing SSH still requires a configuration stick.
 
 **Already know exactly what you want?** Open **Advanced** at the bottom. It shows the complete
 configuration — every key, with its default filled in — and it *is* what the machine will run:
@@ -263,11 +264,11 @@ wins. Paste a whole `config.json` in there if you have one.
 The machine checks your answers first — including dialing any remote node you named, so a
 wrong host fails here with the reason and your answers kept, not after the disk is gone. The
 page lists every endpoint it tried and the address it used: a Monero node is checked twice, on
-its RPC port and its ZMQ port, and each of those is answered by a live check of the protocol
-itself. A Tari node's gRPC port is only dialed, so a pass there says the port accepted a
-connection and nothing about what is listening behind it — there is no Tari client on the
-machine to ask. Only when everything passes does it show you, on this page, the things you
-must save:
+its RPC port and its ZMQ port, and each completes a live protocol exchange; ZMQ must identify a
+publisher. A Tari
+node must answer the base node's `GetTipInfo` gRPC call. A hostname that passes is pinned to
+the exact address the checks reached, so installation cannot resolve it to a different machine.
+Only when everything passes does the page show the things you must save:
 
 - the **dashboard login** (generated, or the one you chose)
 - the **dashboard address** (`https://pithead.local`)
@@ -529,8 +530,9 @@ setup, so it is treated as first-time provisioning even though the identity unde
 This works on the installation medium's combined page too, alongside the disk choice.
 
 A wrong passphrase or a damaged archive is rejected with the reason, and the page falls back to
-the normal form — restore never blocks setup. Restore only runs at first setup, on a machine
-that has no configuration yet; it does not restore over a running install.
+the normal form — restore never blocks setup. Restore is available at first setup and from the
+saved-setup screen. In both cases it runs through setup again; the day-two `restore` command is
+the separate path for restoring a running stack in place.
 
 ## Changing settings with a USB stick
 
@@ -547,7 +549,10 @@ is lost.
 
 Prepare the stick with a normal FAT32 partition and a `pithead-config.json` at its root — copy
 `config.json` from a machine you already set up, or write just the settings you want to change
-(see [configuration](configuration.md)). Settings the file does not name keep their current
+(see [configuration](configuration.md)). With no second machine to copy from, open
+[`docs/tools/recovery-config-builder.html`](tools/recovery-config-builder.html) in any browser: it
+writes the file for you, offline, and checks the password and the payout addresses the same way
+this machine checks them at boot. Settings the file does not name keep their current
 values: `{"p2pool": {"pool": "nano"}}` changes the pool tier and nothing else — the dashboard
 login, the generated node credentials, and every other setting stay as they are. To clear a
 setting instead of keeping it, name it with a value of `null`. At boot:

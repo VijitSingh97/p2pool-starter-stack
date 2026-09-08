@@ -130,7 +130,7 @@ def _shortfall(structure: Collection[str], floor: int) -> int:
 _FLOORS: dict[str, tuple[Collection[str], int]] = {
     "PINNED": (PINNED, 33),
     "_ANCHORS": (_ANCHORS, 33),
-    "_UNJUDGED_AND_READ": (_UNJUDGED_AND_READ, 12),
+    "_UNJUDGED_AND_READ": (_UNJUDGED_AND_READ, 13),
 }
 
 

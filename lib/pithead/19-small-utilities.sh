@@ -28,8 +28,9 @@ normalize_bool() {
 # just `null`) as empty, so `<path> // true` silently coerces a configured false back to the default —
 # we null-check instead. Args: <jq-path-expr> <default:true|false>. Pure given $CONFIG_FILE so it
 # unit-tests in isolation (#294 — this bug had broken the #270 firewall opt-out and xvb.tor=false).
+# An optional third argument reads a staged config without changing the process-wide CONFIG_FILE.
 config_bool() {
-    jq -r "if $1 == null then $2 else $1 end" "$CONFIG_FILE"
+    jq -r "if $1 == null then $2 else $1 end" "${3:-$CONFIG_FILE}"
 }
 
 # Monero pruning as the .env-style flag the dashboard reads: 1 (on) / 0 (off). Pruning is on

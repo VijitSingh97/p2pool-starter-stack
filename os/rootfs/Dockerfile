@@ -153,19 +153,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # genuinely leaves every slot and update bundle smaller.
 
 # The stack, at the image's exact release state: pithead + schemas + the build/ mount sources
-# (config templates and entrypoints that services bind-mount). Build context = repo root.
-# The commit this image was built from — the artifact's own answer to "did my change ship?".
-COPY os/rootfs/BUILD_COMMIT /opt/pithead/BUILD_COMMIT
-COPY pithead pithead-completion.bash VERSION docker-compose.yml \
-     config.reference.json config.core-keys.json config.minimal.json /opt/pithead/
-# ONLY the build/ subtrees services bind-mount at runtime (config templates and wrapper
-# entrypoints). dashboard/Dockerfile isn't among them (moved out of build/, #1106; see
+# services bind-mount. Context = repo root. BUILD_COMMIT: the commit built from — the artifact's own
+# answer to "did my change ship?". os/build/stage/: the compose file + its COMPOSE_SOURCE stamp — the
+# STACK_VERSION tag's copy when that tag exists, else the tree's (#1215, staged by build-image.sh).
+COPY os/rootfs/BUILD_COMMIT os/build/stage/docker-compose.yml os/build/stage/COMPOSE_SOURCE /opt/pithead/
+COPY pithead pithead-completion.bash VERSION config.reference.json config.core-keys.json config.minimal.json /opt/pithead/
+# ONLY the build/ paths services bind-mount at runtime (config templates and wrapper entrypoints).
+# dashboard/Dockerfile isn't among them (moved out of build/, #1106; see
 # KNOWN-ISSUES.md) — is_source_checkout() keys off its presence here, so shipping one by accident
 # would make the appliance think it's a dev checkout, tag :dev, never pull, and SKIP cosign.
-COPY build/monero/ /opt/pithead/build/monero/
+COPY build/monero/bitmonero.conf.template /opt/pithead/build/monero/bitmonero.conf.template
 COPY build/tari/ /opt/pithead/build/tari/
 COPY build/tari-wallet/ /opt/pithead/build/tari-wallet/
-RUN rm -f /opt/pithead/build/*/Dockerfile
 RUN chmod +x /opt/pithead/pithead
 
 # The engine bridge, and the reason the appliance can provision at all: pithead drives the stack
@@ -186,7 +185,7 @@ RUN chmod +x /usr/local/bin/docker-compose /usr/local/bin/cosign \
 # The built-in miner (#796): a pinned RigForge tree plus everything it needs, baked at image
 # build because nothing can be installed later — apt cannot run on the read-only root, and even
 # a rw-remount install leaves its /etc state (alternatives, ld.so.cache) on the volatile overlay
-# where the first reboot breaks the compiler. RIGFORGE_REF pins rigforge's v1.17.1 release
+# where the first reboot breaks the compiler. RIGFORGE_REF pins rigforge's v1.17.3 release
 # (by commit, not tag name, so a moved tag cannot change the bake); bump it release by release.
 # v1.16.0 is the floor for the HugePages pool ceiling: hugepages_pool_ceiling_mb (rigforge#398,
 # filed from #1103) is absent from v1.15.1's tree entirely, and declaring it into one fails OPEN —
@@ -204,7 +203,7 @@ RUN chmod +x /usr/local/bin/docker-compose /usr/local/bin/cosign \
 RUN apt-get install -y --no-install-recommends \
         git build-essential cmake libuv1-dev libssl-dev libhwloc-dev gettext-base python3 \
         linux-cpupower msr-tools
-ARG RIGFORGE_REF=538d0b125cc8af37333ded698cf30c89ac99ca1d
+ARG RIGFORGE_REF=dcdbc7e47c16779c58163d7b9d8650a1b5ff6854
 RUN curl -fsSL -o /tmp/rigforge.tar.gz \
         "https://github.com/p2pool-starter-stack/rigforge/archive/${RIGFORGE_REF}.tar.gz" \
     && mkdir -p /opt/rigforge \

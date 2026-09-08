@@ -721,9 +721,9 @@ ENVEOF
     printf 'CADDY-ORIG\n' >"$1/Caddyfile"
     printf 'ONIONKEY-ORIG\n' >"$1/data/tor/hs_ed25519_secret_key"
     printf 'DBDATA-ORIG\n' >"$1/data/dashboard/dashboard.db"
+    tar -czf "$1/wiring-archive.tar.gz" -C / "${1#/}/config.json" "${1#/}/.env" "${1#/}/Caddyfile"
 }
 lock_wiring_fixture "$LKW"
-tar -czf "$LKW/wiring-archive.tar.gz" -C / "${LKW#/}/config.json" "${LKW#/}/.env"
 LKWHELD="$LKW/held.lock"
 LKWFREE="$LKW/free.lock"
 # Which directory a pair runs in. `setup` needs an UNPROVISIONED one: the fixture above carries a
@@ -815,13 +815,9 @@ wait "$LKWHOLDER" 2>/dev/null
 # guard exists to prevent. Neither is visible from outside the process, because the kernel drops
 # the hold when it exits; both are visible from inside it.
 lock_wiring_balance() { # <fn> [args...] -> "depth=<n> state=<free|held>"
-    # On a FRESH fixture every time, and that is load-bearing rather than tidiness: a completed
-    # `apply` re-renders .env, so a second apply against the same dir finds nothing to change and
-    # returns before the retry-branch guard this case exists to protect. Re-using the dir left
-    # that guard unfalsifiable — the case passed either way, which reads exactly like coverage.
+    # Use a fresh fixture: a completed apply rewrites .env and cannot reach the retry branch again.
     rm -rf "$LKWBAL"
     lock_wiring_fixture "$LKWBAL"
-    tar -czf "$LKWBAL/wiring-archive.tar.gz" -C / "${LKWBAL#/}/config.json" "${LKWBAL#/}/.env"
     rm -f "$LKWFREE"
     (cd "$LKWBAL" && PITHEAD_LOCK_FILE="$LKWFREE" PITHEAD_APPLIANCE=0 DOCKER_LOG=/dev/null \
         PATH="$LKW/bin:$PATH" env -u PITHEAD_LOCK_HELD \

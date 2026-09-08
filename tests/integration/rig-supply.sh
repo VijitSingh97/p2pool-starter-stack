@@ -52,14 +52,16 @@ RIGFORGE_CONFIG="${RIGFORGE_CONFIG:-/opt/rigforge/config.json}"
 # luck, so an override here cannot silently dial a different port than the phase's legs do.
 RIG_CONTROL_PORT="${RIG_CONTROL_PORT:-8082}"
 RIG_HOST="${RIG_HOST:-}"
+RIG_NAME="${RIG_NAME:-}"
 IT_RIG_TOKEN="${IT_RIG_TOKEN:-}"
+RIGFORGE_BOOTSTRAP_VERSION="${RIGFORGE_BOOTSTRAP_VERSION:-}"
 
 # Resolve + prove the write phase's two inputs. ALWAYS returns 0, deliberately: the caller chains this
 # with && before appending the phase flags, and an under-supplied phase must still run — its
 # dashboard-side legs are real coverage, and turning a known gap into a failed release gate would be a
 # worse instrument than the one we are fixing. The warnings below are the honest report.
 rig_supply() {
-    local read_cmd unpriv_rc=0 sudo_rc=0
+    local read_cmd name_cmd unpriv_rc=0 sudo_rc=0 name_rc=0
     RIG_HOST="${RIG_HOST:-$MINER_HOST}"
     if [ -z "$IT_RIG_TOKEN" ]; then
         read_cmd="jq -r '.ACCESS_TOKEN // empty' $(quote_arg "$RIGFORGE_CONFIG")"
@@ -83,8 +85,20 @@ rig_supply() {
             }
         fi
     fi
+    if [ -z "$RIG_NAME" ]; then
+        name_cmd="jq -r '.NAME // empty' $(quote_arg "$RIGFORGE_CONFIG")"
+        RIG_NAME="$(on_miner "$name_cmd")" || name_rc=$?
+        if [ "$name_rc" != 0 ]; then
+            RIG_NAME="$(on_miner "sudo -n $name_cmd")" || RIG_NAME=""
+        fi
+    fi
     if [ -z "$RIG_HOST" ]; then
         warn "write phase UNDER-SUPPLIED (#1378): no rig host — set MINER_HOST or RIG_HOST."
+        return 0
+    fi
+    if [[ ! "$RIG_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        warn "write phase UNDER-SUPPLIED: $RIGFORGE_CONFIG did not provide a safe non-empty NAME for the borrowed rig."
+        RIG_NAME=""
         return 0
     fi
     if [ -z "$IT_RIG_TOKEN" ]; then

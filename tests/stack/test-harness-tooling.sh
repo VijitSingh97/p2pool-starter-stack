@@ -314,6 +314,8 @@ vd_expected="$(
     cat <<'VDEXP'
 lib.sh|1
 test-appliance-boot.sh|ph
+test-appliance-hostname.sh|mode
+test-appliance-hostname.sh|op
 test-appliance-identity-boot.sh|cli_pages
 test-appliance-identity-boot.sh|u
 test-appliance-identity.sh|1
@@ -324,12 +326,15 @@ test-config.sh|2
 test-config.sh|bad_port
 test-config.sh|checked
 test-config.sh|core_checked
+test-confirm-approval.sh|secret_key
 test-control-add-only-ssrf.sh|2
 test-control-add-only-ssrf.sh|3
 test-control-core.sh|reowned
 test-control-diagnostics.sh|_c
 test-control-editable-allowlist.sh|1
 test-doctor.sh|ip
+test-recovery-address-gates.sh|_rag_v
+test-recovery-address-gates.sh|label
 test-release.sh|comp
 test-release.sh|pin_rel
 test-release.sh|svc

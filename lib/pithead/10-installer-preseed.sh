@@ -53,15 +53,13 @@ data_wipe_note() {
 # spool never hands machine 2 machine 1's note. Skipped on removable boot media, where
 # PRESEED_DIR is the STICK's own ESP and would describe the stick, not this machine.
 publish_data_wipe_note() { # <spool-dir>
-    local tmp="$1/.data-wiped.json.$$" note
+    local note
     if boot_is_removable; then
         note="{}"
     else
         note=$(data_wipe_note) || note="{}"
     fi
-    printf '%s' "$note" >"$tmp" 2>/dev/null || : >"$tmp"
-    chown 1000:1000 "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$1/data-wiped.json"
+    wizard_spool_publish "$1" data-wiped.json printf '%s' "$note"
 }
 
 # The restore pre-seed (#909): an installer boot that accepted a backup archive stages it —
@@ -164,12 +162,7 @@ installer_mode_available() {
 # able to name a target the host did not offer — that is the same boundary the #33 control
 # channel draws, and here the action erases a disk.
 publish_disk_inventory() { # <spool-dir>
-    # Atomic: the wizard reads this file between our writes, and a truncate-then-write would
-    # hand it an empty inventory mid-write — rendering a disk picker with no disks.
-    local tmp="$1/.disks.tsv.$$"
-    "$(install_bin)" --list >"$tmp" 2>/dev/null || : >"$tmp"
-    chown 1000:1000 "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$1/disks.tsv"
+    wizard_spool_publish "$1" disks.tsv "$(install_bin)" --list
 }
 
 # The strip a previous install's config passes through before any of it may be SHOWN (#794):
@@ -213,8 +206,8 @@ strip_config_secrets() { # <config-file> -> stripped JSON on stdout
 # anything) and pure convenience: every failure path returns 1 and the page simply opens
 # blank — nothing here may block an install. rc 0 = a pre-fill was published.
 prefill_from_previous_install() { # <spool-dir>
-    local spool="$1" disk part mnt cfg tmp rc=1
-    disk=$(awk -F'\t' '$5 == "pithead-with-data" {print $1}' "$spool/disks.tsv" 2>/dev/null)
+    local spool="$1" disk part mnt cfg rc=1
+    disk=$(wizard_spool_read "$spool" disks.tsv | awk -F'\t' '$5 == "pithead-with-data" {print $1}')
     # Two candidates would make the pre-fill a guess about WHICH machine's answers; offer none.
     [ -n "$disk" ] && [ "$(printf '%s\n' "$disk" | wc -l)" -eq 1 ] || return 1
     part=$(lsblk -lnpo NAME,PARTLABEL "/dev/$disk" 2>/dev/null | awk '$2 == "data" {print $1; exit}')
@@ -225,7 +218,6 @@ prefill_from_previous_install() { # <spool-dir>
     # runs against its content.
     if mount -t ext4 -o ro,nosuid,nodev,noexec "$part" "$mnt" 2>/dev/null; then
         cfg="$mnt/pithead/config.json"
-        tmp="$spool/.last-attempt.json.$$"
         # The -L guards close a symlink escape: a crafted disk could point pithead/ or
         # config.json at a file on the RUNNING host, and jq follows symlinks — the read-only
         # mount keeps both components stable under the checks. The size cap bounds what an
@@ -233,104 +225,47 @@ prefill_from_previous_install() { # <spool-dir>
         # it needs) rejects everything else.
         if [ ! -L "$mnt/pithead" ] && [ ! -L "$cfg" ] &&
             [ -f "$cfg" ] && [ "$(wc -c <"$cfg" 2>/dev/null || echo 0)" -le 1048576 ] &&
-            [ -s "$cfg" ] && strip_config_secrets "$cfg" >"$tmp"; then
-            chown 1000:1000 "$tmp" 2>/dev/null || true
-            mv -f "$tmp" "$spool/last-attempt.json" && rc=0
+            [ -s "$cfg" ] && wizard_spool_publish "$spool" last-attempt.json strip_config_secrets "$cfg"; then
+            rc=0
         fi
-        rm -f "$tmp"
         umount "$mnt" 2>/dev/null || umount -l "$mnt" 2>/dev/null || true
     fi
     rmdir "$mnt" 2>/dev/null || true
     return "$rc"
 }
 
-# Dial every remote node the candidate names, BEFORE the wizard closes and provisioning churns.
-# A wrong host or a firewalled port otherwise surfaces minutes later as a failed setup — a bench
-# session read exactly that as a crash. TCP connect only (bash /dev/tcp): proves reachability,
-# not protocol health, which the stack's own healthchecks own. rc 0 = all reachable or none
-# remote; rc 1 = a named failure on stdout.
-# A TCP connect proves reachability and NOTHING ELSE, and on the ZMQ port that gap is
-# load-bearing rather than pedantic: docker's userland proxy binds a published host port and
-# accepts the connection ITSELF, so a containerised node whose publisher failed to bind answers
-# the dial rc 0 — and a remote node is a natural thing to run in a container. Measured: a dial
-# cannot separate that from a live node. One ZMTP greeting can, because an accept() cannot
-# produce one; a real publisher sends 64 bytes beginning ff … 7f as soon as it accepts.
-# Refusing here rather than warning is deliberate. A named setup error is recoverable in a
-# minute; the failure it replaces is p2pool starving for block notifications while every check
-# in the stack reports green, which nothing downstream can see.
-# The connect is bounded by wrapping the whole exchange in `timeout` — `timeout` cannot wrap a
-# bare redirection, so an unwrapped `exec` would inherit only the kernel's SYN-retry deadline
-# against a host that stops answering between the dial above and this call.
-# The release-gate harness carries the full probe. This is the greeting half alone because the
-# shipped CLI cannot depend on the test harness: the duplication is forced by that boundary, not
-# chosen, so if ZMTP's greeting shape moves, both copies move with it.
-# PURE, over the hex the peer sent, so every failure class is reachable from a fixture with no
-# socket: empty (the published-but-dead port), truncated, not-ZMTP, and ZMTP 2.
-# Length first — every slice below is read with `16#`, and `16#` on an empty string is a fatal
-# arithmetic error rather than a false verdict.
-zmq_greeting_ok() { # <hex>; rc 0 only for a well-formed ZMTP >=3 greeting
-    local g="${1,,}"
-    [ "${#g}" -ge 24 ] && [ "${g:0:2}" = "ff" ] && [ "${g:18:2}" = "7f" ] && [ "$((16#${g:20:2}))" -ge 3 ]
-}
-
-zmq_endpoint_greets() { # <host> <port>; rc 0 only for a ZMTP >=3 peer
-    local g
-    g=$(timeout 5 bash -c '
-        exec 3<>/dev/tcp/"$0"/"$1" 2>/dev/null || exit 1
-        { printf "\xff\x00\x00\x00\x00\x00\x00\x00\x00\x7f\x03\x01NULL"; head -c 48 /dev/zero; } >&3
-        head -c 64 <&3 | od -An -v -tx1 | tr -d " \n"' "$1" "$2" 2>/dev/null) || g=""
-    zmq_greeting_ok "$g"
-}
-
-preflight_remote_nodes() { # <config-file>
-    local cfg="$1" host port zmq
-    if [ "$(jq -r '.monero.mode // "local"' "$cfg")" = "remote" ]; then
-        host=$(jq -r '.monero.remote.host // ""' "$cfg")
-        zmq=$(jq -r '.monero.remote.zmq_port // 18083' "$cfg")
-        for port in $(jq -r '.monero.remote.rpc_port // 18081' "$cfg") "$zmq"; do
-            if ! timeout 5 bash -c "</dev/tcp/$host/$port" 2>/dev/null; then
-                printf 'cannot reach the remote Monero node at %s:%s — check the host, the port, and that the node allows LAN access (monero.rpc_lan_access / zmq_lan_access on a Pithead host)' "$host" "$port"
-                return 1
-            fi
-        done
-        if ! zmq_endpoint_greets "$host" "$zmq"; then
-            printf 'the remote Monero node at %s answers on ZMQ port %s but nothing there speaks ZMQ — a published container port with no publisher behind it answers a reachability check exactly like a live node does. Check that monerod is running with ZMQ enabled, and that zmq_lan_access is on if it is a Pithead host' "$host" "$zmq"
-            return 1
-        fi
-    fi
-    if [ "$(jq -r '.tari.mode // "local"' "$cfg")" = "remote" ]; then
-        host=$(jq -r '.tari.remote.host // ""' "$cfg")
-        port=$(jq -r '.tari.remote.grpc_port // 18142' "$cfg")
-        if ! timeout 5 bash -c "</dev/tcp/$host/$port" 2>/dev/null; then
-            printf 'cannot reach the remote Tari node at %s:%s — check the host, the port, and that the node allows LAN access (tari.grpc_lan_access on a Pithead host)' "$host" "$port"
-            return 1
-        fi
-    fi
-    return 0
-}
-
 # rc: 0 installed, 1 failed, 2 nothing requested. The request is "disk<TAB>wipe" written by
 # the wizard's combined submit; both fields are re-validated HERE because they arrive through
 # a web form — the disk against the inventory this host published, the wipe mode against the
 # fixed set. The container asks, the host decides.
-consume_install_request() { # <spool-dir>
+consume_install_request() ( # <spool-dir> [required-wipe]
     local spool="$1" req="$1/install-request" target wipe err
-    [ -f "$req" ] || return 2
+    local snap rc=0
+    snap=$(wizard_spool_request "$spool" install-request) || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+    trap 'wizard_spool_clean "${snap%/*}"' EXIT
+    req="$snap"
     target=$(cut -f1 <"$req" | tr -dc 'a-zA-Z0-9_-')
     wipe=$(cut -f2 <"$req" | tr -dc 'a-z')
-    rm -f "$req"
+    rm -f "$spool/install-request"
     case "$wipe" in keep | data | all) ;; *) wipe="keep" ;; esac
+    # The bare-reinstall door may only preserve data, even if the page replaces its request
+    # after that door's readiness check. Enforce the policy on THIS consumed snapshot.
+    if [ -n "${2:-}" ] && [ "$wipe" != "$2" ]; then
+        wizard_spool_publish "$spool" error.txt printf '%s' 'The install request changed — submit the settings again.'
+        return 1
+    fi
     if ! "$(install_bin)" --list 2>/dev/null | cut -f1 | grep -qx "$target"; then
-        printf 'not an offered target: %s' "$target" >"$spool/error.txt"
+        printf 'not an offered target: %s' "$target" | wizard_spool_publish "$spool" error.txt cat
         return 1
     fi
     log "Installing to /dev/$target (data: $wipe) ..."
     if err=$("$(install_bin)" --target "/dev/$target" --wipe "$wipe" --yes 2>&1); then
-        touch "$spool/installed"
+        wizard_spool_publish "$spool" installed true
         log "Installed to /dev/$target."
         return 0
     fi
-    printf '%s' "$err" | tail -n 2 | tr -d '[:cntrl:]' | tail -c 240 >"$spool/error.txt"
+    printf '%s' "$err" | tail -n 2 | tr -d '[:cntrl:]' | tail -c 240 | wizard_spool_publish "$spool" error.txt cat
     warn "Install to /dev/$target failed."
     return 1
-}
+)

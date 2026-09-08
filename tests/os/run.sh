@@ -2229,10 +2229,8 @@ phase_provision() {
     else
         bad "no sync-gate hold in the dashboard log — mining is down for some other reason"
     fi
-    # Held, not crashed: the gate stops a healthy p2pool cleanly (exit 0). A p2pool that
-    # cannot run — the checksum-invalid wallet of #829 was exactly this — dies by signal and
-    # shows a non-zero exit under the very same hold line.
-    local pstate
+    # Held, not crashed: the gate stops a healthy p2pool cleanly (exit 0), unlike #829's crash.
+    local pstate p2pool_log
     pstate=$(_ssh "podman inspect p2pool --format '{{.State.Running}} {{.State.ExitCode}}'" | tr -d '\r')
     case "$pstate" in
     "true 0" | "false 0")
@@ -2243,6 +2241,8 @@ phase_provision() {
         info "  p2pool log tail: $(_ssh "podman logs --tail 3 p2pool 2>&1" | tr '\n' ' ' | cut -c1-200)"
         ;;
     esac
+    if ! p2pool_log=$(_ssh "podman logs p2pool 2>&1"); then bad "p2pool container logs are unreadable"; elif awk '{ gsub(/\033\[[0-9;]*m/, "") } /P2Pool v[0-9]/ { found=1 } END { exit !found }' <<<"$p2pool_log"; then ok "p2pool daemon output remains observable through bounded container logs (#1989)"; else bad "p2pool daemon startup is absent from container logs"; fi
+    if _ssh "test ! -e /data/pithead/data/p2pool/p2pool.log"; then ok "p2pool creates no persistent file log (#1989)"; else bad "p2pool created persistent data/p2pool/p2pool.log"; fi
     # The wiring itself (#796): the worker's rendered config dials THIS machine's stratum.
     if _ssh "jq -e '.pools[0].url == \"127.0.0.1:3333\"' /data/rigforge/config.json >/dev/null"; then
         ok "built-in miner is wired to the machine's own stratum (127.0.0.1:3333)"

@@ -29,7 +29,8 @@ mining, and the **Compose stack** you run on a host you manage.
 ## What it does
 
 - ⛏️ **P2Pool payouts, Tari merge-mined.** Mines Monero on [P2Pool](https://p2pool.io/): no pool
-  operator, no fee, rewards paid to your own wallet. Every hash merge-mines Tari on the same work.
+  operator, no fee, rewards paid to your own wallet. Every hash can merge-mine Tari on the same
+  work — the appliance's setup wizard asks, and a machine that declines mines Monero alone.
 - 🧠 **XvB switching engine.** Watches the XMRvsBeast raffle and shifts hashrate to hold your tier,
   donating the minimum needed and routing the rest to your P2Pool payouts.
 - 🧅 **Tor-first networking.** A built-in Tor daemon gives P2Pool an onion address, and the Monero
@@ -103,6 +104,8 @@ cp config.minimal.json config.json   # then set your Monero + Tari payout addres
 
 > For every tunable, copy `config.reference.json` instead. To build from source (a `dev`
 > build), e.g. to contribute, see [Install from source](docs/getting-started.md#alternative-build-from-source).
+> Release archives include the generated `pithead` executable and offline operator guides; source
+> clones build the executable with `make`.
 
 > NOTE: Prereqs are Ubuntu Server 24.04 LTS, 16 GB+ RAM, an SSD (~330 GB pruned / ~530 GB full
 > minimum with both nodes local; the chains grow ~100+ GB/year, so 2–4 TB avoids a later resize),

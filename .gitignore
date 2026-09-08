@@ -5,6 +5,7 @@
 .env.apply-incomplete
 config.json
 config.json.bak-control
+/pithead
 /data/
 /build/monero/bitmonero.conf
 /build/tari/config.toml
@@ -50,3 +51,5 @@ os/build/
 os/rauc/build/
 os/rauc/certs/
 os/rootfs/BUILD_COMMIT
+# Local code knowledge graph
+graphify-out/

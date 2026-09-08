@@ -34,6 +34,7 @@ for f in mining.network proxy.network tor.container p2pool.container xmrig-proxy
     caddy.container docker-proxy.container docker-control.container dashboard.container; do
     assert_eq "quadlet parity: $f" "$(diff -u "$ROOT/os/quadlet/$f" "$QOUT/$f" 2>&1 | head -c 300)" ""
 done
+assert_eq "quadlet p2pool disables its persistent file log (#1989)" "$(grep -c '^Exec=--no-log-file ' "$QOUT/p2pool.container")" "1"
 assert_eq "remote render emits no node units" "$(find "$QOUT" -name 'monerod.container' -o -name 'tari.container' | wc -l | tr -d ' ')" "0"
 # The two render targets share one dashboard, and a variable added to the compose service can be
 # left off the quadlet unit with nothing red (#1896: the three DASHBOARD_ONION_* values the header

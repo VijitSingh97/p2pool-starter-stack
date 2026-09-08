@@ -85,9 +85,7 @@ BUILD_MOUNTS="$(
 )"
 assert_contains "bundle ships monerod's config template" "$BUILD_MOUNTS" "./build/monero/bitmonero.conf.template"
 assert_contains "bundle ships the tari config dir" "$BUILD_MOUNTS" "./build/tari"
-# The bundle must ship the BASIC config template (the documented quick-start config — `cp
-# config.minimal.json config.json`) and unpack to a versionless `pithead/` dir for the stable
-# /releases/latest/download/pithead.tar.gz URL. Build a real bundle and inspect it.
+# Build a real bundle and inspect its runtime and operator-doc contents.
 # shellcheck disable=SC1090,SC2034  # dynamic source; TAG/REGISTRY/DRY_RUN are consumed inside make_bundle
 (
     cd "$ROOT" || exit
@@ -108,7 +106,11 @@ assert_contains "bundle ships the tari config dir" "$BUILD_MOUNTS" "./build/tari
 ) >"$SANDBOX/bundle.list" 2>/dev/null
 grep -q '^pithead/config.minimal.json$' "$SANDBOX/bundle.list" && ok "bundle ships config.minimal.json (basic quick-start config)" || bad "bundle ships config.minimal.json" "absent from the bundle"
 grep -q '^pithead/$' "$SANDBOX/bundle.list" && ok "bundle unpacks to versionless pithead/" || bad "bundle unpacks to pithead/" "top-level dir is not pithead/"
-# Every first-party image line in the bundled compose must be digest-pinned (#376).
+_bundle_docs=$(sed -n 's|^pithead/docs/||p' "$SANDBOX/bundle.list" | grep -vE '^$|/$' | sort)
+_expected_docs=$(printf '%s\n' configuration.md dashboard.md faq.md getting-started.md hardware.md monitoring.md operations.md privacy.md telegram.md workers.md | sort)
+assert_eq "bundle ships exactly the operator docs, no developer or appliance material" "$_bundle_docs" "$_expected_docs"
+assert_eq "bundled operator docs have no unresolved relative links or images" "$(grep -ERh '](\(\.\.?/|\([[:alnum:]_-]+(\.md|/))|src(set)?="\./' "$SANDBOX/bundle/pithead/docs" 2>/dev/null | wc -l | tr -d ' ')" "0"
+assert_eq "bundle excludes source, test, dashboard and appliance trees" "$(grep -Ec '^pithead/(lib|os|scripts|tests|dashboard|\.github)/' "$SANDBOX/bundle.list" || true)" "0"
 _bundle_unpinned=$(grep -E 'pithead-(tor|monero|p2pool|xmrig-proxy|dashboard):' "$SANDBOX/bundle-compose.yml" 2>/dev/null | grep -cv '@sha256:')
 [ "${_bundle_unpinned:-1}" -eq 0 ] && ok "bundle compose digest-pins all 5 first-party images (#376)" || bad "bundle digest-pins first-party images (#376)" "unpinned lines: ${_bundle_unpinned:-?}"
 if grep -q 'pithead-dashboard:${STACK_VERSION:-dev}@sha256:feeddashboarddad' "$SANDBOX/bundle-compose.yml" 2>/dev/null; then
@@ -119,10 +121,7 @@ fi
 _bm_missing=""
 for _m in $BUILD_MOUNTS; do [ -e "$ROOT/$_m" ] || _bm_missing="$_bm_missing $_m"; done
 assert_eq "every compose ./build runtime mount exists in the tree" "${_bm_missing:-none}" "none"
-case "$BUILD_MOUNTS" in
-*Dockerfile*) bad "bundle build-mounts exclude Dockerfiles" "a Dockerfile would flip the bundle pull->build mode" ;;
-*) ok "bundle build-mounts exclude Dockerfiles" ;;
-esac
+assert_eq "bundle build-mounts exclude Dockerfiles" "$(printf '%s\n' "$BUILD_MOUNTS" | grep -c Dockerfile || true)" "0"
 # Target-arch guard: the release MUST build linux/amd64 (the bundled binaries are x86_64; xmrig-proxy
 # has no arm64 build, so the stack can't be arm64). A plain host-arch `docker build` on an arm64 dev box
 # shipped arm64-labelled images that don't run on x86_64 — the v1.0.0 defect. Assert the pipeline builds
