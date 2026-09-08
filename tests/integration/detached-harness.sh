@@ -22,7 +22,7 @@ drain_harness() {
         sleep 1
     done
     [ -n "$HARNESS_PID" ] && [ -n "$HARNESS_START" ] || return 1
-    until on_bench "sudo -n bash -c 'p=\$1 start=\$2; identity() { test -r /proc/\$p/stat || return 1; test \"\$(awk \"{print \\\$22}\" /proc/\$p/stat)\" = \"\$start\" || return 2; test \"\$(ps -o pgid= -p \$p | tr -d \" \")\" = \"\$p\" || return 2; tr \"\\0\" \"\\n\" </proc/\$p/cmdline | grep -Fxq \"./.e2e-run.sh\" || return 2; }; identity; rc=\$?; test \"\$rc\" -eq 1 && exit 0; test \"\$rc\" -eq 0 || exit 76; kill -TERM -- -\$p || exit 1; i=0; while test \"\$i\" -lt 30; do identity; rc=\$?; test \"\$rc\" -eq 1 && exit 0; test \"\$rc\" -eq 0 || exit 76; sleep 1; i=\$((i + 1)); done; identity || exit \$?; kill -KILL -- -\$p || exit 1' _ '$HARNESS_PID' '$HARNESS_START'"; do
+    until on_bench "sudo -n bash -c 'p=\$1 start=\$2; identity() { if ! test -r /proc/\$p/stat; then kill -0 -- -\$p 2>/dev/null && return 2 || return 1; fi; test \"\$(awk \"{print \\\$22}\" /proc/\$p/stat)\" = \"\$start\" || return 2; test \"\$(ps -o pgid= -p \$p | tr -d \" \")\" = \"\$p\" || return 2; tr \"\\0\" \"\\n\" </proc/\$p/cmdline | grep -Fxq \"./.e2e-run.sh\" || return 2; }; identity; rc=\$?; test \"\$rc\" -eq 1 && exit 0; test \"\$rc\" -eq 0 || exit 76; kill -TERM -- -\$p || exit 1; i=0; while test \"\$i\" -lt 30; do identity; rc=\$?; test \"\$rc\" -eq 1 && exit 0; test \"\$rc\" -eq 0 || exit 76; sleep 1; i=\$((i + 1)); done; identity || exit \$?; kill -KILL -- -\$p || exit 1' _ '$HARNESS_PID' '$HARNESS_START'"; do
         warn "could not prove the detached harness stopped; retaining ownership and retrying"
         sleep 5
     done
@@ -42,7 +42,7 @@ harness_finished() {
     [[ "$state" =~ ^running\ ([0-9]+)\ ([0-9]+)$ ]] || return 1
     HARNESS_PID="${BASH_REMATCH[1]}" HARNESS_START="${BASH_REMATCH[2]}"
     while :; do
-        on_bench "sudo -n bash -c 'p=\$1 start=\$2; test ! -r /proc/\$p/stat && exit 0; test \"\$(awk \"{print \\\$22}\" /proc/\$p/stat)\" = \"\$start\" || exit 76; exit 75' _ '$HARNESS_PID' '$HARNESS_START'"
+        on_bench "sudo -n bash -c 'p=\$1 start=\$2; if ! test -r /proc/\$p/stat; then kill -0 -- -\$p 2>/dev/null && exit 76 || exit 0; fi; test \"\$(awk \"{print \\\$22}\" /proc/\$p/stat)\" = \"\$start\" || exit 76; exit 75' _ '$HARNESS_PID' '$HARNESS_START'"
         rc=$?
         case "$rc" in 0) break ;; 75) sleep 1 ;; *) return 1 ;; esac
     done

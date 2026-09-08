@@ -11,11 +11,18 @@ export RIG_LOCK_HOLDER="$WORK/rig.holder"
 export RIG_LOCK_PARENT_ACTOR=e2e-controller
 export RIG_LOCK_PARENT_NONCE=0123456789abcdef0123456789abcdef
 export RIG_LOCK_PARENT_FD=9
+export RIG_LOCK_PARENT_PROOF="$WORK/rig.proof"
 
 echo "== a real parent lock carries an exact, unspoofable identity =="
 : >"$RIG_LOCK_FILE"
-exec 9<>"$RIG_LOCK_FILE"
-flock -n -x 9
+mkfifo "$WORK/lease"
+: >"$RIG_LOCK_PARENT_PROOF"
+exec 8<>"$RIG_LOCK_FILE"
+flock -n -x 8
+lease_guardian() { while IFS= read -r challenge; do printf '%s\n' "$challenge" >"$RIG_LOCK_PARENT_PROOF"; done <"$WORK/lease"; }
+lease_guardian &
+lease_child=$!
+exec 9>"$WORK/lease"
 printf '%s nonce=%s parent continuity selftest\n' "$RIG_LOCK_PARENT_ACTOR" "$RIG_LOCK_PARENT_NONCE" >"$RIG_LOCK_HOLDER"
 assert_eq "lock is a regular non-symlink file" "$([ -f "$RIG_LOCK_FILE" ] && [ ! -L "$RIG_LOCK_FILE" ] && echo yes)" yes
 assert_eq "holder is a regular non-symlink file" "$([ -f "$RIG_LOCK_HOLDER" ] && [ ! -L "$RIG_LOCK_HOLDER" ] && echo yes)" yes
@@ -28,16 +35,28 @@ busy_rc=$?
 assert_rc "the held kernel flock reports the protocol's busy rc" "$busy_rc" 75
 rig_lock_parent_verify
 assert_rc "the matching parent identity verifies against the busy flock" "$?" 0
-sleep 30 &
-lease_child=$!
-exec 9>&-
+exec 8>&-
 flock -E 75 -n -x "$RIG_LOCK_FILE" true 2>/dev/null
 lease_rc=$?
-kill "$lease_child" 2>/dev/null || true
+exec 9>&-
 wait "$lease_child" 2>/dev/null || true
 assert_rc "an inherited descriptor keeps the lease after its parent copy closes" "$lease_rc" 75
-exec 9<>"$RIG_LOCK_FILE"
-flock -n -x 9
+exec 8<>"$RIG_LOCK_FILE"
+flock -n -x 8
+lease_guardian &
+lease_child=$!
+exec 9>"$WORK/lease"
+exec 7>/dev/null
+RIG_LOCK_PARENT_FD=7
+verify_fails() {
+    rig_lock_parent_verify >/dev/null 2>&1
+    [ "$?" -ne 0 ]
+}
+verify_fails
+assert_rc "an unrelated writable descriptor is not accepted as the lease" "$?" 0
+printf '' >&7
+assert_rc "verification does not overwrite or close caller descriptor 7" "$?" 0
+RIG_LOCK_PARENT_FD=9
 
 verify_fails() {
     rig_lock_parent_verify >/dev/null 2>&1
@@ -77,6 +96,8 @@ assert_eq "the parent holder survives the child ledger EXIT trap" "$([ -f "$RIG_
 
 echo "== a matching breadcrumb never substitutes for a held flock =="
 exec 9>&-
+wait "$lease_child" 2>/dev/null || true
+exec 8>&-
 mv "$RIG_LOCK_FILE" "$WORK/real-lock"
 ln -s "$WORK/real-lock" "$RIG_LOCK_FILE"
 verify_fails
@@ -138,6 +159,21 @@ assert_rc "a malformed reply recovers the durable process-group identity" "$?" 0
 assert_contains "the durable process group replaced the malformed reply" "$(cat "$WORK/recovered-malformed")" "_ '4242'"
 assert_contains "drain proves absence inside one checked root shell" "$(cat "$HERE/detached-harness.sh")" 'sudo -n bash -c'
 assert_contains "drain binds root signals to the recorded process start" "$(cat "$HERE/detached-harness.sh")" '/proc/\$p/stat'
+if [ -r /proc/$$/stat ] && command -v setsid >/dev/null; then
+    setsid bash -c 'sleep 30 &' &
+    orphan_group=$!
+    wait "$orphan_group"
+    printf 'running %s 1\n' "$orphan_group" >"$WORK/orphan.state"
+    (
+        source "$HERE/detached-harness.sh"
+        HARNESS_PENDING=1 HARNESS_STATE="$WORK/orphan.state"
+        on_bench() { bash -c "$1"; }
+        harness_finished
+    ) >/dev/null 2>&1
+    orphan_rc=$?
+    kill -KILL -- "-$orphan_group" 2>/dev/null || true
+    assert_rc "a surviving process group is not mistaken for a finished harness" "$orphan_rc" 1
+fi
 assert_contains "only the local nested runner can use parent-lock bypass" \
     "$(sed -n '/RIG_LOCK_PARENT_ACTOR/,/elif \[ "\$IT_MODE"/p' "$HERE/run.sh")" \
     'IT_MODE" = "local'
