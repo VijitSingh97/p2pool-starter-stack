@@ -21,9 +21,11 @@ kvm_preflight() {
 }
 
 vm_destroy() {
+    local domains
     virsh destroy "$VM" >/dev/null 2>&1 || true
     virsh undefine "$VM" --nvram >/dev/null 2>&1 || true
-    ! virsh dominfo "$VM" >/dev/null 2>&1
+    domains=$(virsh list --all --name) || return 1
+    ! grep -Fxq "$VM" <<<"$domains"
 }
 
 vm_destroy_or_refuse() {
@@ -33,16 +35,20 @@ vm_destroy_or_refuse() {
 }
 
 _vm_destroy_self_test() (
-    local present=1
+    local state=present
     VM=fixture
     virsh() {
         case "$1" in
         destroy | undefine) return 1 ;;
-        dominfo) [ "$present" -eq 1 ] ;;
+        list)
+            case "$state" in present) printf 'fixture\n' ;; absent) : ;; error) return 2 ;; esac
+            ;;
         esac
     }
     ! vm_destroy_or_refuse || return 1
-    present=0
+    state=error
+    ! vm_destroy_or_refuse || return 1
+    state=absent
     vm_destroy_or_refuse
 )
 

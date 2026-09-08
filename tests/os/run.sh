@@ -389,8 +389,12 @@ require_probe_key_matches_image() {
 # so the battery silently drives someone else's guest. This happened with a hand-started
 # diagnostic VM and produced passing legs that proved nothing. Refuse to run rather than report.
 require_clean_bench() {
-    local strays
-    strays=$(virsh list --name 2>/dev/null | grep -E '^pithead-' | grep -v "^${VM}$" || true)
+    local guests strays
+    guests=$(virsh list --name 2>/dev/null) || {
+        echo "refusing to run: libvirt could not enumerate the bench." >&2
+        exit 2
+    }
+    strays=$(printf '%s\n' "$guests" | grep -E '^pithead-' | grep -v "^${VM}$" || true)
     [ -z "$strays" ] || {
         echo "refusing to run: other pithead VMs are on the bench and can steal the lease:" >&2
         echo "$strays" >&2
@@ -1945,7 +1949,7 @@ phase_install() {
     else
         bad "restore leg: onion identity not restored (.env: $orig_onion -> ${new_onion:-none}, Tor's own hostname: ${tor_hostname:-none})"
     fi
-    phase_install_prefill_submit_leg "$target_disk" # #1846, last: nothing after it needs the disk
+    phase_install_prefill_submit_leg "$target_disk" || return # #1846, last: nothing after it needs the disk
     rm -f "$target_disk" "$restore_archive" "$restore_target"
 }
 phase_provision() {

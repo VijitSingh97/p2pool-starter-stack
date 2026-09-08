@@ -84,7 +84,8 @@ ids=/data/pithead/.os-approval-fixture/owned.ids
 : >"$ids"
 for f in /data/pithead/data/control/requests/*.json /data/pithead/data/control/.claim.*; do
     [ -f "$f" ] || continue
-    jq -er --arg owner "$owner" '"'"'select(.actor == $owner) | .id | select(test("^[0-9a-f-]{36}$"))'"'"' "$f" >>"$ids" 2>/dev/null || true
+    jq -e . "$f" >/dev/null 2>&1
+    jq -r --arg owner "$owner" '"'"'select(.actor == $owner) | .id | select(test("^[0-9a-f-]{36}$"))'"'"' "$f" >>"$ids"
 done
 [ ! -f /data/pithead/data/control/audit/control.log ] || jq -r --arg owner "$owner" '"'"'select(.actor == $owner) | .id // empty'"'"' /data/pithead/data/control/audit/control.log >>"$ids"
 if [ -f /data/pithead/data/control/.os1966-active-id ]; then
