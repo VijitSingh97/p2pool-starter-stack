@@ -7,11 +7,11 @@ pithead: scripts/build-pithead.sh $(wildcard lib/pithead/*.sh) ## Build the gene
 
 test: lint test-dashboard test-frontend test-stack test-compose test-integration-selftest test-fakes ## Run everything that doesn't need a server/docker
 
-test-dashboard: ## Dashboard unit/component tests with coverage gate (deps from uv.lock); emits coverage.xml
+test-dashboard: pithead ## Dashboard unit/component tests with coverage gate (deps from uv.lock); emits coverage.xml
 	cd dashboard && uv run --locked --extra test python -m pytest \
 		--cov=mining_dashboard --cov-report=term-missing --cov-report=xml --cov-fail-under=80
 
-test-frontend: ## Frontend logic tests with Node's built-in runner (#632; same invocation as CI)
+test-frontend: pithead ## Frontend logic tests with Node's built-in runner (#632; same invocation as CI)
 	node --test dashboard/tests/frontend/*.test.mjs
 
 test-patch-coverage: ## diff-cover (#286) minus its vacuous pass (#1000): >=90% on changed lines (run after test-dashboard)

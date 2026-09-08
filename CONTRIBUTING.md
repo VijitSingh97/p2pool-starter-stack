@@ -26,6 +26,10 @@ uv run --project dashboard pre-commit install
 runs `ruff` (plus a few hygiene hooks) on your changed files. If you change dependencies in
 `dashboard/pyproject.toml`, run `uv lock` and commit the updated `uv.lock`.
 
+The root `pithead` executable is generated and git-ignored. Plain `make` builds it from the
+numbered `lib/pithead/*.sh` sources; the test targets also build it when needed. Edit the slices,
+not the generated file.
+
 ## Development workflow
 
 1. Fork the repo and create a branch off `develop` (the integration branch; `main` holds released

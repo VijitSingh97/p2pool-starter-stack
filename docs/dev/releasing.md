@@ -138,9 +138,10 @@ Release notes, where operators actually read it. The branch model itself is in
 
 ### Pipeline: stage → smoke-test → promote
 
-1. Preflight: clean working tree; read the product version from the top-level `VERSION` file;
-   confirm `vX.Y.Z` isn't already released; resolve the component pins into the ingredients
-   manifest.
+1. Preflight: build the git-ignored `pithead` executable from `lib/pithead/*.sh`, then check the
+   clean working tree; read the product version from the top-level `VERSION` file; confirm
+   `vX.Y.Z` isn't already released; resolve the component pins into the ingredients manifest.
+   The generated executable is copied into the release bundle; its source slices are not.
 2. Test gate (blocking): run the existing tests (`make test`: lint + dashboard pytest ≥ 80% +
    the `pithead` shell suite + compose validation) and the
    [#54](https://github.com/p2pool-starter-stack/pithead/issues/54) integration matrix against

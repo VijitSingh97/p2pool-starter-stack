@@ -25,6 +25,11 @@ real containers (tier 3), and that real daemons sync/merge-mine and real contain
 (tier 4). So: stubs for logic, controllable fake daemons for the control-plane wiring, the real
 box for the irreducibly-real. Each situation is tested once, at the lowest tier that is honest.
 
+The root `pithead` tested at tiers 1–4 is generated and git-ignored. Each Make test entry point
+that reads it depends on the `pithead` build target, while the live E2E provisioner builds it after
+cleaning its source checkout. A clean clone therefore exercises the same generated CLI as a local
+developer; release bundles and appliance images receive a pre-generated copy.
+
 The fakes are the enabler. The whole control plane is env-configurable (`MONERO_RPC_URL`,
 `TARI_GRPC_ADDRESS`, `DOCKER_CONTROL_URL`, `NODE_DOWN_AFTER_SEC`, `UPDATE_INTERVAL`, …), so the
 real code points at small controllable servers and drives the entire state machine in seconds, in
