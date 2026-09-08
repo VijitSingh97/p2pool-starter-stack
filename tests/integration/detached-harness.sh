@@ -11,11 +11,11 @@ harness_prepare() {
 }
 
 drain_harness() {
-    local state i
+    local state
     [ "$HARNESS_PENDING" = 1 ] && [ "$HARNESS_DONE" = 0 ] || return 0
     warn "detached harness is still active; terminating and draining it before restoration"
     HARNESS_PID=""
-    for i in {1..10}; do
+    for _ in {1..10}; do
         state="$(on_bench "cat '$HARNESS_STATE'" 2>/dev/null)" || state=""
         [[ "$state" =~ ^running\ ([0-9]+)$ ]] && HARNESS_PID="${BASH_REMATCH[1]}" && break
         sleep 1

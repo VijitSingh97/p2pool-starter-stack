@@ -88,6 +88,7 @@ assert_contains "restoration drains an unfinished detached harness first" "$(sed
 echo "== a lost launch acknowledgement cannot bypass the drain =="
 (
     source "$HERE/detached-harness.sh"
+    # shellcheck disable=SC2034 # consumed by harness_prepare through dynamic scope
     E2E_DIR="$WORK/fresh"
     on_bench() { bash -c "$1"; }
     harness_prepare run-1
@@ -115,6 +116,7 @@ assert_rc "a partial numeric reply recovers the durable process-group identity" 
 assert_contains "the durable process group replaced the partial reply" "$(cat "$WORK/recovered")" "_ '4242'"
 (
     source "$HERE/detached-harness.sh"
+    # shellcheck disable=SC2034 # deliberate untrusted reply; drain must replace it
     HARNESS_PENDING=1 HARNESS_STATE=/test/state HARNESS_PID=partial
     on_bench() { case "$1" in cat\ *) printf 'running 4242\n' ;; *) printf '%s\n' "$1" >"$WORK/recovered-malformed" ;; esac; }
     warn() { :; }
