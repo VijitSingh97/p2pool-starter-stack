@@ -29,7 +29,7 @@ rigforge_ref_matches() { # <image-root> <dockerfile> — 0 iff the recorded ref 
     local rec pin
     rec=$(sed -n 's/^ref=\([^ ]*\).*/\1/p' "$1/opt/rigforge/RIGFORGE_REF" 2>/dev/null)
     pin="${PITHEAD_RIGFORGE_REF:-$(sed -n 's/^ARG RIGFORGE_REF=\([^ ]*\).*/\1/p' "$2" 2>/dev/null)}"
-    [ -n "$rec" ] && [ "$rec" = "$pin" ]
+    [[ "$pin" =~ ^[0-9a-f]{40}$ ]] && [ -n "$rec" ] && [ "$rec" = "$pin" ]
 }
 # shellcheck source=tests/os/verify-image-artifact-helpers.sh
 . "$SCRIPT_DIR/verify-image-artifact-helpers.sh"
