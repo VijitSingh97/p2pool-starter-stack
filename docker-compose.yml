@@ -394,7 +394,7 @@ services:
       memlock:
         soft: -1
         hard: -1
-    # Immutable root filesystem (#377). p2pool writes its cache, p2pool.log and peer list to its
+    # Immutable root filesystem (#377). p2pool writes its cache and peer list to its
     # cwd /home/ubuntu and the data-api to /stats — both bind mounts below. The entrypoint's socat
     # bridges (#278) write nothing; /dev/hugepages is a bind mount, unaffected.
     read_only: true
@@ -405,6 +405,7 @@ services:
       - ${P2POOL_DATA_DIR}/stats:/stats
       - /dev/hugepages:/dev/hugepages
     command:
+      - --no-log-file
       - --host
       - ${MONERO_NODE_HOST} # Dynamic Host
       - --rpc-port
