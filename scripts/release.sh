@@ -169,9 +169,10 @@ REGISTRY_READ_BACKOFF="${PITHEAD_REGISTRY_READ_BACKOFF:-3}"
 buildx_inspect() { docker buildx imagetools inspect "$@"; }
 
 retry_registry_read() {
-    local attempt=1 out
+    local attempt=1 out expected_digest="${REGISTRY_READ_EXPECT_DIGEST:-}"
     while :; do
-        if out="$("$@" 2>/dev/null)" && [ -n "$out" ]; then
+        if out="$("$@" 2>/dev/null)" && [ -n "$out" ] &&
+            { [ -z "$expected_digest" ] || grep -Fxq "Digest: $expected_digest" <<<"$out"; }; then
             printf '%s' "$out"
             return 0
         fi
@@ -181,12 +182,15 @@ retry_registry_read() {
         attempt=$((attempt + 1))
     done
 }
+# Parse and validate the manifest-list digest that promotion re-tags.
+manifest_digest() {
+    local digest
+    digest="$(retry_registry_read buildx_inspect "$1" | awk '/^Digest:/{print $2; exit}')" || return 1
+    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+    printf '%s' "$digest"
+}
 
-# The manifest-LIST (index) digest of a pushed tag — the sha that spans every built platform, which
-# promote re-tags by digest. NOTE: `imagetools inspect --format '{{.Manifest.Digest}}'` does NOT work
-# for a buildx OCI index (it renders the whole descriptor block, not the digest), so parse the human
-# `Digest:` line instead. Verified equal to `imagetools inspect --raw | shasum -a 256`.
-manifest_digest() { retry_registry_read buildx_inspect "$1" | awk '/^Digest:/{print $2; exit}'; }
+is_digest_ref_for() { [[ "$1" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]] && [ "${1%@*}" = "$2" ]; }
 
 # Resolve a single upstream component pin on demand (the "ingredients" each release bundles).
 pin() {
@@ -227,7 +231,6 @@ check_release_toolchain() {
     fi
     ok "Lint/test toolchain present (${LINT_TOOLCHAIN[*]})."
 }
-
 # --- Release signing (#376, #960) -----------------------------------------------------------------
 #
 # Signing is MANDATORY to publish, because it is mandatory to consume. Once `cosign.pub` is committed
@@ -240,7 +243,6 @@ check_release_toolchain() {
 # It also runs on --dry-run, and only the signing itself is skipped. The check used to sit inside
 # `if [ "$DRY_RUN" -eq 0 ]`, which meant the one rehearsal that exists to catch a mis-configured
 # signing box could only ever print "signing OFF" — the failure state, unconditionally (#1108).
-
 # What the signing environment is missing, one gap per line; empty output means it is complete. Pure
 # given PATH and the environment, so the tests can drive every combination without a release.
 signing_env_gaps() {
@@ -493,8 +495,8 @@ stage_push() {
     for suffix in "${IMAGES[@]}"; do
         repo="$(image_for "$suffix")"
         if [ "$DRY_RUN" -eq 1 ]; then
-            set_digest "$suffix" "$repo@sha256:<dry-run>"
-            log "  digest: $repo@sha256:<dry-run>"
+            set_digest "$suffix" "$repo@sha256:$(printf '%064d' 0)"
+            log "  digest: $repo@sha256:$(printf '%064d' 0)"
             continue
         fi
         # #557: plain `digest="$(...)"` aborts under errexit once retries are exhausted, BEFORE this
@@ -538,36 +540,30 @@ smoke_test() {
         warn "Skipping smoke test (--skip-smoke) — the pushed artifacts were NOT re-validated from the registry."
         return 0
     fi
-    # Pull each STAGED image back from the registry (not the local build) and confirm it resolves and
-    # carries the right version label. This validates the bytes that were actually pushed. It does NOT
-    # start a stack — that would collide with this host's live deployment; use RELEASE_SMOKE_CMD or the
-    # #54 harness against the staged tag for a full functional run.
-    local suffix repo got
+    # Validate the captured bytes, never the mutable staging tag.
+    local suffix repo digest got
     for suffix in "${IMAGES[@]}"; do
         repo="$(image_for "$suffix")"
-        log "Verifying $repo:$STAGING_TAG from the registry..."
-        # Pull the TARGET platform explicitly: a plain `docker pull` resolves the build HOST's arch, so
-        # on an arm64 release host an amd64-only image fails with "no matching manifest for linux/arm64".
-        # Docker can still pull (not run) a non-native arch image, which is all the label check needs.
-        run docker pull --quiet --platform "${PLATFORMS%%,*}" "$repo:$STAGING_TAG"
+        digest="$(get_digest "$suffix")"
+        is_digest_ref_for "$digest" "$repo" || die "Smoke: captured digest for $suffix is not a lowercase sha256 ref for $repo ('$digest')."
+        log "Verifying $digest from the registry..."
+        # Pull the target platform explicitly so an arm64 build host can inspect an amd64-only release.
+        run docker pull --quiet --platform "${PLATFORMS%%,*}" "$digest"
         if [ "$DRY_RUN" -eq 0 ]; then
-            got="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$repo:$STAGING_TAG" 2>/dev/null || true)"
+            got="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$digest" 2>/dev/null || true)"
             [ "$got" = "$STACK_VERSION" ] ||
-                die "Smoke: $repo:$STAGING_TAG reports version '$got', expected '$STACK_VERSION'."
-            # The pushed manifest MUST carry every target platform — a wrong-arch image here means the
-            # build host's arch leaked through (the v1.0.0 bug: an arm64 host produced an arm64-labelled
-            # image that doesn't run on x86_64). Read the raw manifest list and require each $PLATFORMS.
-            # The read retries GHCR's read-after-push lag (#429) so a slow-to-resolve tag doesn't fail smoke.
+                die "Smoke: $digest reports version '$got', expected '$STACK_VERSION'."
+            # Require every target platform in the captured manifest list (#429 retries registry lag).
             local arches raw
-            raw="$(retry_registry_read buildx_inspect "$repo:$STAGING_TAG" --raw)" ||
-                die "Smoke: could not read the pushed manifest for $repo:$STAGING_TAG from the registry (after $REGISTRY_READ_RETRIES tries)."
+            raw="$(retry_registry_read buildx_inspect "$digest" --raw)" ||
+                die "Smoke: could not read the pushed manifest for $digest from the registry (after $REGISTRY_READ_RETRIES tries)."
             arches="$(printf '%s' "$raw" |
                 python3 -c 'import sys,json;d=json.load(sys.stdin);print(" ".join(sorted({m.get("platform",{}).get("os","")+"/"+m["platform"]["architecture"] for m in d.get("manifests",[]) if m.get("platform",{}).get("architecture") not in (None,"unknown")})))' 2>/dev/null || true)"
             local p
             for p in ${PLATFORMS//,/ }; do
-                case " $arches " in *" $p "*) ;; *) die "Smoke: $repo:$STAGING_TAG is missing target platform $p (got: ${arches:-none}). A wrong-arch build leaked through (the v1.0.0 arm64-only bug)." ;; esac
+                case " $arches " in *" $p "*) ;; *) die "Smoke: $digest is missing target platform $p (got: ${arches:-none}). A wrong-arch build leaked through (the v1.0.0 arm64-only bug)." ;; esac
             done
-            log "  $repo:$STAGING_TAG OK ($arches)"
+            log "  $digest OK ($arches)"
         fi
     done
     if [ -n "${RELEASE_SMOKE_CMD:-}" ]; then
@@ -584,15 +580,20 @@ promote() {
     confirm "Promote the smoke-tested digests to $TAG and :latest (publishes user-facing tags)?" ||
         die "Promotion cancelled — nothing user-facing was published."
     ghcr_login
-    local suffix repo digest
+    local suffix repo digest expected got tag_ref
     for suffix in "${IMAGES[@]}"; do
         repo="$(image_for "$suffix")"
         digest="$(get_digest "$suffix")"
-        [ -n "$digest" ] || die "No staged digest for $suffix — run without --resume-promote, or stage first."
+        is_digest_ref_for "$digest" "$repo" || die "No valid lowercase sha256 digest for $suffix — run without --resume-promote, or stage first."
         log "Promoting $digest -> :$TAG, :latest"
-        # imagetools re-tags at the manifest level (server-side, no pull/rebuild), so the released tag
-        # is the exact digest that was smoke-tested.
         run docker buildx imagetools create --tag "$repo:$TAG" --tag "$repo:latest" "$digest"
+        if [ "$DRY_RUN" -eq 0 ]; then
+            expected="${digest##*@}"
+            for tag_ref in "$repo:$TAG" "$repo:latest"; do
+                got="$(REGISTRY_READ_EXPECT_DIGEST="$expected" manifest_digest "$tag_ref")" || die "Promotion: $tag_ref did not resolve to captured digest $expected."
+                [ "$got" = "$expected" ] || die "Promotion: $tag_ref resolves to $got, expected captured digest $expected."
+            done
+        fi
     done
     ok "Promoted all 5 images to $TAG + latest."
 }
@@ -736,7 +737,9 @@ make_bundle() {
     # Unpacks to a versionless "pithead/" dir. Ships only the operator docs needed to run the stack.
     local out="$1" d="$WORKDIR/pithead"
     mkdir -p "$d"
-    cp pithead pithead-completion.bash VERSION docker-compose.yml config.minimal.json config.reference.json config.core-keys.json cosign.pub "$d/" 2>/dev/null || true
+    cp pithead pithead-completion.bash VERSION docker-compose.yml config.minimal.json config.reference.json config.core-keys.json "$d/" 2>/dev/null || die "make_bundle: failed to copy required runtime files."
+    [ -e cosign.pub ] || [ "${COSIGN_ENABLED:-0}" -eq 0 ] || die "make_bundle: signing is enabled but cosign.pub is missing."
+    [ ! -e cosign.pub ] || cp cosign.pub "$d/" 2>/dev/null || die "make_bundle: failed to copy cosign.pub."
     mkdir -p "$d/docs"
     local doc docs_url="https://github.com/p2pool-starter-stack/pithead/blob/$TAG"
     for doc in docs/{configuration,dashboard,faq,getting-started,hardware,monitoring,operations,privacy,telegram,workers}.md; do
@@ -769,11 +772,9 @@ make_bundle() {
             die "make_bundle: no promoted digest for $suffix — refusing to ship an un-pinned bundle (#376)."
         # get_digest stores a FULL ref ($repo@sha256:…); we append only the @sha256 part to the
         # existing image line (which already has the repo + tag), so pin by the bare digest.
+        is_digest_ref_for "$digest" "$(image_for "$suffix")" ||
+            die "make_bundle: digest for $suffix is not a lowercase sha256 ref ('$digest') — cannot pin (#376)."
         sha="${digest##*@}"
-        case "$sha" in
-        sha256:*) ;;
-        *) die "make_bundle: digest for $suffix is not a sha256 ref ('$digest') — cannot pin (#376)." ;;
-        esac
         sed -i.bak "s|\(pithead-${suffix}:\${STACK_VERSION:-dev}\)|\1@${sha}|" "$d/docker-compose.yml"
     done
     rm -f "$d/docker-compose.yml.bak"
@@ -832,8 +833,8 @@ main() {
         test_gate
         build_images
         stage_push
-        smoke_test
     fi
+    smoke_test
     promote
     sign_images # #376 — signs the digests promote re-tagged; --resume-promote reaches this too
     publish

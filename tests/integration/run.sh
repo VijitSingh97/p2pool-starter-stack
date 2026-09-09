@@ -31,11 +31,11 @@ source "$HERE/rig-key-ledger.sh" # must precede any module that marks a write (#
 source "$HERE/rigforge-writable-keys.sh"
 # shellcheck source=tests/integration/rigforge-upgrade.sh
 source "$HERE/rigforge-upgrade.sh"
+source "$HERE/borrow-rearm.sh"
 # shellcheck source=tests/integration/zmq-probe.sh
 source "$HERE/zmq-probe.sh"
 # shellcheck source=tests/integration/mergemine-probe.sh
 source "$HERE/mergemine-probe.sh"
-
 # --- Defaults / globals -----------------------------------------------------
 IT_MODE="ssh"
 IT_SSH_DEST=""
@@ -2144,10 +2144,9 @@ run_subnet_scenario() {
 # Drive Worker Inspect through the live dashboard-to-rig control path.
 _worker_apply() { # <worker> <changes-json>  -> echoes the dashboard result JSON
     local body
-    body="$(jq -nc --arg w "$1" --argjson c "$2" '{worker:$w,changes:$c}')"
-    rx "curl -fsS --max-time 60 -X POST -H 'Content-Type: application/json' -H 'X-Pithead-Control: 1' --data $(quote_arg "$body") http://127.0.0.1:8000/api/control/worker-apply" 2>/dev/null
+    body="$(printf '%s' "$2" | jq -ce --arg w "$1" 'if type == "object" then {worker:$w,changes:.} else error("changes") end')" || return 1
+    printf '%s' "$body" | rx "curl -fsS --max-time 60 -X POST -H 'Content-Type: application/json' -H 'X-Pithead-Control: 1' --data-binary @- http://127.0.0.1:8000/api/control/worker-apply" --stdin 2>/dev/null
 }
-
 _restore_rig_control_baseline() {
     if ! push_config "$BASELINE_CONFIG"; then
         it_fail "write baseline after RigForge control" "could not restore config.json"
@@ -2162,7 +2161,6 @@ _restore_rig_control_baseline() {
         return 1
     fi
 }
-
 # Real RigForge write coverage (#513/#514/#516/#517), destructive then restored. The only descriptor
 # shape is workers.list[]; explicit borrowed-rig inputs make missing setup a failure.
 run_rigforge_control() {
@@ -2180,7 +2178,7 @@ run_rigforge_control() {
         return 0
     fi
 
-    local st rig supplied=0
+    local st rig supplied=0 control_rc
     st="$(api_state)"
     rig="$RIG_NAME"
     if [ -n "$rig" ]; then
@@ -2314,12 +2312,12 @@ run_rigforge_control() {
 
     [ -n "$RIGFORGE_BOOTSTRAP_VERSION" ] || run_rigforge_upgrade "$rig"
 
-    [ "$IT_FAIL" -gt "$fails_before" ] && capture_artifacts "rigforge-control" "$OUT_DIR"
-
+    control_rc=$((IT_FAIL > fails_before))
+    [ "$control_rc" = 0 ] || capture_artifacts "rigforge-control" "$OUT_DIR"
     # Restore: baseline config drops the injected descriptor + turns control back off (the end-of-run
     # restore_baseline would too; doing it here keeps the box clean even if a later phase is added).
     it_step "restoring baseline (control off, descriptor dropped)…"
-    _restore_rig_control_baseline
+    _restore_rig_control_baseline && return "$control_rc"
 }
 
 # Predicate: the rig is present in the live feed with its enriched block parsed.
@@ -2393,12 +2391,13 @@ run_rigforge_reverse() { # <rig-name> <orig-max_temp_c-or-empty>
     fi
 }
 
-# POST a change straight to the rig's control API from the bench (the same dial the host runner makes,
-# minus the dashboard) and echo the rig's change_id. Needs IT_RIG_TOKEN + RIG_HOST. Used only by #516.
+# POST straight to the rig's control API from the bench (the host runner's dial, minus the dashboard); used only by #516.
 _rig_control_apply() { # <changes-json> -> echoes change_id
-    printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "${IT_RIG_TOKEN:-}" | jq -Rs .)" | rx "curl -fsS --max-time 15 -K - -X POST -H 'Content-Type: application/json' --data $(quote_arg "$1") $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/apply")" --stdin 2>/dev/null | jq -r '.change_id // empty' 2>/dev/null
+    local config
+    config="$(printf '%s' "$1" | jq -er 'if type == "object" then tojson | @json else error("changes") end')" || return 1
+    printf -v config 'header = %s\ndata-binary = %s' "$(printf 'Authorization: Bearer %s' "${IT_RIG_TOKEN:-}" | jq -Rs .)" "$config"
+    printf '%s\n' "$config" | rx "curl -fsS --max-time 15 -K - -X POST -H 'Content-Type: application/json' $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/apply")" --stdin 2>/dev/null | jq -r '.change_id // empty' 2>/dev/null
 }
-
 # Poll the rig's /status for <change_id> reaching <want-status>. Returns 0 on match within the window.
 _rig_control_await() { # <change_id> <want-status> [timeout-s=30]
     local id="$1" want="$2" deadline=$((SECONDS + ${3:-30})) sbody
@@ -2435,7 +2434,7 @@ run_rigforge_rollback() { # <rig-name>
         return 0
     fi
     if ! printf '%s' "$IT_RIG_ROLLBACK_CHANGES" | jq -e 'type == "object"' >/dev/null 2>&1; then
-        it_fail "IT_RIG_ROLLBACK_CHANGES is a JSON changes object (#517)" "got [$IT_RIG_ROLLBACK_CHANGES]"
+        it_fail "IT_RIG_ROLLBACK_CHANGES is a JSON changes object (#517)" "the operator-supplied rollback changes are malformed"
         return 0
     fi
     it_step "applying the rollback-inducing change via /api/control/worker-apply…"
@@ -2468,10 +2467,8 @@ run_rigforge_rollback() { # <rig-name>
 }
 
 # --- Main -------------------------------------------------------------------
-
 main() {
     parse_args "$@"
-
     # Bench coordination (#430): take the shared-rig flock ON THE TARGET before the first
     # service/API-touching action (preflight already reads the box), and hold it for the whole
     # run — rigforge's gates and pithead runs on the same box refuse (exit 75, holder named)
@@ -2485,7 +2482,9 @@ main() {
     elif [ "$CHECK_ONLY" = "1" ]; then
         lock_suite="run.sh --check" lock_shared="shared"
     fi
-    if [ "$IT_MODE" = "local" ]; then
+    if [ -n "${RIG_LOCK_PARENT_ACTOR:-}" ] || [ -n "${RIG_LOCK_PARENT_NONCE:-}" ]; then
+        rig_lock_parent_use || exit 1
+    elif [ "$IT_MODE" = "local" ]; then
         rig_lock pithead "$lock_suite" "$lock_shared"
     else
         rig_lock_remote pithead "$lock_suite" "$lock_shared" "$IT_SSH_DEST" "${IT_SSH_OPTS[@]}"
@@ -2529,6 +2528,7 @@ main() {
     local rig_control_ok=1
     if [ "$RUN_RIGFORGE_CONTROL" = "1" ]; then
         run_rigforge_control || rig_control_ok=0
+        [ "$rig_control_ok" = 1 ] && wait_borrow_rearm || rig_control_ok=0
     elif [ "$RUN_RIGFORGE" = "1" ]; then
         run_rigforge_integration
     fi

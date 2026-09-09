@@ -185,10 +185,11 @@ Two build variants, chosen by one flag:
   over SSH. Verify with `tests/os/verify-image.sh IMAGE --test`. A bench that takes an A/B
   update to a *release* bundle loses SSH — deliberate, and worth remembering before pressing
   install. Built with `PITHEAD_REGISTRY` set to a non-default namespace, a debug image also
-  pins that registry into its boot units and tells podman how to trust it — the CA file named
-  by `PITHEAD_REGISTRY_CA` for a TLS registry, or an insecure entry without one — so a bench box
-  can provision from a registry on the LAN (#1892); the release variant never carries any of
-  those files, and `verify-image.sh` checks both ways.
+  pins that registry into its boot units, the dashboard control runner and `/etc/environment`
+  (so a `pithead` verb run by hand over SSH pulls from the same place, #1931), and tells podman
+  how to trust it — the CA file named by `PITHEAD_REGISTRY_CA` for a TLS registry, or an insecure
+  entry without one — so a bench box can provision from a registry on the LAN (#1892); the release
+  variant never carries any of that, and `verify-image.sh` checks both ways.
 
 The updater defaults to RAUC; an image built without it cannot take another update, and the
 only way to get one now is to set `PITHEAD_UPDATER` to something else on purpose.
@@ -382,10 +383,17 @@ test node: confirm the preview warns, verify a commit without the literal `APPLY
 Never use the physical-media path for this approval check; that path remains deliberately unable
 to self-approve disruptive changes.
 
-The current automated approval row uses the stable `monero.out_peers` `CONFIRM` round trip and
-restores its original value. That proves the appliance approval path, but it does not prove a
-sensitive endpoint or payout edit, or that a node probe was consumed. Keep M16 and the
-integration row for #1898/#1943/#1946 open until a reserved reachable node proves that wider path.
+The automated battery first keeps the stable `monero.out_peers` `CONFIRM` round trip, then drives
+the sensitive path with fake test-only Telegram identifiers. Its transport recognizes only the
+fake approval calls and cannot fall through to the real provider. It proves missing and wrong
+identities stay refused, the host-generated preview and allow-listed callback bind the exact
+prompt text and commit,
+and a dashboard password remains physical-presence-only. With the reserved-node environment
+inputs, it requires the real host preflight, rendered endpoints, the current p2pool container's
+narrowly extracted endpoints, an endpoint-bound current-startup `uses chain_id` round trip, and
+root-side restoration from a mode-600 raw snapshot. Reserved-node credentials must be disposable
+test values. The payout-address
+confirmation and a real human Telegram click remain manual M16 evidence.
 
 RC1 addendum, still manual after the automated rows run:
 
@@ -396,19 +404,24 @@ RC1 addendum, still manual after the automated rows run:
 - Reinstall pre-fill and failed-install recovery: confirm the migration notice names the removed
   1.x key without showing values, that preflight keeps safe fields after refusing a bad node, and
   that a separate post-validation failure returns the same safe fields for retry.
-- Diagnostics: run both controls and inspect the rendered health rows and redacted log tail; KVM
-  proves the verbs finish, not that the presentation is useful.
+- Diagnostics: the battery runs both controls, requires all structured doctor rows even on a real
+  nonzero health result, caps and redacts a p2pool tail, and refuses wallet logs. Manually inspect
+  the rendered grouping and remedies; KVM proves the host results, not that the presentation is useful.
 - `xvb.enabled`: its three config shapes remain tier-1 coverage; manually check only the final
   opt-in wording when #1855 is integrated.
-- Boot labels (#1956): the code and specific serial-console assertion are pending. Read the real
-  firmware menu on hardware; do not record this row as automated until that dependency lands.
+- Boot labels (#1956): the specific post-commit serial-console assertion is written on its product
+  branch. Read the real firmware menu on hardware; do not record this row as PASS until that
+  dependency lands in the tested image.
 
-Four additional RC2 rows remain dependencies rather than PASS: #1959 must add an appliance
-control assertion for its payout/auth/control editing boundary; #1898/#1943/#1946 must prove a
-real node-endpoint change and consumed probe against a reserved reachable node; #1957 must add a
-custom-hostname row covering `dashboard.host`, certificate names and mDNS; and #1956 must add the
-boot-label serial assertion. The final battery runs only after those product changes and their
-rows are integrated.
+The custom-hostname row is now specific: the wizard's `fixture-box` name must agree across the
+kernel, rendered `HOST_IP`, dashboard header state, certificate DNS and LAN-IP SANs, and active
+Avahi with working mDNS resolution. Its day-two `fixture-next` preview must leave those readings
+unchanged; missing and wrong approvals remain refused. The fake allow-listed callback then applies
+the host-generated preview, and `fixture-next` must survive the unaided reboot and A/B update.
+The reserved-node `uses chain_id` row is automated but still needs actual reachable node inputs;
+the payout confirmation and human approval click remain manual. #1956 has written the serial
+assertion for boot labels, but none of these tier-4 rows is PASS until the product branches are
+integrated into an image and the full battery runs.
 
 ## Cutting a release
 

@@ -9,7 +9,6 @@
 # own bundle-signature check and its trailing control-disabled probe live in test-control-upgrade.sh
 # in full: that section runs the control-run-pending verb against the $C control sandbox, the same
 # run-against-its-own-sandbox reasoning module 4 used for apply --dry-run/symlink-invocation.)
-
 echo "== black-box: verify_release_images fail-closed gate (#376) =="
 # The verification decision itself, against a fake docker on a PINNED PATH ($VRI/bin:/usr/bin:/bin
 # — coreutils stay, so the host can never decide the outcome). Since #1072 the verifier is a
@@ -204,18 +203,15 @@ assert_contains "signing off announces the skip" "$sign_off_out" "skipping image
 )
 assert_contains "bundle signed as a detached blob signature" "$(cat "$SIGN/cosign.log")" \
     "sign-blob --key /release-box/cosign.key --tlog-upload=false --yes --output-signature $SIGN/pithead.tar.gz.sig"
-assert_contains "the bundle ships cosign.pub (the install-side verifier)" "$(cat "$REL")" "config.reference.json config.core-keys.json cosign.pub"
-
+assert_contains "the bundle ships cosign.pub (the install-side verifier)" "$(cat "$REL")" "cp cosign.pub"
 echo "== unit: release.sh refuses to publish unsigned (#960/#1108) =="
-# The producer used to treat signing as opt-in while the consumer treats it as mandatory: once
-# cosign.pub is committed it ships in every bundle, and every one-click upgrade REFUSES a release
-# with no pithead.tar.gz.sig. So a cut on a box with no key does not make a degraded release, it
-# makes one the whole fleet rejects — and GitHub release assets are immutable, so the signature can
-# never be added afterwards. That is how v1.18.0 shipped unsigned and had to be withdrawn (#960).
-# resolve_signing must therefore ABORT the cut. MUTATION PROOF: change its final die() to warn() and
-# "an unconfigured signing box aborts the cut" goes red (verified — see the PR).
+# Once cosign.pub is committed every upgrade requires the detached signature, so an unconfigured
+# cut must abort; without a committed public key, the legacy unsigned path still works.
 SGN="$SANDBOX/signing960"
 mkdir -p "$SGN/bin" "$SGN/v3" "$SGN/nopub"
+for f in pithead pithead-completion.bash VERSION docker-compose.yml config.minimal.json config.reference.json config.core-keys.json; do ln -s "$ROOT/$f" "$SGN/nopub/$f"; done
+ln -s "$ROOT/docs" "$SGN/nopub/docs"
+ln -s "$ROOT/build" "$SGN/nopub/build"
 # A cosign that advertises --tlog-upload, the flag both signing calls pass.
 printf '#!/usr/bin/env bash\necho "      --tlog-upload   upload to the transparency log"\nexit 0\n' >"$SGN/bin/cosign"
 # cosign v3 removed that flag: the box passes every other check and then dies at stage 6b, with the
@@ -223,12 +219,16 @@ printf '#!/usr/bin/env bash\necho "      --tlog-upload   upload to the transpare
 printf '#!/usr/bin/env bash\necho "      --yes   skip confirmation"\nexit 0\n' >"$SGN/v3/cosign"
 chmod +x "$SGN/bin/cosign" "$SGN/v3/cosign"
 : >"$SGN/cosign.key"
-
-# One resolve_signing decision, rendered as "rc=N <message> enabled=N". The env arrives as a string
-# because release.sh's option parser needs an empty argv (`set --`), which eats positional args; and
-# COSIGN_ENABLED — the variable that actually drives whether anything gets signed — is reported from
-# an EXIT trap, because die() exits this subshell before a trailing read of it could run.
+bundle_without_pub() {
+    # shellcheck disable=SC2034  # consumed by make_bundle from the sourced release script
+    WORKDIR="$SGN/nopub-bundle" TAG=v9.9.9 REGISTRY=ghcr.io/test DRY_RUN=0
+    get_digest() { printf 'ghcr.io/test/pithead-%s@sha256:%064d' "$1" 1; }
+    make_bundle "$SGN/nopub.tar.gz" >/dev/null || return 1
+    [ -s "$SGN/nopub.tar.gz" ] && tar tzf "$SGN/nopub.tar.gz" >"$SGN/nopub.list" || return 1
+    ! grep -qx 'pithead/cosign.pub' "$SGN/nopub.list"
+}
 signing_decide() { # <cwd> <env-assignments>
+    _action="${3:-}"
     _out="$(
         cd "$1" || exit
         _envs="$2"
@@ -239,11 +239,11 @@ signing_decide() { # <cwd> <env-assignments>
         eval "$_envs"
         trap 'printf " enabled=%s" "${COSIGN_ENABLED:-unset}"' EXIT
         resolve_signing 2>&1
+        [ "$_action" != bundle ] || bundle_without_pub 2>&1
     )"
     printf 'rc=%s %s' "$?" "$_out"
 }
 SGN_OK="PATH=$SGN/bin:\$PATH; COSIGN_KEY=$SGN/cosign.key; COSIGN_PASSWORD=x; UNSIGNED=0; DRY_RUN=0"
-
 sg="$(signing_decide "$ROOT" "$SGN_OK")"
 assert_contains "a complete signing env turns signing ON" "$sg" "rc=0"
 assert_contains "signing ON is what the later stages actually read" "$sg" "enabled=1"
@@ -261,10 +261,13 @@ assert_contains "--unsigned publishes anyway" "$sg" "rc=0"
 assert_contains "--unsigned leaves signing genuinely off" "$sg" "enabled=0"
 assert_contains "--unsigned warns the fleet will refuse this release" "$sg" "REFUSES a release that has none"
 # No committed public key means nothing in the field fails closed — warn and proceed, as before.
-sg="$(signing_decide "$SGN/nopub" "${SGN_OK/COSIGN_KEY=$SGN\/cosign.key/unset COSIGN_KEY}")"
+sg="$(signing_decide "$SGN/nopub" "${SGN_OK/COSIGN_KEY=$SGN\/cosign.key/unset COSIGN_KEY}" bundle)"
 assert_contains "no committed cosign.pub still publishes unsigned" "$sg" "rc=0"
 assert_contains "no committed cosign.pub leaves signing off" "$sg" "enabled=0"
 assert_contains "no committed cosign.pub says installs will not verify" "$sg" "proceed unverified"
+sg="$(signing_decide "$SGN/nopub" "$SGN_OK" bundle)"
+assert_contains "signing enabled without cosign.pub refuses the bundle" "$sg" "rc=1"
+assert_contains "the refusal names the missing public key" "$sg" "signing is enabled but cosign.pub is missing"
 # COSIGN_PASSWORD was never checked before: cosign would prompt for it at stage 6b, after promotion.
 sg="$(signing_decide "$ROOT" "${SGN_OK/COSIGN_PASSWORD=x/unset COSIGN_PASSWORD}")"
 assert_contains "an unset COSIGN_PASSWORD aborts the cut" "$sg" "rc=1"
@@ -289,7 +292,6 @@ assert_contains "a dry run rehearses the real decision, not a fixed OFF (#1108)"
 assert_contains "a dry run reports signing will be ON, not OFF (#1108)" "$sg" "enabled=1"
 sg="$(signing_decide "$ROOT" "${SGN_OK/DRY_RUN=0/DRY_RUN=1}; unset COSIGN_KEY")"
 assert_contains "a dry run on an unconfigured box fails the rehearsal (#1108)" "$sg" "rc=1"
-
 echo "== unit: release.sh takes the release box's key defaults (#77 phase 1, #1115) =="
 # The release box keeps the key and its passphrase at fixed paths under $HOME, so a cut there needs
 # no exports — that convenience is what the appliance lane runs on, and losing it in the twin sync
@@ -303,7 +305,6 @@ DEF="$SANDBOX/signdefaults"
 mkdir -p "$DEF/keydir" "$DEF/nokeydir"
 : >"$DEF/keydir/cosign.key"
 printf 'correct horse\n' >"$DEF/keydir/cosign.passphrase"
-
 signing_defaults() { # <env-assignments> -> "key=<COSIGN_KEY> pass=<value|unset> gaps=<...>"
     (
         _envs="$1" # saved first: release.sh's option parser needs an empty argv, and `set --` eats it
@@ -316,7 +317,6 @@ signing_defaults() { # <env-assignments> -> "key=<COSIGN_KEY> pass=<value|unset>
         printf 'key=%s pass=%s gaps=%s' "${COSIGN_KEY:-}" "${COSIGN_PASSWORD-unset}" "$(signing_env_gaps | tr '\n' ';')"
     )
 }
-
 sd="$(signing_defaults "RELEASE_KEY_DIR=$DEF/keydir; unset COSIGN_KEY; unset COSIGN_PASSWORD")"
 assert_contains "an unset COSIGN_KEY falls back to the release box's key" "$sd" "key=$DEF/keydir/cosign.key"
 assert_contains "the passphrase file satisfies COSIGN_PASSWORD" "$sd" "pass=correct horse"

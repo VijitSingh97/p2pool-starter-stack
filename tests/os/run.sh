@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Tier-4 appliance harness (#77 phase 2): boot the pithead-os image in KVM and prove the
-# properties only real firmware + a real A/B updater can show — EFI boot, the first-boot wizard
-# window, and the update/commit/rollback cycle that is the phase-2 exit criterion. This is the
-# os-image sibling of tests/integration/run.sh; it needs a Linux host with KVM + libvirt + the
-# built image, so it runs on the bench, not in CI.
+# Tier-4 appliance harness (#77 phase 2): boot the pithead-os image in KVM and prove EFI boot,
+# first-boot wizard, and A/B update properties. It is the os-image sibling of the integration
+# harness and needs a Linux host with KVM + libvirt.
 #
 #   tests/os/run.sh --image PATH [--keep] [--phase boot|update|install|provision|rig|media|fault|reset|all]
 #
@@ -39,7 +37,6 @@
 # battery rather than stopping at the first fault; the run exits non-zero if any assertion failed.
 # --keep leaves the VM + disks for inspection.
 set -uo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=tests/os/hugepages-boot-verdict.sh
 . "$SCRIPT_DIR/hugepages-boot-verdict.sh"
@@ -53,12 +50,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 . "$SCRIPT_DIR/restore-live-state-verdict.sh"
 # shellcheck source=tests/os/reinstall-prefill-verdict.sh
 . "$SCRIPT_DIR/reinstall-prefill-verdict.sh"
+# shellcheck source=tests/os/provisioning-settled.sh
+. "$SCRIPT_DIR/provisioning-settled.sh"
 # shellcheck source=tests/os/data-floor-fallback-leg.sh
 . "$SCRIPT_DIR/data-floor-fallback-leg.sh"
 # shellcheck source=tests/os/aged-version.sh
 . "$SCRIPT_DIR/aged-version.sh"
 # shellcheck source=tests/os/provision-browser-submit.sh
 . "$SCRIPT_DIR/provision-browser-submit.sh"
+# shellcheck source=tests/os/appliance-hostname-leg.sh
+. "$SCRIPT_DIR/appliance-hostname-leg.sh"
+# shellcheck source=tests/os/appliance-diagnostics-leg.sh
+. "$SCRIPT_DIR/appliance-diagnostics-leg.sh"
+# shellcheck source=tests/os/appliance-config-approval-leg.sh
+. "$SCRIPT_DIR/appliance-config-approval-leg.sh"
+# shellcheck source=tests/integration/mergemine-probe.sh
+. "$SCRIPT_DIR/../integration/mergemine-probe.sh"
 # shellcheck source=tests/os/reinstall-prefill-submit-leg.sh
 . "$SCRIPT_DIR/reinstall-prefill-submit-leg.sh"
 # shellcheck source=tests/os/setup-again-leg.sh
@@ -70,7 +77,6 @@ PHASE="all"
 VM="pithead-os-test"
 DISK="/srv/code/bench-vm/pithead-os-test.img"
 SERIAL="/tmp/pithead-os-serial.log"
-
 while [ $# -gt 0 ]; do
     case "$1" in
     --image)
@@ -95,7 +101,6 @@ while [ $# -gt 0 ]; do
         ;;
     esac
 done
-
 PASS=0
 FAIL=0
 ok() {
@@ -108,7 +113,6 @@ bad() {
 }
 info() { printf '\033[1;34m==>\033[0m %s\n' "$1"; }
 have() { command -v "$1" >/dev/null 2>&1; }
-
 KEY="$HOME/.ssh/pithead-os-test"
 ip=""
 # Overwritten by every _ssh call with that call's stderr (empty on success). Not a log — just the
@@ -118,7 +122,6 @@ SSH_ERR="/tmp/pithead-os-ssh.err"
 # A fresh run must not inherit the last run's preserved console: the cleanup copy below is
 # no-clobber (the at-assertion copy is the authoritative one), so clear the slate here.
 rm -f "$SERIAL.failed"
-
 # The wallet every phase submits. It must be checksum-VALID: p2pool refuses a well-formed but
 # checksum-invalid address at startup with a SIGABRT and crash-loops (#829), which killed the
 # provision phase's whole miner chain when the harness used `4` + 94×`A`. Host-side validation
@@ -129,7 +132,6 @@ HARNESS_WALLET="44MnN1f3Eto8DZYUWuE5XZNUtE3vcRzt2j6PzqWpPau34e6Cf4fAxt6X2MBmrm6F
 # made-up placeholder is (correctly) rejected before the flow ever reaches the credentials
 # handoff. Same throwaway address the stack suite uses.
 HARNESS_TARI="126J92Yow5y9UoRFd1DNujPmVFq9C1ZeiYWT95UKxz5Y1rzbfjtHg4SCZS1dk83ivzt3m2XRQHTaYUk9SwmyeCvy5BJ"
-
 # Every remote call is bounded. CORRECTION (this comment used to claim Debian socket-activates sshd —
 # disproven): os/rootfs/Dockerfile only ever `systemctl enable`/`disable`s the plain ssh.service; no
 # ssh.socket unit is ever enabled. What actually gates it is os/overlay/pithead-ssh-host-keys.conf, a drop-in
@@ -387,8 +389,12 @@ require_probe_key_matches_image() {
 # so the battery silently drives someone else's guest. This happened with a hand-started
 # diagnostic VM and produced passing legs that proved nothing. Refuse to run rather than report.
 require_clean_bench() {
-    local strays
-    strays=$(virsh list --name 2>/dev/null | grep -E '^pithead-' | grep -v "^${VM}$" || true)
+    local guests strays
+    guests=$(virsh list --name 2>/dev/null) || {
+        echo "refusing to run: libvirt could not enumerate the bench." >&2
+        exit 2
+    }
+    strays=$(printf '%s\n' "$guests" | grep -E '^pithead-' | grep -v "^${VM}$" || true)
     [ -z "$strays" ] || {
         echo "refusing to run: other pithead VMs are on the bench and can steal the lease:" >&2
         echo "$strays" >&2
@@ -396,30 +402,23 @@ require_clean_bench() {
         exit 2
     }
 }
-
-vm_destroy() {
-    virsh destroy "$VM" >/dev/null 2>&1 || true
-    virsh undefine "$VM" --nvram >/dev/null 2>&1 || true
-}
-
 cleanup() {
-    # Preserve the console on failure. It is deleted with everything else on a green run, which
-    # meant the one artefact that explains a boot failure was destroyed by the failure itself.
+    local approval_cleanup_rc=0
+    declare -F approval_fixture_cleanup >/dev/null && approval_fixture_cleanup || approval_cleanup_rc=$?
+    # Preserve the console on failure; an at-assertion no-clobber copy remains authoritative.
     if [ "$FAIL" -gt 0 ] && [ -s "$SERIAL" ] && [ ! -f "$SERIAL.failed" ]; then
-        # No-clobber: an assertion that copied the console AT the failure got it before later
-        # boots truncated $SERIAL — this end-of-phase copy would replace it with the wrong boot.
         cp "$SERIAL" "$SERIAL.failed" 2>/dev/null &&
             info "console from the failed run kept at $SERIAL.failed"
     fi
     if [ "$KEEP" -eq 1 ]; then
         info "left VM '$VM' and $DISK in place (--keep)"
+        [ "$approval_cleanup_rc" -eq 0 ] || exit "$approval_cleanup_rc"
         return
     fi
-    vm_destroy
-    rm -f "$DISK" "$SERIAL" "$SSH_ERR"
+    vm_destroy && rm -f "$DISK" "$SERIAL" "$SSH_ERR" || approval_cleanup_rc=1
+    [ "$approval_cleanup_rc" -eq 0 ] || exit "$approval_cleanup_rc"
 }
 trap cleanup EXIT
-
 # Wait until the serial log matches a pattern, or time out. $1 pattern, $2 seconds.
 wait_serial() {
     local pat="$1" deadline=$(($(date +%s) + ${2:-180}))
@@ -432,7 +431,7 @@ wait_serial() {
 
 phase_boot() {
     info "phase: boot"
-    vm_destroy
+    vm_destroy_or_refuse || return
     cp "$IMAGE" "$DISK"
     # 16 GiB guest: the appliance reserves 6 GiB of hugepages at boot (RandomX), so a smaller VM
     # leaves too little for the stack — and the plan sizes appliance RAM to the compose caps anyway.
@@ -548,7 +547,7 @@ phase_boot() {
 
 # Boot a raw appliance disk under OVMF and return once it has a lease. Sets the global `ip`.
 _vm_boot_disk() {
-    vm_destroy
+    vm_destroy_or_refuse || return
     cp "$1" "$DISK"
     qemu-img resize "$DISK" 40G >/dev/null 2>&1 || true
     : >"$SERIAL"
@@ -1171,7 +1170,7 @@ phase_install() {
         return
     }
 
-    vm_destroy
+    vm_destroy_or_refuse || return
     rm -f "$target_disk"
     cp "$img" "$DISK"
     # 16G, the smallest real stick the docs allow: ESP + two 4 GiB slots + data's 4 GiB minimum
@@ -1292,7 +1291,7 @@ phase_install() {
         bad "machine never powered off after the ack"
         return
     fi
-    vm_destroy
+    vm_destroy_or_refuse || return
     # Boot from the TARGET alone — the stick is gone, exactly as the instructions tell the user.
     : >"$SERIAL"
     kvm_preflight || exit 1 # #1059: never boot a 16 GiB guest the host cannot back
@@ -1378,7 +1377,7 @@ phase_install() {
     }
     _ssh "systemctl poweroff" 2>/dev/null || true
     sleep 8
-    vm_destroy
+    vm_destroy_or_refuse || return
     : >"$SERIAL"
     kvm_preflight || exit 1 # #1059: never boot a 16 GiB guest the host cannot back
     virt-install --name "$VM" --memory 16384 --vcpus 4 --cpu host-passthrough \
@@ -1517,7 +1516,7 @@ phase_install() {
     ok "planted the old dashboard image ($old_dash_id) and its digest record on the target's /data"
     _ssh "systemctl poweroff" 2>/dev/null || true
     sleep 8
-    vm_destroy
+    vm_destroy_or_refuse || return
     info "building the NEWER stick (marker v2 — its dashboard archive differs)"
     img=$(_build_image v2) || {
         bad "v2 stick build failed (/tmp/os-fault-build.log)"
@@ -1600,7 +1599,7 @@ phase_install() {
         bad "keep-reinstall never powered off"
         return
     fi
-    vm_destroy
+    vm_destroy_or_refuse || return
     : >"$SERIAL"
     kvm_preflight || exit 1 # #1059: never boot a 16 GiB guest the host cannot back
     virt-install --name "$VM" --memory 16384 --vcpus 4 --cpu host-passthrough \
@@ -1707,18 +1706,16 @@ phase_install() {
     case "$rnames" in
     *dashboard*caddy* | *caddy*dashboard*)
         ok "restore leg: keep-reinstalled machine provisioned — a live stack to back up ($rnames)"
-        # Settle before backing up: `pithead backup` stops the RUNNING containers, but ones
-        # still being created slip past that stop and start mid-tar — "file changed as we read
-        # it" killed the pipeline once. Two identical readings 10s apart means startup is over.
-        local rprev=""
-        rtries=0
-        while [ "$rtries" -lt 30 ]; do
-            [ -n "$rnames" ] && [ "$rnames" = "$rprev" ] && break
-            rprev="$rnames"
-            sleep 10
-            rnames=$(_ssh "podman ps --format '{{.Names}}'" 2>/dev/null | tr '\n' ' ')
-            rtries=$((rtries + 1))
-        done
+        # Settle on the provisioning UNITS, not on `podman ps` (#1945): the wizard's `up` holds the
+        # mutation lock through its tor-health wait for minutes after the stack looks live, and a
+        # backup taken then waits it out or, when that `up` dies, archives the wreck. 900 s covers tor.
+        if ! provisioning_settled 900; then
+            bad "restore leg: provisioning never finished on the machine ($(provisioning_state))"
+            backup_failure_evidence
+            rm -f "$target_disk"
+            return
+        fi
+        ok "restore leg: provisioning finished ($(provisioning_state))"
         ;;
     *)
         bad "restore leg: stack never came up after provisioning (running: '${rnames:-none}')"
@@ -1753,7 +1750,7 @@ phase_install() {
     orig_onion=$(_ssh "grep MONERO_ONION_ADDRESS /data/pithead/.env" | cut -d= -f2)
     _ssh "systemctl poweroff" 2>/dev/null || true
     sleep 8
-    vm_destroy
+    vm_destroy_or_refuse || return
 
     local restore_target="/srv/code/bench-vm/pithead-restore-target.img"
     rm -f "$restore_target"
@@ -1859,7 +1856,7 @@ phase_install() {
         rm -f "$target_disk" "$restore_archive" "$restore_target"
         return
     fi
-    vm_destroy
+    vm_destroy_or_refuse || return
     : >"$SERIAL"
     kvm_preflight || exit 1 # #1059: never boot a 16 GiB guest the host cannot back
     virt-install --name "$VM" --memory 16384 --vcpus 4 --cpu host-passthrough \
@@ -1952,14 +1949,13 @@ phase_install() {
     else
         bad "restore leg: onion identity not restored (.env: $orig_onion -> ${new_onion:-none}, Tor's own hostname: ${tor_hostname:-none})"
     fi
-    phase_install_prefill_submit_leg "$target_disk" # #1846, last: nothing after it needs the disk
+    phase_install_prefill_submit_leg "$target_disk" || return # #1846, last: nothing after it needs the disk
     rm -f "$target_disk" "$restore_archive" "$restore_target"
 }
-
 phase_provision() {
     info "phase: provision (wizard HTTP submit -> setup -> stack containers up)"
-    local img token jar scode
-
+    # shellcheck disable=SC2034 # provision_browser_config reads both through Bash's dynamic scope.
+    local img token jar scode PROVISION_DASHBOARD_HOST=fixture-box PROVISION_FAKE_APPROVAL=1
     img=$(_build_image v1) || {
         bad "image build failed (/tmp/os-fault-build.log)"
         return
@@ -1969,7 +1965,6 @@ phase_provision() {
         return
     }
     ok "image boots ($ip)"
-
     # The wizard's one-time token, exactly where a human gets it: the console.
     local tries=0
     token=""
@@ -2120,7 +2115,8 @@ phase_provision() {
         bad "no os_update in /api/state — the appliance has no reachable OS-update control"
     fi
     phase_provision_control_regressions "$pv_user" "$pv_pass"
-
+    phase_provision_hostname_regressions "$pv_user" "$pv_pass"
+    phase_provision_sensitive_regressions "$pv_user" "$pv_pass" || bad "sensitive appliance regression phase aborted before completing required checks"
     # ---- Tor-only egress backstop (#855): the fail-closed firewall must actually DROP -------
     # The whole product is Tor-first; the guarantee is that nothing CAN bypass Tor even if an app is
     # misconfigured, compromised, or dials a raw public IP. On the appliance the engine is podman+netavark,
@@ -2307,6 +2303,7 @@ phase_provision() {
         bad "dashboard never answered after the reboot (last: $code)"
         return
     }
+    assert_appliance_hostname_identity fixture-next "unaided reboot" "$pv_user" "$pv_pass"
     # No unit may be quietly broken (#792 sat visible in --failed for two RCs, unasserted).
     local failed_units
     # Transient healthcheck ephemera excluded: podman drives container healthchecks through
@@ -2413,6 +2410,7 @@ phase_provision() {
     else
         ok "commit gate REFUSES a slot whose monerod is down — left uncommitted, A/B fallback stays armed"
     fi
+    phase_provision_failed_doctor_regression "$pv_user" "$pv_pass"
     _ssh "podman start monerod >/dev/null 2>&1" || true
     unset -f _gate
 
@@ -2470,6 +2468,7 @@ phase_provision() {
     done
     if [ "$released" = 1 ]; then
         ok "the migrating slot committed and released the chain services"
+        assert_appliance_hostname_identity fixture-next "A/B update" "$pv_user" "$pv_pass"
     else
         bad "the migrating slot never reached the post-commit release — the hold deadlocked the gate it was built not to"
         return

@@ -1,18 +1,10 @@
 # shellcheck shell=bash
 : "${STACK_SUITE:?is unset: this file is a tests/stack/run.sh fragment, not a script — run tests/stack/run.sh}"
-# Release domain (#1105 Phase 1): release.sh's side-effect-free logic (semver/image-name helpers,
-# the ingredient manifest, bundle-contents/build-mounts checks), the GHCR read-after-push retry,
-# the release-toolchain preflight, release-smoke's upgraded-install resolution, pull-vs-build mode
-# detection, and the release bundle's macOS-xattr hygiene guard. Sourced by tests/stack/run.sh
-# after lib.sh. (release.sh's signing/refusal/pinned-verifier/cosign-path tests move separately,
-# to test-release-signing.sh. Left in run.sh, despite sharing a section marker with moved content:
-# the #291 firewall-ordering assertions trailing cosign_container_path — tor/network, not release;
-# the XvB tier-threshold drift guard trailing "release.sh pure logic" — dashboard, not release; the
-# xmrig-proxy/tor-entrypoint tests trailing the bundle-hygiene section — unrelated domains; the
-# doctor-side release-verification diagnostic and the control-channel upgrade's own bundle-
-# signature check — doctor/control, by the same run-against-its-own-sandbox reasoning module 4
-# used for apply --dry-run/symlink-invocation.)
-
+# Release domain (#1105 Phase 1): release.sh's pure helpers, ingredient manifest, bundle contents,
+# registry retry, toolchain preflight, smoke resolution, pull-vs-build mode and xattr hygiene.
+# Signing/refusal/pinned-verifier/cosign-path tests live in test-release-signing.sh. This fragment
+# retains adjacent assertions whose fixtures belong here even when their product domain differs,
+# following the suite's run-against-its-own-sandbox placement rule.
 echo "== unit: release.sh pure logic (#44) =="
 # The release pipeline's side-effect-free helpers (no docker needed). Sourced from the repo root with
 # the positional args cleared (`set --`) so release.sh's own arg-parser doesn't see the test's args;
@@ -85,6 +77,21 @@ BUILD_MOUNTS="$(
 )"
 assert_contains "bundle ships monerod's config template" "$BUILD_MOUNTS" "./build/monero/bitmonero.conf.template"
 assert_contains "bundle ships the tari config dir" "$BUILD_MOUNTS" "./build/tari"
+# shellcheck disable=SC1090
+bundle_copy_fail="$(
+    (
+        cd "$ROOT" || exit
+        set --
+        source "$REL" 2>/dev/null
+        set +eu
+        WORKDIR="$SANDBOX/bundle-copy-fail" TAG=v9.9.9
+        cp() { return 1; }
+        make_bundle "$WORKDIR/pithead.tar.gz"
+    ) 2>&1
+)"
+bundle_copy_rc=$?
+assert_rc "bundle refuses a failed required-file copy" "$bundle_copy_rc" "1"
+assert_contains "bundle names the required-file copy failure" "$bundle_copy_fail" "failed to copy required runtime files"
 # Build a real bundle and inspect its runtime and operator-doc contents.
 # shellcheck disable=SC1090,SC2034  # dynamic source; TAG/REGISTRY/DRY_RUN are consumed inside make_bundle
 (
@@ -99,7 +106,7 @@ assert_contains "bundle ships the tari config dir" "$BUILD_MOUNTS" "./build/tari
     DRY_RUN=0
     # make_bundle now digest-pins the first-party images (#376), so it needs the promoted digests
     # promote would have captured -- a full repo@sha256 ref, as set_digest stores them.
-    for _s in "${IMAGES[@]}"; do set_digest "$_s" "ghcr.io/test/pithead-$_s@sha256:feed${_s}dad"; done
+    for _s in "${IMAGES[@]}"; do set_digest "$_s" "ghcr.io/test/pithead-$_s@sha256:$(printf '%064d' 1)"; done
     make_bundle "$WORKDIR/pithead.tar.gz" >/dev/null 2>&1
     cp "$WORKDIR/pithead/docker-compose.yml" "$SANDBOX/bundle-compose.yml" 2>/dev/null || true
     tar tzf "$WORKDIR/pithead.tar.gz" 2>/dev/null
@@ -113,7 +120,7 @@ assert_eq "bundled operator docs have no unresolved relative links or images" "$
 assert_eq "bundle excludes source, test, dashboard and appliance trees" "$(grep -Ec '^pithead/(lib|os|scripts|tests|dashboard|\.github)/' "$SANDBOX/bundle.list" || true)" "0"
 _bundle_unpinned=$(grep -E 'pithead-(tor|monero|p2pool|xmrig-proxy|dashboard):' "$SANDBOX/bundle-compose.yml" 2>/dev/null | grep -cv '@sha256:')
 [ "${_bundle_unpinned:-1}" -eq 0 ] && ok "bundle compose digest-pins all 5 first-party images (#376)" || bad "bundle digest-pins first-party images (#376)" "unpinned lines: ${_bundle_unpinned:-?}"
-if grep -q 'pithead-dashboard:${STACK_VERSION:-dev}@sha256:feeddashboarddad' "$SANDBOX/bundle-compose.yml" 2>/dev/null; then
+if grep -q 'pithead-dashboard:${STACK_VERSION:-dev}@sha256:0000000000000000000000000000000000000000000000000000000000000001' "$SANDBOX/bundle-compose.yml" 2>/dev/null; then
     ok "digest pin appends only the bare sha256, no double-repo (#376)"
 else
     bad "digest pin format (#376)" "expected tag@sha256:digest on the dashboard image line"
@@ -225,12 +232,8 @@ done
 ver_file="$(tr -d ' \t\r\n' <"$ROOT/VERSION")"
 ver_pyproject="$(grep -oE '^version = "[^"]+"' "$ROOT/dashboard/pyproject.toml" | head -1 | cut -d'"' -f2)"
 assert_eq "pyproject.toml version matches VERSION (#44)" "$ver_pyproject" "$ver_file"
-
 echo "== unit: release.sh registry read retries GHCR read-after-push lag (#429) =="
-# manifest_digest reads a tag GHCR just accepted, which can 404 for a few seconds (read-after-push
-# lag) — this killed stage-4 digest capture twice on v1.3.1. retry_registry_read must retry until the
-# read resolves. Stub buildx_inspect to fail the first two calls (empty + rc 1) then succeed; a counter
-# file survives the retries. Backoff forced to 0 keeps the test instant.
+# Retry valid stale digests until the expected one appears; the counter proves the bounded retry.
 RETRY_CNT="$SANDBOX/inspect.count"
 # shellcheck disable=SC1090,SC2034  # dynamic source; REGISTRY_READ_* are read by the sourced retry helper
 retry_out="$(
@@ -244,12 +247,16 @@ retry_out="$(
         local n
         n=$(($(cat "$RETRY_CNT") + 1))
         printf '%s' "$n" >"$RETRY_CNT"
-        [ "$n" -lt 3 ] && return 1                  # attempts 1 and 2 fail (tag not yet readable)
-        printf 'Name: x\nDigest: sha256:deadbeef\n' # attempt 3 resolves
+        [ "$n" -lt 3 ] && {
+            printf 'Name: x\nDigest: sha256:%064d\n' 2
+            return
+        }                                          # attempts 1 and 2 are stale
+        printf 'Name: x\nDigest: sha256:%064d\n' 1 # attempt 3 resolves
     }
+    REGISTRY_READ_EXPECT_DIGEST=sha256:$(printf '%064d' 1)
     printf 'DIGEST=%s ATTEMPTS=%s\n' "$(manifest_digest some:tag)" "$(cat "$RETRY_CNT")"
 )"
-assert_contains "manifest_digest resolves after transient GHCR failures" "$retry_out" "DIGEST=sha256:deadbeef"
+assert_contains "manifest_digest resolves after transient GHCR failures" "$retry_out" "DIGEST=sha256:0000000000000000000000000000000000000000000000000000000000000001"
 assert_contains "retried until the read succeeded (3 attempts)" "$retry_out" "ATTEMPTS=3"
 # Genuinely-missing image: after the retries exhaust, manifest_digest stays empty so the caller's
 # `[ -n "$digest" ] || die` still stops the release (a missing image must not silently pass).
@@ -267,9 +274,8 @@ exhaust_out="$(
 )"
 assert_contains "exhausted retries -> empty digest (caller dies)" "$exhaust_out" "DIED-EMPTY"
 # The smoke stage's raw manifest read has the same read-after-push exposure — wire it through the retry.
-assert_contains "smoke stage reads the manifest via retry_registry_read (#429)" \
-    "$(cat "$REL")" "retry_registry_read buildx_inspect \"\$repo:\$STAGING_TAG\" --raw"
-
+assert_contains "smoke stage reads the captured digest via retry_registry_read (#429)" \
+    "$(cat "$REL")" 'retry_registry_read buildx_inspect "$digest" --raw'
 # #557: the test above disables errexit (`set +eu`, right after sourcing) to observe the bare helper
 # in isolation, which happens to mask a real bug in stage_push itself: the bare
 # `digest="$(manifest_digest ...)"` assignment aborts under release.sh's own `set -euo pipefail`
@@ -296,7 +302,6 @@ stage_push_out="$(
 assert_rc "stage_push, real errexit: retries-exhausted digest read still aborts (#557)" "$?" "1"
 assert_contains "stage_push, real errexit: crafted die() reaches the operator (#557)" \
     "$stage_push_out" "Could not read the pushed manifest digest"
-
 # #557: main()'s --resume-promote branch has the exact same shape (a second, separately-written
 # instance of the bug — found in review, not part of the original 3 sites). Drive the real `main`
 # (preflight/ghcr_login stubbed no-op) with RESUME_PROMOTE=1 and errexit left ON.
@@ -326,7 +331,6 @@ resume_out="$(
 assert_rc "--resume-promote, real errexit: retries-exhausted digest read still aborts (#557)" "$?" "1"
 assert_contains "--resume-promote, real errexit: crafted die() reaches the operator (#557)" \
     "$resume_out" "Cannot resolve a staged digest"
-
 echo "== unit: release.sh preflight checks the lint toolchain (#426) =="
 # A reimaged release box loses shellcheck/shfmt/node/uv — the v1.3.0 cut died ~1 min in mid-gate with a
 # bare `shellcheck: not found`. check_release_toolchain must fail fast BEFORE building, naming the tool
@@ -359,7 +363,6 @@ tc_rc=$?
 assert_rc "missing tool -> preflight fails fast (rc 1)" "$tc_rc" "1"
 assert_contains "the missing tool is named" "$tc_out" "shfmt"
 assert_contains "error points at the provisioning doc" "$tc_out" "release-server.md"
-
 echo "== unit: release-smoke resolves the upgraded install at ASSERT time (#1068) =="
 # The #59 upgrade never rewrites the old install in place — it extracts a fresh pithead-v<new> and
 # repoints `current`, which is what makes rollback possible. So asserting on the directory the run
@@ -404,7 +407,6 @@ assert_eq "with current pointing at it, the same dir resolves to itself" \
 # does not mistake it for a covered behaviour.
 rm -rf "$SMK"
 unset SMK SMOKE_SH
-
 echo "== unit: pull-vs-build mode (#44) =="
 # is_source_checkout / resolve_pull_policy / STACK_VERSION key off whether the image build CONTEXTS
 # (Dockerfiles) are present: a source checkout builds locally (:dev, --pull never); a release bundle
@@ -476,7 +478,6 @@ assert_eq "STACK_VERSION v0.1.0 in a release bundle" "$(
     export_build_provenance
     printf '%s' "$STACK_VERSION"
 )" "v0.1.0"
-
 echo "== release: install bundle is free of macOS xattr pax headers (#252) =="
 # Static guard: make_bundle must keep `--no-xattrs` AND the post-bundle xattr assertion, so the
 # fix can't be silently reverted in a future edit.
