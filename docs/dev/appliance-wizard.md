@@ -223,7 +223,9 @@ the same "validate before mutating real state" idiom `consume_preseed_config` al
    directory. Backups with custom data paths need the administrative restore workflow.
 3. Validate the staged `config.json` through the same fresh-process `parse_and_validate_config`
    call `firstboot_consume_spool` uses.
-4. Only on success: install the accepted configuration files at mode `0600`, copy the
+4. Regenerate `.env` and `Caddyfile` from the validated configuration, retaining only
+   validated generated secrets and Tor identity from the archived environment.
+   Only on success: install the configuration files at mode `0600`, copy the
    accepted data trees to their mapped destinations, and publish `applied`. Optional chain
    data is accepted within the upload cap; normal backups exclude it. The firstboot
    loop short-circuits straight into that acceptance path; `prepare_directories` (run by the

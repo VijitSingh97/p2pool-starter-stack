@@ -96,10 +96,10 @@ exec "$@"
 EOF
 chmod +x "$RS/bin/docker" "$RS/bin/sudo"
 cat >"$RS/.env" <<EOF
-MONERO_ONION_ADDRESS=mona.onion
-TARI_ONION_ADDRESS=taria.onion
-P2POOL_ONION_ADDRESS=p2pa.onion
-PROXY_AUTH_TOKEN=RSTOKEN
+MONERO_ONION_ADDRESS=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion
+TARI_ONION_ADDRESS=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion
+P2POOL_ONION_ADDRESS=cccccccccccccccccccccccccccccccccccccccccccccccccccccccc.onion
+PROXY_AUTH_TOKEN=0123456789abcdef01234567
 HOST_IP=box.lan
 DEPLOYMENT_COMPLETED=true
 COMPOSE_PROFILES=local_node
@@ -127,11 +127,41 @@ out=$(cd "$RS" && PATH="$RS/bin:$PATH" run_sourced "$RS" firstboot_consume_resto
 assert_contains "valid restore accepted" "$out" "rc0"
 assert_eq "valid restore installs config.json" "$([ -f "$RS/config.json" ] && echo yes)" "yes"
 assert_contains "valid restore carries the original wallet" "$(cat "$RS/config.json" 2>/dev/null)" "$WALLET"
-assert_eq "valid restore brings back the Caddyfile" "$(cat "$RS/Caddyfile" 2>/dev/null)" "CADDY-ORIG"
+assert_contains "valid restore regenerates the Caddyfile from config" "$(cat "$RS/Caddyfile" 2>/dev/null)" "reverse_proxy 127.0.0.1:8000"
 assert_eq "valid restore brings back the dashboard db" "$(cat "$RS/data/dashboard/dashboard.db" 2>/dev/null)" "DBDATA-ORIG"
 assert_eq "applied marker set" "$([ -f "$RSPOOL/applied" ] && echo yes)" "yes"
 assert_eq "the archive is consumed" "$([ -f "$RSPOOL/restore-archive" ] || echo gone)" "gone"
 assert_eq "the passphrase is never retained" "$([ -f "$RSPOOL/restore-passphrase" ] || echo gone)" "gone"
+
+# The wizard and carried-ESP doors share restore_apply. Prove that a valid config cannot smuggle
+# generated runtime policy through either archive .env or Caddyfile, while its generated identity
+# still survives the canonical re-render.
+RH="$RS/stale-derived"
+mkdir -p "$RH/${RS#/}"
+cp "$RS/config.json" "$RH/${RS#/}/config.json"
+cat >"$RH/${RS#/}/.env" <<'EOF'
+PROXY_AUTH_TOKEN=abcdef0123456789abcdef01
+MONERO_ONION_ADDRESS=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion
+TARI_ONION_ADDRESS=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion
+P2POOL_ONION_ADDRESS=cccccccccccccccccccccccccccccccccccccccccccccccccccccccc.onion
+ARCHIVE_ONLY_VALUE=stale-generated-setting
+DASHBOARD_AUTH_HASH_B64=c3RhbGUtZml4dHVyZQ==
+DASHBOARD_AUTH_PW_FP=stale-fingerprint
+DEPLOYMENT_COMPLETED=true
+EOF
+printf 'STALE-GENERATED-CADDY\n' >"$RH/${RS#/}/Caddyfile"
+tar -czf "$RSPOOL/restore-archive" -C "$RH" "${RS#/}/config.json" "${RS#/}/.env" "${RS#/}/Caddyfile"
+: >"$RSPOOL/restore-passphrase"
+rm -f "$RSPOOL/applied"
+out=$(cd "$RS" && PATH="$RS/bin:$PATH" run_sourced "$RS" firstboot_consume_restore "$RSPOOL" && echo rc0)
+assert_contains "wizard restore discards archive-derived policy" "$out" rc0
+assert_eq "setup restore clears source deployment status" "$(sed -n 's/^DEPLOYMENT_COMPLETED=//p' "$RS/.env")" false
+assert_eq "wizard restore preserves the generated proxy secret" "$(sed -n 's/^PROXY_AUTH_TOKEN=//p' "$RS/.env")" abcdef0123456789abcdef01
+assert_not_contains "wizard restore drops unrecognized archive env policy" "$(cat "$RS/.env")" ARCHIVE_ONLY_VALUE
+assert_eq "wizard restore derives disabled dashboard auth from config" "$(sed -n 's/^DASHBOARD_AUTH_HASH_B64=//p' "$RS/.env")" ""
+assert_contains "wizard restore regenerates the dashboard proxy target" "$(cat "$RS/Caddyfile")" "reverse_proxy 127.0.0.1:8000"
+assert_not_contains "wizard restore discards stale generated Caddy policy" "$(cat "$RS/Caddyfile")" STALE-GENERATED-CADDY
+rm -rf "$RH"
 rm -f "$RSPOOL/applied" "$RS/config.json" # clean slate for the rejection cases below
 
 # 1b) Installer door (installer=1): the config surfaces for the credentials card, but the

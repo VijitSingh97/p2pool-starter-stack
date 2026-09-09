@@ -303,8 +303,8 @@ machine's own — it carries that machine's `DEPLOYMENT_COMPLETED=true`. `setup(
 THIS hardware" from "already live", and fatally refused with no tty to ask: `podman ps -a` on
 the live guest showed zero containers, ever. `restore_apply` — the one commit point both restore
 doors share — now clears the carried marker right after landing the archive, before its caller's
-`setup()` runs; every other restored value (onion keys, tokens, `HOST_IP`) still rides through
-untouched, and a full `.env` re-render happens inside `setup()` anyway. The guard itself is
+`setup()` runs. Restore retains validated generated secrets and Tor identity, and derives
+`HOST_IP` and runtime policy from the validated configuration. `setup()` renders `.env` again. The guard itself is
 unchanged and still refuses a headless re-run on a genuinely live box (its own #924 test stays
 green) — `stack_restore` (the admin `./pithead restore` command, for a box already deployed on
 its own hardware) never calls `restore_apply` and keeps its completion marker exactly as before.
