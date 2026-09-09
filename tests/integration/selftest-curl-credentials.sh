@@ -11,7 +11,7 @@ mkdir "$TMP/bin" "$TMP/box"
 REAL_BASH="$(command -v bash)"
 REAL_CURL="$(command -v curl)"
 REAL_JQ="$(command -v jq)"
-export REAL_BASH REAL_CURL REAL_JQ ARGV_LOG="$TMP/argv" CURL_CONFIG="$TMP/config" CURL_BODY="$TMP/body"
+export REAL_BASH REAL_CURL REAL_JQ ARGV_LOG="$TMP/argv" CURL_CONFIG="$TMP/config" CURL_PARSED="$TMP/parsed.c" CURL_BODY="$TMP/body"
 cat >"$TMP/bin/bash" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >>"$ARGV_LOG"
@@ -33,12 +33,13 @@ exec "$REAL_BASH" -c "${!#}"
 SH
 cat >"$TMP/bin/curl" <<'SH'
 #!/usr/bin/env bash
+set -euo pipefail
 printf '%s\n' "$@" >>"$ARGV_LOG"
 case " $* " in
 *' -K - '*)
     config="$(cat)"
     printf '%s\n' "$config" >"$CURL_CONFIG"
-    printf '%s\n' "$config" | "$REAL_CURL" -fsS -K - --url file:///dev/null -o /dev/null
+    printf '%s\n' "$config" | "$REAL_CURL" -fsS -K - --libcurl "$CURL_PARSED" --url file:///dev/null -o /dev/null
     ;;
 *) : >"$CURL_CONFIG" ;;
 esac
@@ -82,11 +83,18 @@ env_on_box() {
     esac
 }
 check_transport() { # <config directive> <expected decoded credential>
+    local encoded
     if grep -Fq fixturesecret42 "$ARGV_LOG"; then
         echo 'FAIL: fixture credential entered process argv' >&2
         return 1
     fi
     test "$(sed -n "s/^$1 = //p" "$CURL_CONFIG" | head -n1 | jq -r .)" = "$2"
+    encoded="$(printf '%s' "$2" | jq -Rs .)"
+    case "$1" in
+    user) grep -Fq "CURLOPT_USERPWD, $encoded);" "$CURL_PARSED" ;;
+    header) grep -Fq "curl_slist_append(slist1, $encoded);" "$CURL_PARSED" ;;
+    data-binary) grep -Fq "CURLOPT_POSTFIELDS, $encoded);" "$CURL_PARSED" ;;
+    esac
 }
 
 echo "== authenticated probes keep credentials in curl config stdin and ordinary SSH stdin untouched =="
