@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-#
 # Lightweight integration check: validate that docker-compose.yml parses and all
 # ${VAR} interpolations resolve against a representative .env. This is client-side
 # (`docker compose config` does not need the daemon), so it runs anywhere docker is installed.
@@ -12,6 +11,7 @@ if ! docker compose version >/dev/null 2>&1; then
     echo "SKIP: docker compose not available"
     exit 0
 fi
+bash "$ROOT/tests/stack/standalone/test_dotenv.sh" || exit 1
 
 ENV_FILE="$(mktemp)"
 EMPTY_TOKEN_ENV="$(mktemp)"
