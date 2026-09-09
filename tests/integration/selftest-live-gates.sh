@@ -21,6 +21,48 @@ else
     it_fail "durable migration-state probe self-test"
 fi
 
+baseline=$'dashboard\t/data\t/shared/dashboard\tbind\ndashboard\t/clearnet-state\t/old/data/clearnet-state\tbind'
+candidate=$'dashboard\t/data\t/shared/dashboard\tbind\ndashboard\t/clearnet-state\t/new/data/clearnet-state\tbind'
+assert_eq "mount comparison permits only the modeled per-release internal-state move" \
+    "$(normalized_stateful_mounts /old "$baseline")" "$(normalized_stateful_mounts /new "$candidate")"
+if normalized_stateful_mounts /wrong "$candidate" >/dev/null 2>&1; then
+    it_fail "mount comparison rejects an internal-state source outside the exact release dir"
+else
+    it_pass "mount comparison rejects an internal-state source outside the exact release dir"
+fi
+
+if (
+    _pred_proxy_route() { [ "$1 $2" = "XVB pool.example:1234" ]; }
+    rx() { [[ "$1" == *"timestamp > ? AND v_xvb > 0"*" 123" ]] && echo 1; }
+    _pred_fresh_xvb_history_on_route 123 pool.example:1234
+); then
+    it_pass "XvB work proof requires a fresh positive route-specific history row"
+else
+    it_fail "XvB work proof requires a fresh positive route-specific history row"
+fi
+
+if (
+    td="$(mktemp -d)" && trap 'rm -rf "$td"' EXIT
+    mkdir "$td/bin" "$td/src1" "$td/src2" "$td/.pithead-live-src1-n" "$td/.pithead-live-src2-n"
+    printf candidate >"$td/src1/value"
+    printf candidate >"$td/src2/value"
+    printf baseline >"$td/.pithead-live-src1-n/value"
+    printf baseline >"$td/.pithead-live-src2-n/value"
+    printf '%s\n' '#!/bin/sh' '[ "$1" != -n ] || shift' 'exec "$@"' >"$td/bin/sudo"
+    printf '%s\n' '#!/bin/sh' 'shift 3; case "$1" in *src2*) exit 1;; esac' 'exec /bin/cp -R "$1" "$2"' >"$td/bin/cp"
+    printf '%s\n' '#!/bin/sh' 'printf x >>"$MV_LOG"' 'exec /bin/mv "$@"' >"$td/bin/mv"
+    chmod +x "$td/bin/"*
+    export PATH="$td/bin:$PATH" MV_LOG="$td/moves"
+    rx() { bash -c "$1"; }
+    UPGRADE_STATE_SNAPSHOTS="$td/src1"$'\t'"$td/.pithead-live-src1-n"$'\n'"$td/src2"$'\t'"$td/.pithead-live-src2-n"
+    UPGRADE_STATE_OLD_DIRS=""
+    ! restore_state_snapshots && [ "$(cat "$td/src1/value")" = candidate ] && [ ! -e "$MV_LOG" ]
+); then
+    it_pass "an nth-snapshot copy failure performs no source swaps"
+else
+    it_fail "an nth-snapshot copy failure performs no source swaps"
+fi
+
 if (
     td="$(mktemp -d)" && trap 'rm -rf "$td"' EXIT
     printf '%s\n' '#!/bin/sh' \
@@ -66,9 +108,10 @@ fi
 if (
     td="$(mktemp -d)" && trap 'rm -rf "$td"' EXIT
     mkdir "$td/bin"
-    printf '%s\n' 'TOR_EGRESS_NFT_TABLE=pithead_egress' 'container_engine() { echo podman; }' 'apply_tor_egress_firewall() { :; }' \
+    printf '%s\n' 'TOR_EGRESS_TAG=pithead-tor-egress' 'container_engine() { echo docker; }' 'env_get() { :; }' \
+        'tor_egress_rules() { printf "%s\n" "-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT" "-s 172.28.0.25 -j ACCEPT" "-s 172.28.0.0/24 -d 10.0.0.0/8 -j ACCEPT" "-s 172.28.0.0/24 -d 172.16.0.0/12 -j ACCEPT" "-s 172.28.0.0/24 -d 192.168.0.0/16 -j ACCEPT" "-s 172.28.0.0/24 -d 100.64.0.0/10 -j ACCEPT" "-s 172.28.0.0/24 -j DROP"; }' 'apply_tor_egress_firewall() { :; }' \
         'error() { exit 1; }' 'main() { apply_tor_egress_firewall; printf "%s" "$1" > called; }' >"$td/pithead"
-    printf '%s\n' '#!/bin/sh' 'shift' 'printf "hook forward priority -5; ip saddr 172.28.0.0/24 drop\n"' >"$td/bin/sudo"
+    printf '%s\n' '#!/bin/sh' 'shift; [ "$1 $2" != "iptables -S" ] || printf "%s\n" "-A DOCKER-USER -m comment --comment pithead-tor-egress -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT" "-A DOCKER-USER -m comment --comment pithead-tor-egress -s 172.28.0.25 -j ACCEPT" "-A DOCKER-USER -m comment --comment pithead-tor-egress -s 172.28.0.0/24 -d 10.0.0.0/8 -j ACCEPT" "-A DOCKER-USER -m comment --comment pithead-tor-egress -s 172.28.0.0/24 -d 172.16.0.0/12 -j ACCEPT" "-A DOCKER-USER -m comment --comment pithead-tor-egress -s 172.28.0.0/24 -d 192.168.0.0/16 -j ACCEPT" "-A DOCKER-USER -m comment --comment pithead-tor-egress -s 172.28.0.0/24 -d 100.64.0.0/10 -j ACCEPT" "-A DOCKER-USER -m comment --comment pithead-tor-egress -s 172.28.0.0/24 -j DROP"' >"$td/bin/sudo"
     chmod +x "$td/bin/sudo"
     IT_REMOTE_DIR="$td" PATH="$td/bin:$PATH"
     rx() { (cd "$IT_REMOTE_DIR" && bash -c "$1"); }
@@ -164,7 +207,7 @@ if (
     printf audit >"$td/pithead-v1.0.0/data/control/audit"
     printf new >"$UPGRADE_STAGE_DIR/pithead/added"
     printf '2.0.0\n' >"$UPGRADE_STAGE_DIR/pithead/VERSION"
-    prepare_candidate_install && [ "$(cat "$td/pithead-v1.0.0/kept")" = old ] && [ ! -e "$td/pithead-v2.0.0/kept" ] &&
+    prepare_baseline_install && prepare_candidate_install && [ "$(cat "$td/pithead-v1.0.0/kept")" = old ] && [ ! -e "$td/pithead-v2.0.0/kept" ] &&
         [ "$(cat "$td/pithead-v2.0.0/added")" = new ] && [ "$(cat "$td/pithead-v2.0.0/data/control/audit")" = audit ] &&
         [ "$IT_REMOTE_DIR" = "$(cd "$td/pithead-v2.0.0" && pwd -P)" ]
 ); then

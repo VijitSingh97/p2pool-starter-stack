@@ -43,9 +43,11 @@ def value_shape(raw):
     return "string"
 
 
-def snapshot(conn, epoch):
+def snapshot(conn, epoch, require_current=False):
     have = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    required = set(PERMANENT) | set(RETAINED) | {"kv_store", "worker_config_revision"}
+    required = set(PERMANENT) | set(RETAINED) | {"kv_store"}
+    if require_current:
+        required.add("worker_config_revision")
     if not required <= have:
         raise RuntimeError(f"missing durable tables: {sorted(required - have)}")
     lines = []
@@ -82,12 +84,13 @@ def snapshot(conn, epoch):
             "SELECT key,value FROM kv_store WHERE key LIKE 'xvb_%' OR key = 'snapshot_latest_data'"
         )
     )
-    lines.extend(
-        f"worker_config_revision {hashlib.sha256(row_bytes(row)).hexdigest()}"
-        for row in conn.execute(
-            "SELECT worker,revision,last_change_id,drift_from FROM worker_config_revision"
+    if "worker_config_revision" in have:
+        lines.extend(
+            f"worker_config_revision {hashlib.sha256(row_bytes(row)).hexdigest()}"
+            for row in conn.execute(
+                "SELECT worker,revision,last_change_id,drift_from FROM worker_config_revision"
+            )
         )
-    )
     return "\n".join(lines)
 
 
@@ -98,14 +101,20 @@ if sys.argv[1:] == ["--self-test"]:
     for table, (time_col, _) in RETAINED.items():
         db.execute(f"CREATE TABLE {table} ({time_col} REAL, value TEXT)")  # noqa: S608
     db.execute("CREATE TABLE kv_store (key TEXT, value TEXT)")
-    db.execute(
-        "CREATE TABLE worker_config_revision (worker TEXT, revision TEXT, last_change_id TEXT, drift_from TEXT)"
-    )
     db.execute("INSERT INTO blocks VALUES (100, 'kept')")
     db.execute("INSERT INTO history VALUES (100, 'kept')")
     db.execute("INSERT INTO kv_store VALUES ('payout_wallet', 'stable')")
     db.execute("INSERT INTO kv_store VALUES ('xvb_last_update', '100')")
     before = snapshot(db, 100)
+    try:
+        snapshot(db, 100, require_current=True)
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError("candidate-only schema was accepted as current before migration")
+    db.execute(
+        "CREATE TABLE worker_config_revision (worker TEXT, revision TEXT, last_change_id TEXT, drift_from TEXT)"
+    )
     db.execute("INSERT INTO blocks VALUES (101, 'added')")
     db.execute("INSERT INTO history VALUES (101, 'added')")
     db.execute("UPDATE kv_store SET value='101' WHERE key='xvb_last_update'")
@@ -120,9 +129,8 @@ if sys.argv[1:] == ["--self-test"]:
         raise RuntimeError("volatile kv_store schema corruption was accepted")
     raise SystemExit(0)
 
-print(
-    snapshot(
-        sqlite3.connect(sys.argv[2] if len(sys.argv) > 2 else "/data/mining_data.db"),
-        int(sys.argv[1]),
-    )
-)
+args = sys.argv[1:]
+require_current = args[:1] == ["--require-current-schema"]
+if require_current:
+    args.pop(0)
+print(snapshot(sqlite3.connect(args[1] if len(args) > 1 else "/data/mining_data.db"), int(args[0]), require_current))

@@ -12,13 +12,39 @@ restore_xvb_original() {
         [ "$(env_on_box XVB_TOR_ENABLED)" = "$baseline_tor" ] &&
         wait_for 120 5 "proxy to restore the exact P2Pool route" _pred_proxy_route P2POOL "$_XVB_P2POOL_URL" &&
         [ "$(proxy_active_route)" = "$_XVB_BASELINE_ROUTE" ] &&
-        [ "$(worker_names)" = "$_XVB_BASELINE_WORKERS" ] &&
+        wait_for 240 5 "the exact baseline worker set" _pred_worker_set "$_XVB_BASELINE_WORKERS" &&
         [ "$(jq_get "$(api_state)" '.stratum.total_hashes')" -gt 0 ] 2>/dev/null || return 1
     [ "${_UPGRADE_RESTORE_ARMED:-0}" = 1 ] || _SAFETY_RESTORE_ARMED=0
 }
 
+firewall_verifier_script() {
+    cat <<'SH'
+verify_tor_egress_firewall() {
+    local subnet prefix tor_ip expected actual br rule
+    subnet=$(env_get NETWORK_SUBNET 2>/dev/null); [ -n "$subnet" ] || subnet=172.28.0.0/24
+    prefix=$(env_get NETWORK_PREFIX 2>/dev/null); [ -n "$prefix" ] || prefix=172.28.0
+    tor_ip="$prefix.25"
+    if [ "$(container_engine)" = podman ]; then
+        br=$(mining_net_ipv6_bridge) || return 1
+        expected=$(render_tor_egress_nft "$subnet" "$tor_ip" "$br" | tail -n +3 | tr -d '[:space:]')
+        actual=$(sudo -n nft list table inet "$TOR_EGRESS_NFT_TABLE" 2>/dev/null | tr -d '[:space:]' | sed 's/priorityfilter-5/priority-5/') || return 1
+    else
+        sudo -n iptables -C FORWARD -j DOCKER-USER >/dev/null 2>&1 || return 1
+        expected=""
+        while IFS= read -r rule; do expected+="-A DOCKER-USER -m comment --comment $TOR_EGRESS_TAG $rule\n"; done < <(tor_egress_rules "$subnet" "$tor_ip")
+        actual=$(sudo -n iptables -S DOCKER-USER 2>/dev/null | sed 's/"//g; s/RELATED,ESTABLISHED/ESTABLISHED,RELATED/' | grep -F -- "--comment $TOR_EGRESS_TAG") || return 1
+        expected=$(printf '%b' "$expected")
+    fi
+    [ "$actual" = "$expected" ]
+}
+SH
+}
+
 strict_firewall_installed() {
-    rx 'source ./pithead; if [ "$(container_engine)" = podman ]; then r=$(sudo -n nft list table inet "$TOR_EGRESS_NFT_TABLE" 2>/dev/null) && grep -q "hook forward" <<<"$r" && grep -qw drop <<<"$r"; else sudo -n iptables -C FORWARD -j DOCKER-USER >/dev/null 2>&1 && r=$(sudo -n iptables -S DOCKER-USER 2>/dev/null) && grep -qF -- "$TOR_EGRESS_TAG" <<<"$r" && grep -q -- "-j DROP" <<<"$r"; fi'
+    local payload verifier
+    verifier="$(firewall_verifier_script)"
+    payload="$(printf '%s\n%s\n%s\n' 'source ./pithead' "$verifier" verify_tor_egress_firewall | base64 | tr -d '\n')"
+    rx "printf %s $(quote_arg "$payload") | base64 -d | bash"
 }
 
 _pred_hashes_advanced() {
@@ -27,23 +53,29 @@ _pred_hashes_advanced() {
     [[ "$now" =~ ^[0-9]+$ ]] && [ "$now" -gt "$1" ]
 }
 
+_pred_fresh_xvb_history_on_route() { # <epoch> <pool-url>
+    local rows
+    _pred_proxy_route XVB "$2" || return 1
+    rows="$(rx "docker exec dashboard python3 -c 'import sqlite3,sys;c=sqlite3.connect(\"/data/mining_data.db\");print(c.execute(\"SELECT count(*) FROM history WHERE timestamp > ? AND v_xvb > 0\",(float(sys.argv[1]),)).fetchone()[0])' $(quote_arg "$1")" 2>/dev/null)"
+    [[ "$rows" =~ ^[1-9][0-9]*$ ]]
+}
+
 strict_pithead() {
-    local payload args="" arg
+    local payload verifier args="" arg
     for arg in "$@"; do printf -v args '%s %q' "$args" "$arg"; done
+    verifier="$(firewall_verifier_script)"
     payload="$(
-        base64 <<'SH' | tr -d '\n'
-source ./pithead
+        {
+            printf '%s\n%s\n' 'source ./pithead' "$verifier"
+            cat <<'SH'
 eval "$(declare -f apply_tor_egress_firewall | sed '1s/apply_tor_egress_firewall/original_apply_tor_egress_firewall/')"
 apply_tor_egress_firewall() {
     original_apply_tor_egress_firewall
-    if [ "$(container_engine)" = podman ]; then
-        r=$(sudo -n nft list table inet "$TOR_EGRESS_NFT_TABLE" 2>/dev/null) && grep -q 'hook forward' <<<"$r" && grep -qw drop <<<"$r"
-    else
-        sudo -n iptables -C FORWARD -j DOCKER-USER >/dev/null 2>&1 && r=$(sudo -n iptables -S DOCKER-USER 2>/dev/null) && grep -qF -- "$TOR_EGRESS_TAG" <<<"$r" && grep -q -- '-j DROP' <<<"$r"
-    fi || error "Live gate refuses to start containers without the hooked Tor-egress DROP rules."
+    verify_tor_egress_firewall || error "Live gate refuses to start containers without the complete canonical Tor-egress ruleset."
 }
 main "$@"
 SH
+        } | base64 | tr -d '\n'
     )"
     rx "printf %s $(quote_arg "$payload") | base64 -d | bash -s --$args"
 }

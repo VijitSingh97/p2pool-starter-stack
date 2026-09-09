@@ -73,15 +73,18 @@ jobs:
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           RELEASE_GATE_ACTORS: ${{ vars.RELEASE_GATE_ACTORS }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
         run: |
           if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
             echo "Release gate must be dispatched on refs/heads/$DEFAULT_BRANCH, not $GITHUB_REF." >&2
             exit 1
           fi
-          case ",${RELEASE_GATE_ACTORS:-}," in
-            *,"$GITHUB_ACTOR",*) ;;
-            *) echo "Actor $GITHUB_ACTOR is not in the repository-configured RELEASE_GATE_ACTORS allowlist." >&2; exit 1 ;;
-          esac
+          for actor in "$GITHUB_ACTOR" "$TRIGGERING_ACTOR"; do
+            case ",${RELEASE_GATE_ACTORS:-}," in
+              *,"$actor",*) ;;
+              *) echo "Actor $actor is not in the repository-configured RELEASE_GATE_ACTORS allowlist." >&2; exit 1 ;;
+            esac
+          done
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

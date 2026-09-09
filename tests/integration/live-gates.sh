@@ -224,20 +224,24 @@ run_image_upgrade() {
         it_fail "pre-upgrade derived host state captured for rollback" "could not fingerprint generated state; upgrade not attempted"
         return 0
     fi
+    if ! prepare_baseline_install; then
+        rm -rf "$UPGRADE_STAGE_DIR"
+        UPGRADE_STAGE_DIR="" UPGRADE_ROLLBACK_DIR=""
+        it_fail "versioned baseline layout validated for exact rollback" "the live target must be a current -> pithead-v* layout"
+        return 0
+    fi
     if ! pithead down >/dev/null 2>&1 || ! capture_state_snapshots "$before_mounts"; then
         rm -rf "$UPGRADE_STAGE_DIR"
         UPGRADE_STAGE_DIR="" UPGRADE_ROLLBACK_DIR=""
         it_fail "quiesced writable state captured in private CoW snapshots" "the stack must stop cleanly and every stateful mount must support cp --reflink=always; upgrade not attempted"
         return 0
     fi
+    arm_upgrade_abort_restore
     if ! prepare_candidate_install; then
-        cleanup_state_snapshots
-        [ -z "$UPGRADE_CANDIDATE_DIR" ] || rm -rf "$UPGRADE_CANDIDATE_DIR"
-        rm -rf "$UPGRADE_STAGE_DIR"
         it_fail "candidate staged in a fresh immutable version directory" "the live target must be a current -> pithead-v* layout with a free candidate version path"
+        restore_upgrade_baseline || true
         return 0
     fi
-    arm_upgrade_abort_restore
     it_pass "verified candidate staged in a fresh version directory with exact rollback armed"
 
     it_step "running the candidate's supported pithead upgrade path…"
@@ -249,7 +253,7 @@ run_image_upgrade() {
     wait_status_ok 300 || it_fail "stack recovered after image upgrade" "pithead status did not become healthy"
     wait_monero_synced 300 || it_fail "Monero resynchronized after image upgrade" "sync did not reach done"
     wait_tari_synced 300 || it_fail "Tari resynchronized after image upgrade" "sync did not reach done"
-    [ "$SKIP_MINING_ASSERTS" = "1" ] || wait_miner_running 240 || it_fail "workers returned after image upgrade" "expected workers did not return"
+    [ "$SKIP_MINING_ASSERTS" = "1" ] || wait_for 240 5 "the exact pre-upgrade worker set" _pred_worker_set "$before_workers" || it_fail "workers returned after image upgrade" "the exact pre-upgrade worker set did not return"
     [ "$SKIP_MINING_ASSERTS" = "1" ] || wait_hashes_flowing 360 || it_fail "hashes resumed after image upgrade" "stratum hashes stayed idle"
 
     local after_state after_monero after_monero_id after_monero_tip after_rev after_images after_revisions after_refs after_all_refs after_secrets after_workers after_telemetry missing_workers name safe_name
@@ -301,7 +305,9 @@ run_image_upgrade() {
     assert_ne "the running first-party image set changed" "$after_images" "$before_images"
     assert_eq "Monero data path reused across image versions" "$(env_on_box MONERO_DATA_DIR)" "$before_monero_dir"
     assert_eq "Tari data path reused across image versions" "$(env_on_box TARI_DATA_DIR)" "$before_tari_dir"
-    assert_eq "stateful containers reused the exact mount sources" "$(stateful_mounts)" "$before_mounts"
+    assert_eq "persistent mounts stayed stable or moved to the candidate's copied internal state" \
+        "$(normalized_stateful_mounts "$UPGRADE_CANDIDATE_DIR" "$(stateful_mounts)")" \
+        "$(normalized_stateful_mounts "$UPGRADE_BASELINE_DIR" "$before_mounts")"
     assert_eq "captured Monero chain prefix survived the upgrade" "$(monero_block_identity "$((before_monero - 1))")" "$before_monero_id"
     assert_eq "Tari chain identity survived the upgrade" "$(tari_block_identity "$before_tari")" "$before_tari_id"
     if chain_tip_valid "$after_monero_tip" && height_continues "$before_monero" "$after_monero"; then
@@ -353,7 +359,7 @@ run_xvb_routing_smoke() {
     IT_CURRENT_SCENARIO="xvb-routing"
     echo ""
     it_log "── bounded live XvB routing smoke ───────────────────"
-    local fp_before p2pool_url xvb_url prefix privacy_fails baseline_hash xvb_hash fails_before="$IT_FAIL"
+    local fp_before p2pool_url xvb_url xvb_route_epoch prefix privacy_fails baseline_hash fails_before="$IT_FAIL"
     if [ "$(jq_get "$BASELINE_CONFIG" '.xvb.enabled')" != true ]; then
         it_fail "XvB smoke starts from a known enabled baseline" "set xvb.enabled=true before the bounded transition"
         return 0
@@ -426,6 +432,12 @@ run_xvb_routing_smoke() {
             return 0
         fi
         xvb_url="$(env_on_box XVB_POOL_URL)"
+        if [ -z "$xvb_url" ]; then
+            it_fail "XvB route has a real upstream URL" "XVB_POOL_URL is empty"
+            capture_artifacts "xvb-routing" "$OUT_DIR"
+            restore_xvb_or_safety || it_fail "missing XvB upstream restored the exact baseline"
+            return 0
+        fi
         if wait_for 180 5 "a fresh configured XvB network sample" _pred_xvb_feed_fresh; then
             it_pass "dashboard received a fresh configured XvB network sample"
         else
@@ -437,12 +449,11 @@ run_xvb_routing_smoke() {
             it_fail "controller moved the real proxy route to XvB with workers attached" \
                 "mode [$(jq_get "$(api_state)" '.hashrate.mode_name')], active pool [$(proxy_active_pool)]"
         fi
-        xvb_hash="$(jq_get "$(api_state)" '.stratum.total_hashes')"
-        [[ "$xvb_hash" =~ ^[0-9]+$ ]] || xvb_hash=0
-        if wait_for 360 5 "fresh hashes through the XvB route" _pred_hashes_advanced "$xvb_hash"; then
-            it_pass "workers submitted fresh hashes while the XvB route was active"
+        xvb_route_epoch="$(rx 'date +%s')"
+        if wait_for 360 5 "a fresh positive XvB-routed hashrate sample" _pred_fresh_xvb_history_on_route "$xvb_route_epoch" "$xvb_url"; then
+            it_pass "dashboard recorded fresh positive hashrate while the XvB route was active"
         else
-            it_fail "workers submitted fresh hashes while the XvB route was active" "the configured route did not carry fresh miner work"
+            it_fail "dashboard recorded fresh positive hashrate while the XvB route was active" "no new positive v_xvb history row appeared on the configured route"
         fi
         privacy_fails="$IT_FAIL"
         assert_egress_posture

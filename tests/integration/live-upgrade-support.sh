@@ -91,11 +91,15 @@ pinned_refs_valid() {
     [ "$seen" = " tor monerod p2pool xmrig-proxy dashboard" ]
 }
 worker_names() { api_state | jq -r '.workers[]?.name' 2>/dev/null | sort -u; }
+_pred_worker_set() { [ "$(worker_names)" = "$1" ]; }
 all_running_refs() {
     rx 'docker compose ps --services --status running 2>/dev/null | sort | while read -r s; do c=$(docker compose ps -q "$s" | head -n1); [ -n "$c" ] || exit 1; docker inspect --format "$s {{.Config.Image}}" "$c"; done'
 }
 stateful_mounts() {
-    rx 'for s in tor monerod wallet-rpc tari tari-wallet p2pool dashboard; do c=$(docker compose ps -q "$s" 2>/dev/null | head -n1); [ -n "$c" ] || continue; docker inspect "$c" | jq -r --arg s "$s" '\''.[0].Mounts[] | select(.RW == true and (.Destination | IN("/var/lib/tor","/home/ubuntu/.bitmonero","/home/ubuntu/wallets","/var/tari/node","/home/ubuntu/wallet","/home/ubuntu","/data","/clearnet-state","/control/requests"))) | [$s,.Destination,.Source,.Type] | @tsv'\''; done | sort'
+    rx 'set -euo pipefail; docker compose ps --services --status running | while read -r s; do [ -n "$s" ] || continue; c=$(docker compose ps -q "$s" | head -n1); [ -n "$c" ]; docker inspect "$c" | jq -r --arg s "$s" '\''.[0].Mounts[] | select(.RW == true and (.Destination | IN("/var/lib/tor","/home/ubuntu/.bitmonero","/home/ubuntu/wallets","/var/tari/node","/home/ubuntu/wallet","/home/ubuntu","/data","/clearnet-state","/control/requests","/var/log/caddy"))) | [$s,.Destination,.Source,.Type] | @tsv'\''; done | sort'
+}
+normalized_stateful_mounts() { # <version-dir> <mount TSV>
+    awk -F '\t' -v OFS='\t' -v root="$1" '$2 == "/clearnet-state" || $2 == "/control/requests" || $2 == "/var/log/caddy" { prefix=root "/data/"; if (index($3,prefix) != 1) exit 1; $3="@release/data/" substr($3,length(prefix)+1) } { print }' <<<"$2"
 }
 sha256_file() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
@@ -115,7 +119,7 @@ upgrade_secret_fingerprints() {
         [[ "$fp" =~ ^[0-9a-f]{64}$ ]] || return 1
         printf '%s=%s\n' "${keys%%:*}" "$fp"
     done
-    fp="$(rx 'd=$(grep -E "^TOR_DATA_DIR=" .env | head -n1 | cut -d= -f2-); [ -n "$d" ] && [ -d "$d" ] || exit 1; v=""; for pair in P2POOL:p2pool MONERO:monero TARI:tari DASHBOARD:dashboard; do key=${pair%%:*}_ONION_ADDRESS; svc=${pair#*:}; addr=$(grep -E "^$key=" .env | head -n1 | cut -d= -f2-); [ -n "$addr" ] && [ "$addr" != placeholder ] || continue; for name in hostname hs_ed25519_secret_key hs_ed25519_public_key; do p="$d/$svc/$name"; sudo -n test -f "$p" && sudo -n test ! -L "$p" || exit 1; row=$(sudo -n sha256sum "$p") || exit 1; v="$v$row\n"; done; a="$d/$svc/authorized_clients"; if sudo -n test -d "$a"; then [ -z "$(sudo -n find "$a" -mindepth 1 ! -type f -print -quit)" ] || exit 1; while IFS= read -r p; do row=$(sudo -n sha256sum "$p") || exit 1; v="$v$row\n"; done < <(sudo -n find "$a" -mindepth 1 -type f -print); fi; done; [ -n "$v" ] || exit 1; printf "%b" "$v" | sort | sha256sum | cut -d" " -f1')" || return 1
+    fp="$(rx 'd=$(grep -E "^TOR_DATA_DIR=" .env | head -n1 | cut -d= -f2-); [ -n "$d" ] && [ -d "$d" ] && [ ! -L "$d" ] || exit 1; v=""; for pair in P2POOL:p2pool MONERO:monero TARI:tari DASHBOARD:dashboard; do key=${pair%%:*}_ONION_ADDRESS; svc=${pair#*:}; addr=$(grep -E "^$key=" .env | head -n1 | cut -d= -f2-); sd="$d/$svc"; if sudo -n test -e "$sd"; then :; elif sudo -n test ! -e "$sd"; then [ -z "$addr" ] || [ "$addr" = placeholder ] || exit 1; continue; else exit 1; fi; sudo -n test -d "$sd" && sudo -n test ! -L "$sd" || exit 1; members=$(sudo -n find "$sd" -mindepth 1 -maxdepth 1 -print) || exit 1; while IFS= read -r p; do [ -n "$p" ] || continue; name=${p##*/}; case "$name" in hostname|hs_ed25519_secret_key|hs_ed25519_public_key) sudo -n test -f "$p" && sudo -n test ! -L "$p" || exit 1 ;; authorized_clients) sudo -n test -d "$p" && sudo -n test ! -L "$p" || exit 1 ;; *) exit 1 ;; esac; done <<<"$members"; for name in hostname hs_ed25519_secret_key hs_ed25519_public_key; do p="$sd/$name"; sudo -n test -f "$p" && sudo -n test ! -L "$p" || exit 1; row=$(sudo -n sha256sum "$p") || exit 1; v="$v$row\n"; done; a="$sd/authorized_clients"; if sudo -n test -e "$a"; then sudo -n test -d "$a" && sudo -n test ! -L "$a" || exit 1; members=$(sudo -n find "$a" -mindepth 1 -print) || exit 1; while IFS= read -r p; do [ -n "$p" ] || continue; sudo -n test -f "$p" && sudo -n test ! -L "$p" || exit 1; row=$(sudo -n sha256sum "$p") || exit 1; v="$v$row\n"; done <<<"$members"; elif ! sudo -n test ! -e "$a"; then exit 1; fi; done; [ -n "$v" ] || exit 1; printf "%b" "$v" | sort | sha256sum | cut -d" " -f1')" || return 1
     [[ "$fp" =~ ^[0-9a-f]{64}$ ]] || return 1
     printf 'onion-files=%s\n' "$fp"
 }
@@ -220,13 +224,20 @@ prepare_candidate_bundle() {
     done <<<"$UPGRADE_CANDIDATE_REFS"
 }
 
-prepare_candidate_install() {
-    local version parent old_name sdir
+prepare_baseline_install() {
+    local parent old_name
     UPGRADE_BASELINE_DIR="$(rx 'pwd -P')" || return 1
     parent="$(dirname "$UPGRADE_BASELINE_DIR")" old_name="$(basename "$UPGRADE_BASELINE_DIR")"
     [[ "$old_name" == pithead-v* ]] || return 1
     UPGRADE_CURRENT_LINK="$parent/current"
     [ "$(readlink -f "$UPGRADE_CURRENT_LINK")" = "$UPGRADE_BASELINE_DIR" ] || return 1
+    UPGRADE_ROLLBACK_DIR="$UPGRADE_BASELINE_DIR"
+}
+
+prepare_candidate_install() {
+    local version parent sdir
+    [ -n "$UPGRADE_BASELINE_DIR" ] && [ -n "$UPGRADE_CURRENT_LINK" ] || return 1
+    parent="$(dirname "$UPGRADE_BASELINE_DIR")"
     version="$(tr -d '\n' <"$UPGRADE_STAGE_DIR/pithead/VERSION")"
     [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || return 1
     UPGRADE_CANDIDATE_DIR="$parent/pithead-v$version"
@@ -238,7 +249,6 @@ prepare_candidate_install() {
     for sdir in control clearnet-state caddy-logs; do
         [ ! -d "$UPGRADE_BASELINE_DIR/data/$sdir" ] || cp -a "$UPGRADE_BASELINE_DIR/data/$sdir" "$UPGRADE_CANDIDATE_DIR/data/" || return 1
     done
-    UPGRADE_ROLLBACK_DIR="$UPGRADE_BASELINE_DIR"
     IT_REMOTE_DIR="$UPGRADE_CANDIDATE_DIR"
 }
 
@@ -249,24 +259,38 @@ repoint_baseline_install() {
 
 restore_upgrade_baseline() {
     [ "$_UPGRADE_RESTORE_ARMED" = "1" ] || return 0
+    _UPGRADE_RESTORE_ARMED=0
     it_warn "restoring the exact pre-upgrade release, state, and image set"
-    local rewind="${1:-1}" failed=0 files_ok=1 state restored_workers restored_telemetry monero_tip monero_height
-    pithead down >/dev/null 2>&1 || failed=1
+    local failed=0 files_ok=1 state restored_workers restored_telemetry monero_tip monero_height
+    pithead down >/dev/null 2>&1 || {
+        failed=1
+        files_ok=0
+    }
     IT_REMOTE_DIR="$UPGRADE_BASELINE_DIR"
-    repoint_baseline_install || {
+    [ "$files_ok" = 0 ] || repoint_baseline_install || {
         failed=1
         files_ok=0
     }
     if [ "$files_ok" = 1 ]; then
-        if [ "$rewind" = 1 ]; then
-            pithead restore -y "$SAFETY_ARCHIVE" >/dev/null 2>&1 || failed=1
-            pithead down >/dev/null 2>&1 || failed=1
-            restore_state_snapshots || failed=1
+        pithead restore -y "$SAFETY_ARCHIVE" >/dev/null 2>&1 || {
+            failed=1
+            files_ok=0
+        }
+        pithead down >/dev/null 2>&1 || {
+            failed=1
+            files_ok=0
+        }
+        if [ "$files_ok" = 1 ] && ! restore_state_snapshots; then
+            failed=1
+            files_ok=0
         fi
-        reset_control_units_for_render || failed=1
-        pithead render >/dev/null 2>&1 || failed=1
-        strict_pithead up >/dev/null 2>&1 || failed=1
-        wait_status_ok 300 || failed=1
+    fi
+    if [ "$files_ok" = 1 ]; then
+        if ! reset_control_units_for_render || ! pithead render >/dev/null 2>&1 ||
+            ! strict_pithead up >/dev/null 2>&1 || ! wait_status_ok 300 ||
+            ! wait_for 240 5 "the exact baseline worker set" _pred_worker_set "$UPGRADE_BEFORE_WORKERS"; then
+            failed=1
+        fi
     fi
     [ "$(rx 'cat config.json' 2>/dev/null)" = "$BASELINE_CONFIG" ] || failed=1
     [ "$(upgrade_secret_fingerprints)" = "$UPGRADE_BEFORE_SECRETS" ] || failed=1
@@ -290,14 +314,15 @@ restore_upgrade_baseline() {
     restored_telemetry="$(dashboard_durable_rows "$UPGRADE_TELEMETRY_EPOCH")"
     telemetry_rows_continue "$UPGRADE_BEFORE_TELEMETRY" "$restored_telemetry" || failed=1
     if [ "$failed" != 0 ]; then
+        pithead down >/dev/null 2>&1 || true
         # shellcheck disable=SC2034 # consumed by run.sh:safety_cleanup after this sourced file returns
         SAFETY_RESTORE_FAILED=1
+        _SAFETY_RESTORE_ARMED=0
         it_fail "exact pre-upgrade release baseline restored" \
             "code, state, health, config, secrets, images, chains, mounts, workers, or mining differ; recovery trees retained at $UPGRADE_ROLLBACK_DIR and $SAFETY_ARCHIVE"
         return 1
     fi
     it_pass "exact pre-upgrade release baseline restored"
-    _UPGRADE_RESTORE_ARMED=0
     _XVB_RESTORE_ARMED=0
     _SAFETY_RESTORE_ARMED=0
     cleanup_state_snapshots
@@ -329,7 +354,7 @@ arm_upgrade_abort_restore() {
 dashboard_durable_rows() { # <fixed capture epoch>
     local payload
     payload="$(base64 <"$HERE/migration-state-probe.py" | tr -d '\n')"
-    rx "printf %s $(quote_arg "$payload") | base64 -d | docker exec -i dashboard python3 - $(quote_arg "$1")" 2>/dev/null
+    rx "printf %s $(quote_arg "$payload") | base64 -d | docker exec -i dashboard python3 - --require-current-schema $(quote_arg "$1")" 2>/dev/null
 }
 
 archived_dashboard_durable_rows() { # <archive> <fixed capture epoch>

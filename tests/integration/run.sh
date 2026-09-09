@@ -967,10 +967,13 @@ assert_scenario() {
 # verifier) in its persistent-only mode so post-restart startup transients don't false-positive.
 # Skipped when a clearnet initial sync is active (#183): a node is then intentionally on clearnet.
 assert_egress_posture() {
-    local mc tc prefix out
+    local mc tc sdir prefix out
     mc="$(env_on_box MONERO_CLEARNET_SYNC)"
     tc="$(env_on_box TARI_CLEARNET_SYNC)"
-    if [ "$mc" = "true" ] || [ "$tc" = "true" ]; then
+    sdir="$(env_on_box CLEARNET_STATE_DIR)"
+    [ -n "$sdir" ] || sdir="$IT_REMOTE_DIR/data/clearnet-state"
+    if { [ "$mc" = "true" ] && ! rx "test -f $(quote_arg "$sdir/monero.synced")"; } ||
+        { [ "$tc" = "true" ] && ! rx "test -f $(quote_arg "$sdir/tari.synced")"; }; then
         it_skip_leg "all-Tor live egress (#274/#270)" "clearnet initial sync is explicitly active" "by-design"
         return 0
     fi
@@ -2480,11 +2483,11 @@ main() {
     # baseline stack cleanly before the end-of-run restore.
     [ "$rig_control_ok" = 1 ] && [ "$RUN_SUBNET" = "1" ] && run_subnet_scenario
 
-    # An image gate always returns the exact old release. Failed runs rewind state; green runs keep
-    # legitimate chain/dashboard advances. Other runs roll back only on
-    # failure, then put config.json back where it started. Drop the archive only after verification.
+    # An image gate always returns the exact old release and its quiesced writable state. Other runs
+    # roll back only on failure, then put config.json back where it started. Drop the archive only
+    # after verification.
     if [ "$_UPGRADE_RESTORE_ARMED" = "1" ]; then
-        if [ "$IT_FAIL" = 0 ]; then restore_upgrade_baseline 0; else restore_upgrade_baseline; fi
+        restore_upgrade_baseline
     else
         safety_rollback_if_failed
         restore_baseline

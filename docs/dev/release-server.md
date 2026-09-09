@@ -61,7 +61,8 @@ The safe rule: the keyed server only ever runs code you trust. Concretely:
   the workflow is unsafe and must not be dispatched. Stage candidate release artifacts
   separately. Run a pre-merge exact-head gate from the operator shell under the hardware claim/lock
   protocol, never by executing a PR's workflow on this keyed runner.
-- Set the repository variable `RELEASE_GATE_ACTORS` to a comma-separated maintainer allowlist.
+- Set the repository variable `RELEASE_GATE_ACTORS` to a comma-separated maintainer allowlist;
+  both the original dispatch actor and any rerun actor must be listed.
   Provision `/etc/pithead-release/cosign.pub` as a root-owned, non-symlink copy of the reviewed
   repository key; the workflow refuses any other trust-root path or content.
 - Register the runner as ephemeral / just-in-time (one job, then auto-removed) in its own runner
@@ -450,8 +451,9 @@ Treat the box as production-sensitive. It holds keys and it's the thing that sig
   original `config.json` at the end, and `--safety-backup` takes a `pithead backup` first and
   rolls the box back (down → restore → up) if anything fails.
 - Build isolation and integrity. Build images in containers with pinned upstream versions and
-  SHA256-verified binaries (the stack already does this); promote releases by digest so the
-  published bundle is bit-for-bit what was validated ([Releasing](releasing.md)).
+  SHA256-verified binaries (the stack already does this). The gate authenticates its private
+  candidate archive and image digests; later publication preserves those image digests but creates
+  a separate release bundle ([Releasing](releasing.md)).
 
 ## How a release is validated end-to-end
 

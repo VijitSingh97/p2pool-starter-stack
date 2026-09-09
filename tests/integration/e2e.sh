@@ -157,15 +157,18 @@ RESTORE_DIR="$CANONICAL_DIR"
 
 stop_harness() {
     local waited=0 pgid
-    while on_bench "test -f '$E2E_DIR/results/e2e-harness.launching'"; do
-        [ "$waited" -lt 30 ] || return 1
+    while on_bench "test -f '$E2E_DIR/.e2e-control/launching'"; do
+        if [ "$waited" -ge 30 ]; then
+            on_bench "p=\$(cat '$E2E_DIR/.e2e-control/launching' 2>/dev/null); case \$p in *[!0-9]*|'') exit 1 ;; esac; kill -TERM \"\$p\" 2>/dev/null || true; i=0; while test -f '$E2E_DIR/.e2e-control/launching' && test \$i -lt 30; do sleep 1; i=\$((i+1)); done; test ! -f '$E2E_DIR/.e2e-control/launching'" || return 1
+            break
+        fi
         sleep 1
         waited=$((waited + 1))
     done
-    pgid="$(on_bench "cat '$E2E_DIR/results/e2e-harness.pgid' 2>/dev/null" || true)"
+    pgid="$(on_bench "cat '$E2E_DIR/.e2e-control/pgid' 2>/dev/null" || true)"
     [[ "$pgid" =~ ^[0-9]+$ ]] || return 0
     on_bench "kill -TERM -- '-$pgid' 2>/dev/null || true"
-    while on_bench "kill -0 '$pgid' 2>/dev/null"; do
+    while on_bench "kill -0 -- '-$pgid' 2>/dev/null"; do
         [ "$waited" -lt 600 ] || return 1
         sleep 5
         waited=$((waited + 5))
@@ -589,7 +592,7 @@ deploy_branch() {
 
 # --- Phase 5: run the live harness (detached on the box) --------------------
 run_harness() {
-    local phases target_dir="$E2E_DIR" precheck_failed=0
+    local phases target_dir="$E2E_DIR"
     case "$MODE" in
     check) phases="--check" ;;
     targeted) phases="--scenario local-pruned-main-secure-tari --auth-fail-closed --lifecycle" ;; # readiness/check run inline first (below); NOT here — run.sh returns after --readiness
@@ -612,47 +615,43 @@ run_harness() {
     log "Running the live harness on $BENCH_HOST (mode=$MODE, detached so an SSH drop can't kill it)"
     step "phases: $phases  (workers=$WORKERS)"
 
-    # Push a tiny runner that captures the harness exit code into a done-marker, then nohup it.
     local runner
     runner="$(mktemp)"
     cat >"$runner" <<'RUNNER'
 #!/usr/bin/env bash
 set -uo pipefail
 harness_dir="$1"; target_dir="$2"; workers="$3"; shift 3
-mkdir -p "$harness_dir/results"
-setsid bash "$harness_dir/tests/integration/run.sh" --local --dir "$target_dir" --workers "$workers" "$@" \
-    > "$harness_dir/results/e2e-harness.log" 2>&1 &
-child=$!
-echo "$child" > "$harness_dir/results/e2e-harness.pgid"
-wait "$child"
+mkdir -p "$harness_dir/results" "$harness_dir/.e2e-control" && chmod 700 "$harness_dir/.e2e-control"
+bash "$harness_dir/tests/integration/run.sh" --local --dir "$target_dir" --workers "$workers" "$@" \
+    > "$harness_dir/results/e2e-harness.log" 2>&1
 rc=$?
-rm -f "$harness_dir/results/e2e-harness.pgid"
-echo "$rc" > "$harness_dir/results/e2e-harness.done"
+echo "$rc" > "$harness_dir/.e2e-control/done.tmp" && mv "$harness_dir/.e2e-control/done.tmp" "$harness_dir/.e2e-control/done"
+rm -f "$harness_dir/.e2e-control/pgid"
+exit "$rc"
 RUNNER
     on_bench "cat > '$E2E_DIR/.e2e-run.sh' && chmod +x '$E2E_DIR/.e2e-run.sh'" <"$runner"
     rm -f "$runner"
 
-    # For non-check modes, run the safe readiness + current-state assertions inline first (fast,
-    # gives early signal), then the destructive phases detached.
+    # Fail closed on safe readiness/current-state checks before detached destructive phases.
     if [ "$MODE" != "check" ]; then
         on_bench "cd '$E2E_DIR' && bash tests/integration/run.sh --local --dir '$E2E_DIR' --readiness $no_mining" || {
-            warn "readiness reported issues (see above) — continuing to the live check"
-            precheck_failed=1
+            warn "readiness reported issues (see above) — destructive phases refused"
+            return 1
         }
         on_bench "cd '$E2E_DIR' && bash tests/integration/run.sh --local --dir '$E2E_DIR' --check $no_mining" || {
-            warn "live check reported issues (see above) — continuing to the destructive phases"
-            precheck_failed=1
+            warn "live check reported issues (see above) — destructive phases refused"
+            return 1
         }
     fi
 
-    printf '%s' "$IT_RIG_TOKEN" | on_bench "IFS= read -r t; rm -f '$E2E_DIR/results/e2e-harness.done' '$E2E_DIR/results/e2e-harness.pgid'; touch '$E2E_DIR/results/e2e-harness.launching'; cd '$E2E_DIR' && IT_RIG_TOKEN=\"\$t\" nohup ./.e2e-run.sh '$E2E_DIR' '$target_dir' '$WORKERS' $phases >/dev/null 2>&1 & while test ! -s '$E2E_DIR/results/e2e-harness.pgid' && test ! -f '$E2E_DIR/results/e2e-harness.done'; do sleep 1; done; rm -f '$E2E_DIR/results/e2e-harness.launching'; echo launched" ||
+    printf '%s' "$IT_RIG_TOKEN" | on_bench "IFS= read -r t; mkdir -p '$E2E_DIR/.e2e-control'; chmod 700 '$E2E_DIR/.e2e-control'; rm -f '$E2E_DIR/.e2e-control/done' '$E2E_DIR/.e2e-control/pgid'; child= handed=0; echo \$\$ > '$E2E_DIR/.e2e-control/launching'; trap '[ \"\$handed\" = 1 ] || { test -z \"\$child\" || { kill -TERM -- \"-\$child\" 2>/dev/null || true; wait \"\$child\" 2>/dev/null || true; }; }; rm -f '\''$E2E_DIR/.e2e-control/launching'\''' EXIT; cd '$E2E_DIR' && IT_RIG_TOKEN=\"\$t\" nohup setsid ./.e2e-run.sh '$E2E_DIR' '$target_dir' '$WORKERS' $phases >/dev/null 2>&1 & child=\$!; echo \"\$child\" > '$E2E_DIR/.e2e-control/pgid'; handed=1; echo launched" ||
         die "Failed to launch the harness."
 
     # Poll the done-marker, printing a heartbeat tail of the log.
     local rc="" waited=0
     while :; do
-        if on_bench "test -f '$E2E_DIR/results/e2e-harness.done'"; then
-            rc="$(on_bench "cat '$E2E_DIR/results/e2e-harness.done'")"
+        if on_bench "test -f '$E2E_DIR/.e2e-control/done'"; then
+            rc="$(on_bench "cat '$E2E_DIR/.e2e-control/done'")"
             break
         fi
         sleep 20
@@ -664,7 +663,6 @@ RUNNER
     echo ""
     log "Harness finished (exit $rc). Full log:"
     on_bench "cat '$E2E_DIR/results/e2e-harness.log' 2>/dev/null" | sed 's/^/  /'
-    [ "$precheck_failed" = 0 ] || return 1
     return "${rc:-1}"
 }
 # --- Main -------------------------------------------------------------------

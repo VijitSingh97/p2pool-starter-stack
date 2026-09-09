@@ -151,7 +151,9 @@ A one-time setup. Target the Ubuntu LTS releases the stack supports (22.04 / 24.
    digest-pinned by the authenticated manifest; they are not claimed as Pithead-signed. The harness
    captures the old release files and derived-host fingerprint, stops the stack, and takes private
    `cp --reflink=always` snapshots of the enumerated persistent mounts before staging. It restores those
-   snapshots, old files, rendered state, image refs, and revisions afterward. Use
+   snapshots, old files, rendered state, image refs, and revisions afterward. This deliberately
+   rewinds the reserved bench to the quiesced pre-run point; do not use it on production or
+   reward-bearing state. Use
    `--safety-backup`. Every mount must be on a reflink-capable filesystem; the target account must
    have passwordless sudo for the snapshot/restore, firewall inspection, and owner-only Tor-key
    fingerprint reads. The workflow's destructive command runs as a bounded systemd transient service;

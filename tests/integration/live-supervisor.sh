@@ -11,9 +11,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 run_id="${GITHUB_RUN_ID:-$$}-${GITHUB_RUN_ATTEMPT:-0}"
 [[ "$run_id" =~ ^[0-9]+-[0-9]+$ ]] || exit 2
 unit="pithead-release-gate-$run_id"
-result="$HERE/results/release-gate-supervisor-$run_id.done"
-heartbeat="$HERE/results/release-gate-supervisor-$run_id.heartbeat"
-mkdir -p "$HERE/results"
+control_dir="${XDG_RUNTIME_DIR:-/tmp}/pithead-release-gate-$(id -u)-$run_id"
+result="$control_dir/result"
+heartbeat="$control_dir/heartbeat"
+install -d -m 700 "$control_dir"
 rm -f "$result" "$result.tmp" "$heartbeat"
 : >"$heartbeat"
 sudo -n systemd-run --quiet --collect --unit "$unit" \
@@ -31,4 +32,5 @@ done
 rm -f "$heartbeat"
 rc="$(cat "$result")"
 [[ "$rc" =~ ^[0-9]+$ ]] || exit 1
+rm -rf "$control_dir"
 exit "$rc"

@@ -28,15 +28,47 @@ capture_state_snapshots() { # <stateful mount TSV>
 }
 
 restore_state_snapshots() {
-    local source snap replacement old nonce
+    local source snap replacement old nonce journal=""
     nonce="$$-$(date +%s)"
     while IFS=$'\t' read -r source snap; do
-        [ -n "$source" ] && [ -n "$snap" ] || return 1
-        [[ "$source" = /* && "$source" != / && "$snap" = "$(dirname "$source")/.pithead-live-"* ]] || return 1
+        if [ -z "$source" ] || [ -z "$snap" ] || [[ "$source" != /* || "$source" = / || "$snap" != "$(dirname "$source")/.pithead-live-"* ]]; then
+            cleanup_restore_replacements "$journal"
+            return 1
+        fi
         replacement="$source.pithead-restore-$nonce" old="$source.pithead-old-$nonce"
-        rx "test -d $(quote_arg "$snap") && test ! -e $(quote_arg "$replacement") && test ! -e $(quote_arg "$old") && sudo -n cp -a --reflink=always -- $(quote_arg "$snap") $(quote_arg "$replacement") && sudo -n mv -- $(quote_arg "$source") $(quote_arg "$old") && { sudo -n mv -- $(quote_arg "$replacement") $(quote_arg "$source") || { sudo -n mv -- $(quote_arg "$old") $(quote_arg "$source"); false; }; }" || return 1
-        UPGRADE_STATE_OLD_DIRS+="${UPGRADE_STATE_OLD_DIRS:+$'\n'}$old"
+        rx "test -d $(quote_arg "$snap") && test ! -e $(quote_arg "$replacement") && test ! -e $(quote_arg "$old") && sudo -n cp -a --reflink=always -- $(quote_arg "$snap") $(quote_arg "$replacement")" || {
+            cleanup_restore_replacements "$journal"
+            return 1
+        }
+        journal+="${journal:+$'\n'}$source"$'\t'"$replacement"$'\t'"$old"
     done <<<"$UPGRADE_STATE_SNAPSHOTS"
+    while IFS=$'\t' read -r source replacement old; do
+        rx "sudo -n mv -- $(quote_arg "$source") $(quote_arg "$old") && { sudo -n mv -- $(quote_arg "$replacement") $(quote_arg "$source") || { sudo -n mv -- $(quote_arg "$old") $(quote_arg "$source"); false; }; }" || {
+            rollback_restored_state
+            cleanup_restore_replacements "$journal"
+            return 1
+        }
+        UPGRADE_STATE_OLD_DIRS="$source"$'\t'"$old${UPGRADE_STATE_OLD_DIRS:+$'\n'$UPGRADE_STATE_OLD_DIRS}"
+    done <<<"$journal"
+}
+
+cleanup_restore_replacements() { # <source/replacement/old TSV>
+    local _source replacement _old
+    while IFS=$'\t' read -r _source replacement _old; do
+        [ -z "$replacement" ] || rx "sudo -n rm -rf -- $(quote_arg "$replacement")" >/dev/null 2>&1 || true
+    done <<<"$1"
+}
+
+rollback_restored_state() {
+    local source old failed=0 replacement nonce="$$-$(date +%s)"
+    while IFS=$'\t' read -r source old; do
+        [ -z "$old" ] || {
+            replacement="$source.pithead-failed-$nonce"
+            rx "test -d $(quote_arg "$old") && test ! -e $(quote_arg "$replacement") && sudo -n mv -- $(quote_arg "$source") $(quote_arg "$replacement") && { sudo -n mv -- $(quote_arg "$old") $(quote_arg "$source") || { sudo -n mv -- $(quote_arg "$replacement") $(quote_arg "$source"); false; }; } && sudo -n rm -rf -- $(quote_arg "$replacement")" || failed=1
+        }
+    done <<<"${UPGRADE_STATE_OLD_DIRS:-}"
+    [ "$failed" != 0 ] || UPGRADE_STATE_OLD_DIRS=""
+    return "$failed"
 }
 
 cleanup_state_snapshots() {
@@ -44,13 +76,13 @@ cleanup_state_snapshots() {
     while IFS=$'\t' read -r _source snap; do
         [ -z "$snap" ] || rx "sudo -n rm -rf -- $(quote_arg "$snap")" >/dev/null 2>&1 || true
     done <<<"${UPGRADE_STATE_SNAPSHOTS:-}"
-    while IFS= read -r snap; do
+    while IFS=$'\t' read -r _source snap; do
         [ -z "$snap" ] || rx "sudo -n rm -rf -- $(quote_arg "$snap")" >/dev/null 2>&1 || true
     done <<<"${UPGRADE_STATE_OLD_DIRS:-}"
 }
 
 derived_state_fingerprint() {
-    rx 'source ./pithead; d=$(control_unit_dir); { for p in .env Caddyfile; do [ ! -f "$p" ] || sha256sum "$p"; done; find build -type f -exec sha256sum {} + 2>/dev/null; for p in "$d/pithead-control.path" "$d/pithead-control.service" /run/systemd/system/ssh.service.d/pithead.conf /run/pithead-ssh/authorized_keys; do if [ -f "$p" ]; then sudo -n sha256sum "$p"; else echo "absent $p"; fi; done; systemctl is-enabled pithead-control.path 2>/dev/null || true; systemctl is-active pithead-control.path 2>/dev/null || true; sudo -n passwd -S root 2>/dev/null | awk "{print \\$2}"; } | sort | sha256sum | cut -d" " -f1'
+    rx 'set -euo pipefail; source ./pithead; d=$(control_unit_dir); { for p in .env Caddyfile; do [ -f "$p" ] && sha256sum "$p" || exit 1; done; [ -d build ] || exit 1; find build -type f -exec sha256sum {} +; for p in "$d/pithead-control.path" "$d/pithead-control.service" /run/systemd/system/ssh.service.d/pithead.conf /run/pithead-ssh/authorized_keys; do if [ -f "$p" ]; then sudo -n sha256sum "$p" || exit 1; else echo "absent $p"; fi; done; systemctl show -p UnitFileState --value pithead-control.path; systemctl show -p ActiveState --value pithead-control.path; sudo -n passwd -S root | awk "{print \\$2}"; } | sort | sha256sum | cut -d" " -f1'
 }
 
 reset_control_units_for_render() {

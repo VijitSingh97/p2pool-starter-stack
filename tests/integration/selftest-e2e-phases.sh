@@ -3,12 +3,9 @@
 # Self-test e2e.sh's exact per-mode phase composition (#1364).
 #
 # It runs the REAL run_harness out of e2e.sh (extracted, then evaluated against stubbed ssh) and
-# reads the phase list off the command that would have been launched — not off a re-implementation
-# of the gate, which would pass happily while the shipped file said something else.
+# reads the phase list off the command that would have been launched.
 #
-# Standalone (not sourced by selftest.sh) so it never touches selftest.sh's own file-budget
-# ceiling — same reasoning as selftest-rigforge-apply-settle.sh. Run directly, or via
-# `make test-integration-selftest`. No server, no bench, no rig.
+# Standalone: no server, bench, or rig.
 #
 set -uo pipefail
 
@@ -37,9 +34,7 @@ assert_contains "the extracted function still composes the rigforge phases" \
     "$HARNESS_SRC" '--rigforge-control'
 
 # --- Drive it with ssh stubbed out ----------------------------------------------------------
-# Every on_bench call is recorded; the harness is told its run finished immediately with rc 0, so
-# the poll loop never sleeps. The one call we read back is the `nohup ./.e2e-run.sh` launch, which
-# carries the phase list verbatim — the same string the bench would have executed.
+# Every on_bench call is recorded; the harness is told its run finished immediately with rc 0.
 # Two things bite a stub here, and both cost a debugging pass.
 #   * e2e.sh pipes the token INTO the launch call (`printf ... | on_bench ...`), and a pipeline runs
 #     its right-hand function in a SUBSHELL — a stub recording into a variable captures nothing.
@@ -47,7 +42,7 @@ assert_contains "the extracted function still composes the rigforge phases" \
 #   * The stub's `cat` must never be able to block. If a mutation removes the pipe, an unredirected
 #     `cat` reads the SCRIPT's stdin and hangs forever, which reads as a mutation that "survived"
 #     rather than one that killed. The subshell takes its stdin from /dev/null so it gets EOF.
-drive_harness() { # <mode> <borrow_miner> [rig-token] -> "LAUNCH\t<cmd>" then "STDIN\t<piped>"
+drive_harness() { # <mode> <borrow> [token] [scenario] [bootstrap] [failed-precheck]
     local launch lf sf
     lf="$(mktemp)" sf="$(mktemp)"
     # SC2034/SC2329: the config vars and the log/step/warn/ok/die/on_bench stubs below are all read
@@ -63,6 +58,7 @@ drive_harness() { # <mode> <borrow_miner> [rig-token] -> "LAUNCH\t<cmd>" then "S
         # the stubbed on_miner, so the empty-token path is reachable by passing "".
         MINER_HOST=rig1 RIG_HOST="" RIG_NAME="" IT_RIG_TOKEN="" RIGFORGE_CONFIG=/opt/rigforge/config.json
         STUB_TOKEN="${3-s3cr3t-tok3n}"
+        FAIL_PRECHECK="${6:-}"
         LAUNCH_FILE="$lf" STDIN_FILE="$sf"
         on_miner() { case "$1" in *".NAME"*) printf rig1 ;; *) printf '%s' "$STUB_TOKEN" ;; esac }
         log() { :; }
@@ -75,6 +71,8 @@ drive_harness() { # <mode> <borrow_miner> [rig-token] -> "LAUNCH\t<cmd>" then "S
         }
         on_bench() {
             case "$1" in
+            *"bash tests/integration/run.sh"*--readiness*) [ "$FAIL_PRECHECK" != readiness ] || return 1 ;;
+            *"bash tests/integration/run.sh"*" --check"*) [ "$FAIL_PRECHECK" != check ] || return 1 ;;
             # The launch command names the done-marker too (it rm -f's it first), so match the
             # launch FIRST — reversing these two makes every phase assertion pass vacuously.
             *nohup*)
@@ -85,7 +83,7 @@ drive_harness() { # <mode> <borrow_miner> [rig-token] -> "LAUNCH\t<cmd>" then "S
             # rig_supply's proof dial. Succeeds here; the unreachable-rig path is driven separately
             # by rc_of below, which is where the exit-code contract is asserted.
             *curl*Authorization*) return 0 ;;
-            *e2e-harness.done*)
+            *'.e2e-control/done'*)
                 # `test -f <done>` (the poll) and `cat <done>` (the exit code) share this substring;
                 # answering 0 to both ends the loop on its first pass with a clean harness result.
                 echo 0
@@ -140,6 +138,8 @@ assert_eq "targeted requests the rigforge-control WRITE phase (#1364)" \
 assert_eq "targeted launches EXACTLY its documented phases, and nothing else" \
     "$(phase_set "$TARGETED")" \
     "--auth-fail-closed --lifecycle --rig-control-port --rig-host --rig-name --rigforge --rigforge-control --scenario 8082 local-pruned-main-secure-tari rig1 rig1 "
+assert_eq "a failed readiness check prevents the destructive launch" "$(launch_of targeted 0 '' '' '' readiness)" ""
+assert_eq "a failed live check prevents the destructive launch" "$(launch_of targeted 0 '' '' '' check)" ""
 
 echo "== --mode matrix keeps everything it had =="
 MATRIX="$(compose_phases matrix 1)"
