@@ -2394,10 +2394,10 @@ run_rigforge_reverse() { # <rig-name> <orig-max_temp_c-or-empty>
 # POST straight to the rig's control API from the bench (the host runner's dial, minus the dashboard); used only by #516.
 _rig_control_apply() { # <changes-json> -> echoes change_id
     local config
-    config="$(printf '%s' "$1" | jq -er --arg h "Authorization: Bearer ${IT_RIG_TOKEN:-}" 'if type == "object" then "header = \($h | @json)\ndata-binary = \(tojson | @json)" else error("changes") end')" || return 1
+    config="$(printf '%s' "$1" | jq -er 'if type == "object" then tojson | @json else error("changes") end')" || return 1
+    printf -v config 'header = %s\ndata-binary = %s' "$(printf 'Authorization: Bearer %s' "${IT_RIG_TOKEN:-}" | jq -Rs .)" "$config"
     printf '%s\n' "$config" | rx "curl -fsS --max-time 15 -K - -X POST -H 'Content-Type: application/json' $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/apply")" --stdin 2>/dev/null | jq -r '.change_id // empty' 2>/dev/null
 }
-
 # Poll the rig's /status for <change_id> reaching <want-status>. Returns 0 on match within the window.
 _rig_control_await() { # <change_id> <want-status> [timeout-s=30]
     local id="$1" want="$2" deadline=$((SECONDS + ${3:-30})) sbody

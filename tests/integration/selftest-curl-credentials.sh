@@ -9,7 +9,9 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir "$TMP/bin" "$TMP/box"
 REAL_BASH="$(command -v bash)"
-export REAL_BASH ARGV_LOG="$TMP/argv" CURL_CONFIG="$TMP/config" CURL_BODY="$TMP/body"
+REAL_CURL="$(command -v curl)"
+REAL_JQ="$(command -v jq)"
+export REAL_BASH REAL_CURL REAL_JQ ARGV_LOG="$TMP/argv" CURL_CONFIG="$TMP/config" CURL_BODY="$TMP/body"
 cat >"$TMP/bin/bash" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >>"$ARGV_LOG"
@@ -18,6 +20,11 @@ SH
 # Avoid recursively resolving the wrapper's own interpreter through PATH.
 sed "1s|.*|#!$REAL_BASH|" "$TMP/bin/bash" >"$TMP/bin/bash.fixed"
 mv "$TMP/bin/bash.fixed" "$TMP/bin/bash"
+cat >"$TMP/bin/jq" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >>"$ARGV_LOG"
+exec "$REAL_JQ" "$@"
+SH
 cat >"$TMP/bin/ssh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >>"$ARGV_LOG"
@@ -27,7 +34,14 @@ SH
 cat >"$TMP/bin/curl" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >>"$ARGV_LOG"
-case " $* " in *' -K - '*) cat >"$CURL_CONFIG" ;; *) : >"$CURL_CONFIG" ;; esac
+case " $* " in
+*' -K - '*)
+    config="$(cat)"
+    printf '%s\n' "$config" >"$CURL_CONFIG"
+    printf '%s\n' "$config" | "$REAL_CURL" -fsS -K - --url file:///dev/null -o /dev/null
+    ;;
+*) : >"$CURL_CONFIG" ;;
+esac
 case " $* " in *' --data-binary @- '*) cat >"$CURL_BODY" ;; *) : >"$CURL_BODY" ;; esac
 case "${!#}" in
 */get_info) printf '{"status":"OK","synchronized":true}\n' ;;
