@@ -21,9 +21,7 @@
 # neither $C nor its control-sandbox children ($REQS/$RESULTS/$STAGED/$AUDIT/$MASKED) — several of
 # the black-box flows here explicitly stub provision_control_runner (and the rest of apply's/
 # upgrade's heavy machinery) to a no-op precisely to keep this file's proof self-contained; the real
-# control-channel/control-runner build lives in the "dashboard control channel" section, moved to
-# test-control-core.sh by #1105 R12 and sourced well after.
-
+# control-channel/control-runner build is covered separately in test-control-core.sh.
 echo "== unit: generate_caddyfile onion vhost (#343) =="
 auth_hb64="$(printf '%s' '$2y$14$UNITTESTbcrypthashvalue000000000000000000000000000000' | openssl base64 -A)" # re-derivation (#1330), see header
 # With the dashboard onion enabled, generate_caddyfile appends a SECOND site bound to the bridge

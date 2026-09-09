@@ -327,6 +327,8 @@ echo "== black-box: uninstall keeps the operator's files (#77 phase 1) =="
 # section proves uninstall's OWN behaviour instead of depending on a same-file predecessor.
 seed_env
 printf '{ "monero": {"mode":"local","wallet_address":"%s","node_username":"u","node_password":"p"}, "tari":{"wallet_address":"'"$VALID_TARI"'"}, "p2pool":{"pool":"main"}, "dashboard":{"secure":true,"host":"box.lan"} }\n' "$WALLET" >"$V/config.json"
+kept_dir="$V/"'kept $literal'
+jq --arg dir "$kept_dir" '.monero.data_dir = $dir' "$V/config.json" >"$V/config.json.tmp" && mv "$V/config.json.tmp" "$V/config.json"
 out="$(cd "$V" && PATH="$V/bin:$PATH" ./pithead apply -y 2>&1)"
 rc=$?
 assert_rc "uninstall fixture: self-provisioned apply succeeds" "$rc" "0"
@@ -338,6 +340,7 @@ assert_eq "aborted uninstall keeps .env" "$([ -f "$V/.env" ] && echo yes)" "yes"
 # With -y: rendered files go, the operator's files stay.
 out=$(cd "$V" && PATH="$V/bin:$PATH" ./pithead uninstall -y 2>&1)
 assert_contains "uninstall names the kept files" "$out" "config.json"
+assert_contains "uninstall displays the decoded data path" "$out" "$kept_dir"
 assert_eq "uninstall removes .env" "$([ -f "$V/.env" ] || echo gone)" "gone"
 assert_eq "uninstall removes Caddyfile" "$([ -f "$V/Caddyfile" ] || echo gone)" "gone"
 assert_eq "uninstall keeps config.json" "$([ -f "$V/config.json" ] && echo yes)" "yes"
