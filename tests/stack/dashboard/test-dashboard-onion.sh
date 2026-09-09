@@ -242,9 +242,11 @@ rot_out=$(
     resolve_dashboard_host() { HOST_IP="host.set"; }
     provision_tor() { :; }
     render_env() { echo "HOST_IP=${HOST_IP-UNSET} DC=${DEPLOYMENT_COMPLETED-UNSET}"; }
+    generate_caddyfile() { :; }
     onion_client_key() { :; }
     rotate_dashboard_onion -y
 )
+assert_rc "rotate command completes with its focused fixture" "$?" 0
 assert_contains "rotate resolves the host before render_env — no unbound HOST_IP (#356)" "$rot_out" "HOST_IP=host.set"
 assert_contains "rotate preserves DEPLOYMENT_COMPLETED across render_env (#356)" "$rot_out" "DC=true"
 
