@@ -183,7 +183,7 @@ rig_key_unwind() {
         # it_warn, not it_step: this is a run that did not end the way it meant to, and the operator
         # reading the log needs to know the rig was left mid-change and what we did about it. (It is
         # invisible in the summary counters — #1365 — which is why it says the whole story here.)
-        it_warn "aborted mid-change: restoring $k=$v on rig '$w' via the $r route (#1379)"
+        it_warn "aborted mid-change: restoring $k on rig '$w' via the $r route (#1379)"
         payload="$(jq -nc --arg k "$k" --argjson v "$v" '{($k): $v}' 2>/dev/null)" || continue
         [ -n "$payload" ] || continue
         case "$r" in

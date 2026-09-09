@@ -9,7 +9,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir "$TMP/bin" "$TMP/box"
 REAL_BASH="$(command -v bash)"
-export REAL_BASH ARGV_LOG="$TMP/argv" CURL_CONFIG="$TMP/config"
+export REAL_BASH ARGV_LOG="$TMP/argv" CURL_CONFIG="$TMP/config" CURL_BODY="$TMP/body"
 cat >"$TMP/bin/bash" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >>"$ARGV_LOG"
@@ -28,9 +28,11 @@ cat >"$TMP/bin/curl" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >>"$ARGV_LOG"
 case " $* " in *' -K - '*) cat >"$CURL_CONFIG" ;; *) : >"$CURL_CONFIG" ;; esac
+case " $* " in *' --data-binary @- '*) cat >"$CURL_BODY" ;; *) : >"$CURL_BODY" ;; esac
 case "${!#}" in
 */get_info) printf '{"status":"OK","synchronized":true}\n' ;;
 */metrics) printf 'pithead_up 1\n' ;;
+*/worker-apply) printf '{"status":"applied"}\n' ;;
 */apply | */status) printf '{"change_id":"fixture-change","status":"applied"}\n' ;;
 *) exit 97 ;;
 esac
@@ -45,7 +47,7 @@ printf 'MONERO_NODE_USERNAME=fixture-user\nMONERO_NODE_PASSWORD=%s\n' "$IT_DASHB
 printf '{"monero":{"mode":"local"}}\n' >"$TMP/box/config.json"
 
 # These functions have no direct entry point; extract the actual shipped bodies.
-for name in assert_metrics_via_caddy _rig_control_apply _rig_control_await; do
+for name in assert_metrics_via_caddy _worker_apply _rig_control_apply _rig_control_await; do
     body="$(sed -n "/^$name() {/,/^}/p" "$HERE/run.sh")"
     test -n "$body"
     eval "$body"
@@ -70,7 +72,7 @@ check_transport() { # <config directive> <expected decoded credential>
         echo 'FAIL: fixture credential entered process argv' >&2
         return 1
     fi
-    test "$(sed "s/^$1 = //" "$CURL_CONFIG" | jq -r .)" = "$2"
+    test "$(sed -n "s/^$1 = //p" "$CURL_CONFIG" | head -n1 | jq -r .)" = "$2"
 }
 
 echo "== authenticated probes keep credentials in curl config stdin and ordinary SSH stdin untouched =="
@@ -80,10 +82,29 @@ for IT_MODE in local ssh; do
     check_transport user "fixture-user:$IT_DASHBOARD_PASSWORD"
     assert_metrics_via_caddy
     check_transport user "fixture-user:$IT_DASHBOARD_PASSWORD"
-    test "$(_rig_control_apply '{"max_temp_c":75}')" = fixture-change
+    direct_changes='{"pools":[{"url":"pool.invalid:3333","pass":"fixturesecret42-direct"}]}'
+    test "$(_rig_control_apply "$direct_changes")" = fixture-change
     check_transport header "Authorization: Bearer $IT_RIG_TOKEN"
+    check_transport data-binary "$direct_changes"
     _rig_control_await fixture-change applied 1
     check_transport header "Authorization: Bearer $IT_RIG_TOKEN"
+    : >"$ARGV_LOG"
+    test "$(_worker_apply worker1 '{"pools":[{"url":"pool.invalid:3333","pass":"fixturesecret42-pool"}]}')" = '{"status":"applied"}'
+    if grep -Fq fixturesecret42-pool "$ARGV_LOG"; then
+        echo 'FAIL: worker-apply pool credential entered process argv' >&2
+        exit 1
+    fi
+    test "$(jq -r '.changes.pools[0].pass' "$CURL_BODY")" = fixturesecret42-pool
+    : >"$ARGV_LOG"
+    if _worker_apply worker1 '[]' >/dev/null 2>&1 || grep -Fq curl "$ARGV_LOG"; then
+        echo 'FAIL: malformed worker-apply input reached curl' >&2
+        exit 1
+    fi
+    : >"$ARGV_LOG"
+    if _rig_control_apply '[]' >/dev/null 2>&1 || grep -Fq curl "$ARGV_LOG"; then
+        echo 'FAIL: malformed direct-apply input reached curl' >&2
+        exit 1
+    fi
     # Same static command and stdin script that the restore's on_bench transports.
     test "$(rx 'bash -s' --stdin <"$TMP/restore-probe")" = rpc-ok
     check_transport user "fixture-user:$IT_DASHBOARD_PASSWORD"
@@ -92,4 +113,4 @@ done
 test -z "$(printf 'fixture loop input\n' | rx cat)"
 test "$(printf 'fixture pipe input\n' | rx cat --stdin)" = 'fixture pipe input'
 test "$IT_FAIL" -eq 0
-printf 'curl credential transport: 10 local/SSH probes and 2 stdin controls passed\n'
+printf 'curl credential transport: 12 local/SSH probes and 2 stdin controls passed\n'

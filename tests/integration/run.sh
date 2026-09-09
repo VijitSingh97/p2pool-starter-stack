@@ -2144,10 +2144,9 @@ run_subnet_scenario() {
 # Drive Worker Inspect through the live dashboard-to-rig control path.
 _worker_apply() { # <worker> <changes-json>  -> echoes the dashboard result JSON
     local body
-    body="$(jq -nc --arg w "$1" --argjson c "$2" '{worker:$w,changes:$c}')"
-    rx "curl -fsS --max-time 60 -X POST -H 'Content-Type: application/json' -H 'X-Pithead-Control: 1' --data $(quote_arg "$body") http://127.0.0.1:8000/api/control/worker-apply" 2>/dev/null
+    body="$(printf '%s' "$2" | jq -ce --arg w "$1" 'if type == "object" then {worker:$w,changes:.} else error("changes") end')" || return 1
+    printf '%s' "$body" | rx "curl -fsS --max-time 60 -X POST -H 'Content-Type: application/json' -H 'X-Pithead-Control: 1' --data-binary @- http://127.0.0.1:8000/api/control/worker-apply" --stdin 2>/dev/null
 }
-
 _restore_rig_control_baseline() {
     if ! push_config "$BASELINE_CONFIG"; then
         it_fail "write baseline after RigForge control" "could not restore config.json"
@@ -2392,10 +2391,11 @@ run_rigforge_reverse() { # <rig-name> <orig-max_temp_c-or-empty>
     fi
 }
 
-# POST a change straight to the rig's control API from the bench (the same dial the host runner makes,
-# minus the dashboard) and echo the rig's change_id. Needs IT_RIG_TOKEN + RIG_HOST. Used only by #516.
+# POST straight to the rig's control API from the bench (the host runner's dial, minus the dashboard); used only by #516.
 _rig_control_apply() { # <changes-json> -> echoes change_id
-    printf 'header = %s\n' "$(printf 'Authorization: Bearer %s' "${IT_RIG_TOKEN:-}" | jq -Rs .)" | rx "curl -fsS --max-time 15 -K - -X POST -H 'Content-Type: application/json' --data $(quote_arg "$1") $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/apply")" --stdin 2>/dev/null | jq -r '.change_id // empty' 2>/dev/null
+    local config
+    config="$(printf '%s' "$1" | jq -er --arg h "Authorization: Bearer ${IT_RIG_TOKEN:-}" 'if type == "object" then "header = \($h | @json)\ndata-binary = \(tojson | @json)" else error("changes") end')" || return 1
+    printf '%s\n' "$config" | rx "curl -fsS --max-time 15 -K - -X POST -H 'Content-Type: application/json' $(quote_arg "http://$RIG_HOST:$RIG_CONTROL_PORT/apply")" --stdin 2>/dev/null | jq -r '.change_id // empty' 2>/dev/null
 }
 
 # Poll the rig's /status for <change_id> reaching <want-status>. Returns 0 on match within the window.
@@ -2434,7 +2434,7 @@ run_rigforge_rollback() { # <rig-name>
         return 0
     fi
     if ! printf '%s' "$IT_RIG_ROLLBACK_CHANGES" | jq -e 'type == "object"' >/dev/null 2>&1; then
-        it_fail "IT_RIG_ROLLBACK_CHANGES is a JSON changes object (#517)" "got [$IT_RIG_ROLLBACK_CHANGES]"
+        it_fail "IT_RIG_ROLLBACK_CHANGES is a JSON changes object (#517)" "the operator-supplied rollback changes are malformed"
         return 0
     fi
     it_step "applying the rollback-inducing change via /api/control/worker-apply…"
