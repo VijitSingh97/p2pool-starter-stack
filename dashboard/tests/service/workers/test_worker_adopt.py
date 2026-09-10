@@ -329,5 +329,5 @@ class TestHostIsInternal:
         # consciously decide to add resolution here rather than silently drift into claiming a
         # guarantee this module cannot keep. The REAL enforcement — resolve, then check every
         # returned address — lives in pithead's `_control_host_is_internal` and runs at commit
-        # time on the host; see tests/stack/test-control-add-only-ssrf.sh for that coverage.
+        # time on the host; see tests/stack/control/test-control-add-only-ssrf.sh for that coverage.
         assert host_is_internal("a-hostname-that-is-not-a-known-alias", {}) is False

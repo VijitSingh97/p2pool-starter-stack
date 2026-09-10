@@ -95,7 +95,7 @@ def host_is_internal(host, live_cfg):
     recognize — including ``gouda`` or any other name that would resolve to loopback — passes HERE
     and is still caught by the actual authority: ``pithead``'s ``_control_host_is_internal``, which
     runs at commit time on the host and genuinely resolves the name before deciding (see
-    ``tests/service/test_worker_adopt.py``'s ``test_a_hostname_that_would_resolve_elsewhere_is_not_caught_here_by_design``,
+    ``dashboard/tests/service/workers/test_worker_adopt.py``'s ``test_a_hostname_that_would_resolve_elsewhere_is_not_caught_here_by_design``,
     which pins this limitation as a test rather than leaving it as a comment-only claim).
 
     What IS still caught here: loopback, "this network", link-local, multicast/reserved,

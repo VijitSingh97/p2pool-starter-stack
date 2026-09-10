@@ -249,7 +249,7 @@ run_fault_injection() {
 }
 
 # --- Fail-closed auth phase (--auth-fail-closed) ----------------------------
-# Live counterpart to the tier-1 compose-config assertion (tests/stack/test_compose.sh): prove the
+# Live counterpart to the tier-1 compose-config assertion (tests/stack/standalone/test_compose.sh): prove the
 # DEPLOY path — not just `docker compose config` — refuses to start an unauthenticated xmrig-proxy
 # control API when PROXY_AUTH_TOKEN is empty (#153/#203). We empty the token in .env and run
 # `pithead up`, which does NOT re-render .env (only setup/apply do — and apply would self-heal by

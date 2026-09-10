@@ -9,7 +9,7 @@
 #
 # Re-derivation: two spots below need the shared control sandbox $C, "control_config main,
 # applied" (source-checkout upgrade refusal; the bundle-signature section's channel-disabled
-# tail) — but $C is built by build_control_sandbox() in tests/stack/test-control-core.sh, which
+# tail) — but $C is built by build_control_sandbox() in tests/stack/control/test-control-core.sh, which
 # run.sh sources AFTER this file, so there is no ambient sandbox to reach back for at this point
 # in the run. Re-derive a fresh, equivalent $C, mirroring the control-core domain's own "dashboard
 # control channel (#33)" setup, and define $REQS/$RESULTS the same way (not lib.sh globals; only

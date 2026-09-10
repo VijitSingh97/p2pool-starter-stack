@@ -236,7 +236,7 @@ GETENT_MAP="$C/dns-map.txt"
 : >"$GETENT_MAP"
 cat >"$C/bin/getent" <<GETENT_STUB
 #!/usr/bin/env bash
-# Test-only DNS stub for #893 round 5's resolve-and-check seam (tests/stack/test-control-add-only-ssrf.sh).
+# Test-only DNS stub for #893 round 5's resolve-and-check seam (tests/stack/control/test-control-add-only-ssrf.sh).
 if [ "\$1" = "ahosts" ] && [ -f "$GETENT_MAP" ]; then
     hit=\$(awk -v n="\$2" '\$1 == n {print; exit}' "$GETENT_MAP")
     if [ -n "\$hit" ]; then

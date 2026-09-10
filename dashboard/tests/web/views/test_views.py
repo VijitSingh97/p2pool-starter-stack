@@ -461,7 +461,7 @@ def _set_egress_config(monkeypatch, **over):
 class TestEgressTopology:
     """The #170 egress posture + topology ride on /api/state and feed the header badge. These
     cover the *wiring* (build_state → payload → badge); the derivation itself is unit-tested in
-    tests/service/test_egress.py."""
+    dashboard/tests/service/network/test_egress.py."""
 
     def test_both_sections_present_and_share_one_summary(self, _data, _state_mgr, monkeypatch):
         _set_egress_config(monkeypatch)

@@ -19,7 +19,7 @@
 #
 # Taken deliberately, and worth naming because it is the one arguable member: the control-runner
 # units rendering into /run (#791). Its topical neighbours — provision_control_runner's ownership
-# and foreign-install guards — live in tests/stack/test-control-provisioning.sh, so a reader looking
+# and foreign-install guards — live in tests/stack/control/test-control-provisioning.sh, so a reader looking
 # for control-runner work will find most of it there. It travels here because it is a consequence of
 # the appliance's read-only root rather than of the control channel, and because it sits inside the
 # contiguous run: excluding it would buy a tidier topic at the cost of the property that makes this

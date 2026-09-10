@@ -229,7 +229,7 @@ assert_running_state() {
             assert_num_gt "memory ceiling live on $svc (#132)" "${memlim:-0}" 0
         done
         # Per-service runtime uid (#255/#91): compose only pins tari's `user: 1000:1000` at
-        # config time (tests/stack/test_compose.sh) — nothing checks what's actually running. The
+        # config time (tests/stack/standalone/test_compose.sh) — nothing checks what's actually running. The
         # 5 first-party pithead-* images run their own build-time USER (tor's alpine 'tor' package
         # user is uid 100; monerod/p2pool/xmrig-proxy/dashboard, built on ubuntu:24.04's built-in
         # 'ubuntu' user or an explicit useradd, are uid 1000) and tari pins 1000 via the compose

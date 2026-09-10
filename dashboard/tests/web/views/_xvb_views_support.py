@@ -1,7 +1,7 @@
 # ruff: noqa: F401
 """Unit tests for the XvB/earnings/badges cluster (mining_dashboard/web/views/xvb_views.py).
 
-Moved out of tests/web/test_views.py with the cluster itself (#1105). The test bodies are
+Moved out of dashboard/tests/web/views/test_views.py with the cluster itself (#1105). The test bodies are
 verbatim; the only edits are module-alias reads that follow their targets from ``views`` to
 ``xvb_views``.
 
