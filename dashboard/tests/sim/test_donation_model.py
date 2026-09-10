@@ -1,7 +1,7 @@
 """
 Closed-loop tests for the production XvB donation controller (Issues #9, #70).
 
-The single-step tests in tests/service/test_algo_service.py can't see how the
+The single-step tests in tests/service/xvb/test_algo_service_*.py can't see how the
 controller behaves over time: the calibration loop only converges as the
 controller's own donations feed back through XvB's windowed averages across many
 cycles. These drive the `mining_dashboard.sim` harness — which wraps the real

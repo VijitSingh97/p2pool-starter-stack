@@ -1,6 +1,6 @@
 """Unit tests for the chart/window hub (mining_dashboard/web/views/charts.py).
 
-Moved verbatim out of dashboard/tests/web/views/test_views.py with the hub itself (#1105); the only edit is the
+Moved verbatim out of tests/web/views/test_views.py with the hub itself (#1105); the only edit is the
 module alias on the four marker-constant reads, which follow their constants.
 """
 

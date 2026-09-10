@@ -97,7 +97,7 @@ class TestEarnings:
         assert e["confirmed"] == {"enabled": False}
 
     # ponytail: the yesterday/24h/7d/30d/all windowing math is proven once, in
-    # dashboard/tests/service/xvb/test_earnings.py::TestConfirmedPayoutsSummary — this class only asserts
+    # tests/service/xvb/test_earnings.py::TestConfirmedPayoutsSummary — this class only asserts
     # build_earnings passes payouts through (enabled/empty/disabled).
 
     def test_confirmed_enabled_but_empty(self, _metrics):

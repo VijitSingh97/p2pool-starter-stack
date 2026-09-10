@@ -1,6 +1,6 @@
 """Unit tests for the time-series sections (mining_dashboard/web/views/series_views.py).
 
-Moved out of dashboard/tests/web/views/test_views.py with the sections themselves (#1105). The test bodies are
+Moved out of tests/web/views/test_views.py with the sections themselves (#1105). The test bodies are
 verbatim; the only edits are the twelve module-alias reads that follow their target from ``views``
 to ``series_views``.
 

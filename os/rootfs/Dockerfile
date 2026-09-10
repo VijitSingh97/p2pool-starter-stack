@@ -50,11 +50,9 @@ ARG COSIGN_COMMIT=11926fa5bbbbde47e88fc006b625a17769b743b2
 #                                    v0.38.0; cosign's own main is still v0.38.0.
 #   golang.org/x/crypto    v0.55.0   CVE-2026-56854 (CRITICAL). COMPOSE ONLY: compose reaches v0.54.0
 #                                    indirectly; cosign's x/mod raise already seats v0.55.0 (#1649).
-#   google.golang.org/grpc v1.83.2   CVE-2026-84445 (HIGH), both binaries. Third time down the same
-#                                    ladder: the #1153 raise to v1.82.1 (GHSA-hrxh-6v49-42gf) aged
-#                                    into CVE-2026-84304, the v1.83.1 raise that answered THAT aged
-#                                    into this one. A raise is an unwatched pin — #1655 — and this
-#                                    module is the one that keeps proving it.
+#   google.golang.org/grpc v1.83.2   CVE-2026-84445 (HIGH), both binaries. Third trip down this
+#                                    ladder: #1153's v1.82.1 (GHSA-hrxh-6v49-42gf) aged into
+#                                    CVE-2026-84304, whose v1.83.1 aged into this. #1655.
 #
 # WHAT A RAISE ACTUALLY MOVES: `go get X@v Y@v` upgrades the whole closure minimum-version
 # selection needs to satisfy X and Y, not just X and Y — here compose moves 4 modules and cosign 9

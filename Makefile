@@ -1,6 +1,6 @@
 # Local test entry points (mirror the GitHub Actions CI jobs).
 .DEFAULT_GOAL := pithead
-.PHONY: pithead test test-dashboard test-frontend test-patch-coverage test-stack test-compose test-integration test-integration-selftest test-tools test-inventory test-fakes test-mini-stack lint lint-sh lint-py lint-js lint-yaml lint-md lint-proto lint-toml lint-topology lint-file-budget lint-pithead-build lint-trivy-parity print-shellcheck-version print-shfmt-version release release-smoke
+.PHONY: pithead test test-dashboard test-frontend test-patch-coverage test-stack test-compose test-integration test-integration-selftest test-tools test-inventory test-fakes test-mini-stack lint lint-sh lint-py lint-path-references lint-js lint-yaml lint-md lint-proto lint-toml lint-topology lint-file-budget lint-pithead-build lint-trivy-parity print-shellcheck-version print-shfmt-version release release-smoke
 
 pithead: scripts/build-pithead.sh $(wildcard lib/pithead/*.sh) ## Build the generated CLI
 	bash scripts/build-pithead.sh
@@ -71,7 +71,7 @@ print-shellcheck-version: ## Print the pinned shellcheck version (ci.yml's insta
 print-shfmt-version: ## Print the pinned shfmt version (ci.yml's installer reads this)
 	@echo $(SHFMT_VERSION)
 
-lint: lint-sh lint-py lint-js lint-yaml lint-md lint-docs-voice lint-operator-strings lint-topology lint-file-budget lint-pithead-build lint-trivy-parity lint-proto lint-toml ## Lint/format-check every surface
+lint: lint-sh lint-py lint-js lint-yaml lint-md lint-docs-voice lint-path-references lint-operator-strings lint-topology lint-file-budget lint-pithead-build lint-trivy-parity lint-proto lint-toml ## Lint/format-check every surface
 
 # Keep tests/stack/run.sh out of the invocation containing its sourced modules.
 # Shellcheck otherwise inlines the entire suite into a single analysis root, which
@@ -126,6 +126,10 @@ lint-md: ## markdownlint over all Markdown (config: .markdownlint-cli2.jsonc)
 lint-docs-voice: ## Fail if banned marketing words appear in prose docs (house voice: docs/dev/STYLE.md)
 	bash scripts/lint/lint-docs-voice.sh --self-test
 	bash scripts/lint/lint-docs-voice.sh
+
+lint-path-references: ## Fail if a repo path named in a comment, docstring or doc does not resolve (#1105)
+	bash scripts/lint/lint-path-references.sh --self-test
+	bash scripts/lint/lint-path-references.sh
 
 lint-operator-strings: pithead ## Fail if a #NNN issue/PR number or a bare docs/ path leaks into pithead or dashboard operator-facing text (#755, #1024)
 	bash scripts/lint/lint-operator-strings.sh --self-test

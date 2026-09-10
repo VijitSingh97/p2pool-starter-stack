@@ -510,4 +510,4 @@ jobs:
           echo "$UV_INSTALL_DIR" >> "$GITHUB_PATH"
       - name: Lint docs voice, operator strings, topology classes, file budget, pithead build/trivy parity, then JS/CSS (Biome), YAML, Markdown, proto (buf), TOML (taplo)
         # Single source of truth: the Makefile targets. REPO-LOCAL GATES FIRST (#1746): local checks run before network-backed surface linters.
-        run: make lint-docs-voice lint-operator-strings lint-topology lint-file-budget lint-pithead-build lint-trivy-parity lint-js lint-yaml lint-md lint-proto lint-toml
+        run: make lint-docs-voice lint-path-references lint-operator-strings lint-topology lint-file-budget lint-pithead-build lint-trivy-parity lint-js lint-yaml lint-md lint-proto lint-toml
