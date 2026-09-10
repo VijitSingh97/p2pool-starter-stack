@@ -34,16 +34,23 @@ if [ "${1:-}" = "--self-test" ]; then
         fi
     }
 
+    # The fixture paths are COMPOSED, never written whole: a literal dead path in this file is a
+    # dead path in a tracked file, and the scan below would (correctly) red on its own self-test.
+    # Splitting the extension off keeps the fixtures realistic without arming the detector here.
+    sfx=".sh"
+    dead="tests/gone/vanished"
+    live="tests/real/thing"
+
     git init -q "$tmp/repo"
     # Leg 1: a dead reference must be caught.
-    mkdir -p "$tmp/repo/tests/real"
-    echo 'x' >"$tmp/repo/tests/real/thing.sh"
-    printf '# see tests/gone/vanished.sh for why\n' >"$tmp/repo/probe.sh"
+    mkdir -p "$tmp/repo/${live%/*}"
+    echo 'x' >"$tmp/repo/$live$sfx"
+    printf '# see %s for why\n' "$dead$sfx" >"$tmp/repo/probe$sfx"
     (cd "$tmp/repo" && git add -A)
-    leg "a dead reference is caught" 1 "names tests/gone/vanished.sh"
+    leg "a dead reference is caught" 1 "names $dead$sfx"
 
     # Leg 2: a live reference must NOT be caught. Same fixture, one variable moved.
-    printf '# see tests/real/thing.sh for why\n' >"$tmp/repo/probe.sh"
+    printf '# see %s for why\n' "$live$sfx" >"$tmp/repo/probe$sfx"
     (cd "$tmp/repo" && git add -A)
     leg "a live reference is NOT caught" 0 "every named repo path resolves"
 
