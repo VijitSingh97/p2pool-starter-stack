@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 source "$ROOT/tests/stack/lib.sh"
 # shellcheck source=lib/pithead/19-small-utilities.sh
 source "$ROOT/lib/pithead/19-small-utilities.sh"
+echo "== unit: dotenv_render_value survives Compose's own parser =="
 literal=$' single\'quote "double" \\path\\ $LABEL\t# text\nnext '
 printf 'LITERAL=%s\n' "$(dotenv_render_value "$literal")" >"$SANDBOX/fixture.env"
 printf '%s\n' '{"services":{"fixture":{"image":"fixture:local","environment":{"LITERAL":"${LITERAL}"}}}}' >"$SANDBOX/compose.json"
