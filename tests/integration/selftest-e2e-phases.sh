@@ -3,12 +3,9 @@
 # Self-test e2e.sh's exact per-mode phase composition (#1364).
 #
 # It runs the REAL run_harness out of e2e.sh (extracted, then evaluated against stubbed ssh) and
-# reads the phase list off the command that would have been launched — not off a re-implementation
-# of the gate, which would pass happily while the shipped file said something else.
+# reads the phase list off the command that would have been launched.
 #
-# Standalone (not sourced by selftest.sh) so it never touches selftest.sh's own file-budget
-# ceiling — same reasoning as selftest-rigforge-apply-settle.sh. Run directly, or via
-# `make test-integration-selftest`. No server, no bench, no rig.
+# Standalone: no server, bench, or rig.
 #
 set -uo pipefail
 
@@ -37,9 +34,7 @@ assert_contains "the extracted function still composes the rigforge phases" \
     "$HARNESS_SRC" '--rigforge-control'
 
 # --- Drive it with ssh stubbed out ----------------------------------------------------------
-# Every on_bench call is recorded; the harness is told its run finished immediately with rc 0, so
-# the poll loop never sleeps. The one call we read back is the `nohup ./.e2e-run.sh` launch, which
-# carries the phase list verbatim — the same string the bench would have executed.
+# Every on_bench call is recorded; the harness is told its run finished immediately with rc 0.
 # Two things bite a stub here, and both cost a debugging pass.
 #   * e2e.sh pipes the token INTO the launch call (`printf ... | on_bench ...`), and a pipeline runs
 #     its right-hand function in a SUBSHELL — a stub recording into a variable captures nothing.
@@ -47,7 +42,7 @@ assert_contains "the extracted function still composes the rigforge phases" \
 #   * The stub's `cat` must never be able to block. If a mutation removes the pipe, an unredirected
 #     `cat` reads the SCRIPT's stdin and hangs forever, which reads as a mutation that "survived"
 #     rather than one that killed. The subshell takes its stdin from /dev/null so it gets EOF.
-drive_harness() { # <mode> <borrow_miner> [rig-token] -> "LAUNCH\t<cmd>" then "STDIN\t<piped>"
+drive_harness() { # <mode> <borrow> [token] [scenario] [bootstrap] [failed-precheck]
     local launch lf sf
     lf="$(mktemp)" sf="$(mktemp)"
     # SC2034/SC2329: the config vars and the log/step/warn/ok/die/on_bench stubs below are all read
@@ -57,12 +52,13 @@ drive_harness() { # <mode> <borrow_miner> [rig-token] -> "LAUNCH\t<cmd>" then "S
         # Nothing in here may read the SCRIPT's stdin: an unpiped `cat` in the stub would hang, and
         # a hang reads as a mutation that survived. A pipeline still supplies its own stdin.
         exec </dev/null
-        MODE="$1" BORROW_MINER="$2" WORKERS=1 BENCH_HOST=bench E2E_DIR=/srv/code/pithead-e2e
+        MODE="$1" BORROW_MINER="$2" WORKERS=1 BENCH_HOST=bench E2E_DIR=/srv/code/pithead-e2e RESTORE_DIR=/srv/code/pithead-live
         SCENARIO="${4:-}" RIGFORGE_BOOTSTRAP_VERSION="${5:-}"
         # rig_supply's inputs (#1378). MINER_HOST is what RIG_HOST defaults to; the token comes off
         # the stubbed on_miner, so the empty-token path is reachable by passing "".
         MINER_HOST=rig1 RIG_HOST="" RIG_NAME="" IT_RIG_TOKEN="" RIGFORGE_CONFIG=/opt/rigforge/config.json
         STUB_TOKEN="${3-s3cr3t-tok3n}"
+        FAIL_PRECHECK="${6:-}"
         LAUNCH_FILE="$lf" STDIN_FILE="$sf"
         on_miner() { case "$1" in *".NAME"*) printf rig1 ;; *) printf '%s' "$STUB_TOKEN" ;; esac }
         log() { :; }
@@ -75,6 +71,8 @@ drive_harness() { # <mode> <borrow_miner> [rig-token] -> "LAUNCH\t<cmd>" then "S
         }
         on_bench() {
             case "$1" in
+            *"bash tests/integration/run.sh"*--readiness*) [ "$FAIL_PRECHECK" != readiness ] || return 1 ;;
+            *"bash tests/integration/run.sh"*" --check"*) [ "$FAIL_PRECHECK" != check ] || return 1 ;;
             # The launch command names the done-marker too (it rm -f's it first), so match the
             # launch FIRST — reversing these two makes every phase assertion pass vacuously.
             *nohup*)
@@ -85,7 +83,7 @@ drive_harness() { # <mode> <borrow_miner> [rig-token] -> "LAUNCH\t<cmd>" then "S
             # rig_supply's proof dial. Succeeds here; the unreachable-rig path is driven separately
             # by rc_of below, which is where the exit-code contract is asserted.
             *curl*Authorization*) return 0 ;;
-            *e2e-harness.done*)
+            *'.e2e-control/done'*)
                 # `test -f <done>` (the poll) and `cat <done>` (the exit code) share this substring;
                 # answering 0 to both ends the loop on its first pass with a clean harness result.
                 echo 0
@@ -118,7 +116,7 @@ stdin_of() { # <mode> <borrow> [token] -> what e2e.sh piped into the launch call
 
 compose_phases() { # <mode> <borrow_miner> [token] -> the phase list e2e.sh would launch run.sh with
     # Everything between the runner's positional args and the trailing redirect is the phase list.
-    launch_of "$@" | sed -n 's/.*\.e2e-run\.sh[^ ]* [^ ]* [^ ]* \(.*\) >\/dev\/null.*/\1/p'
+    launch_of "$@" | sed -n 's/.*\.e2e-run\.sh[^ ]* [^ ]* [^ ]* [^ ]* \(.*\) >\/dev\/null.*/\1/p'
 }
 
 has_phase() { # <phase-list> <flag> -> "yes" | "no"
@@ -140,6 +138,8 @@ assert_eq "targeted requests the rigforge-control WRITE phase (#1364)" \
 assert_eq "targeted launches EXACTLY its documented phases, and nothing else" \
     "$(phase_set "$TARGETED")" \
     "--auth-fail-closed --lifecycle --rig-control-port --rig-host --rig-name --rigforge --rigforge-control --scenario 8082 local-pruned-main-secure-tari rig1 rig1 "
+assert_eq "a failed readiness check prevents the destructive launch" "$(launch_of targeted 0 '' '' '' readiness)" ""
+assert_eq "a failed live check prevents the destructive launch" "$(launch_of targeted 0 '' '' '' check)" ""
 
 echo "== --mode matrix keeps everything it had =="
 MATRIX="$(compose_phases matrix 1)"
@@ -159,7 +159,7 @@ assert_eq "check does NOT request the write phase" \
     "$(has_phase "$CHECK" --rigforge-control)" "no"
 assert_eq "check launches EXACTLY --check — no destructive phase may ever join it" \
     "$(phase_set "$CHECK")" "--check "
-
+assert_contains "check does not require or lock a miner" "$(cat "$E2E_SRC")" 'if [ "$BORROW_MINER" = "1" ] && [ "$MODE" != "check" ]; then'
 echo "== --no-miner: no rig means no rig phases, and the mining asserts are skipped (#905) =="
 NOMINER="$(compose_phases targeted 0)"
 assert_eq "no borrowed miner => no write phase (there is no rig to write to)" \
@@ -480,7 +480,7 @@ drive_recovery() { # <pools-json> <n-backups> -> $OUT (the warn lines), $CFGDIR 
 BEFORE='{"pools":[{"url":"pithead.example:3333"},{"url":"bench.example:3333"}]}'
 drive_recovery "$BEFORE" 1
 assert_eq "a permanent bench pool at [1] is not treated as a leftover borrow" "$(cat "$CFGDIR/config.json")" "$BEFORE"
-assert_eq "  its stale backup is cleared, so 'oldest' keeps meaning the original" "$(ls -1 "$CFGDIR" | wc -l)" "1"
+assert_eq "  its stale backup is cleared, so 'oldest' keeps meaning the original" "$(ls -1 "$CFGDIR" | wc -l | tr -d ' ')" "1"
 assert_eq "  and it is reported as the rig's own permanent bench pool" "$(contains "$OUT" "permanent bench pool")" "yes"
 
 # F1: the unrecoverable arm must not be followed by the reassuring verdict that cancels it.
@@ -491,13 +491,13 @@ assert_eq "  and does NOT also report there was no un-restored borrow to undo (#
 # Arm 1: a borrow WITH surviving backups restores from the OLDEST, then prunes them all.
 drive_recovery '{"pools":[{"url":"pithead.example:3333"},{"url":"bench.example:3333","rig-id":"pithead-e2e"}]}' 2
 assert_eq "a leftover borrow is restored from the oldest backup" "$(jq -r '.pools[0].url' "$CFGDIR/config.json")" "orig1.example:3333"
-assert_eq "  and every backup is pruned once the bytes are back" "$(ls -1 "$CFGDIR" | wc -l)" "1"
+assert_eq "  and every backup is pruned once the bytes are back" "$(ls -1 "$CFGDIR" | wc -l | tr -d ' ')" "1"
 assert_eq "  and the report does NOT then deny the borrow it just undid (#1415 F1, arm 1)" "$(contains "$OUT" "found no un-restored borrow to undo")" "no"
 assert_eq "  positive control for the line above: the report DOES fire here" "$(contains "$OUT" "untagged pool(s)")" "yes"
 
 # Unreadable must cost nothing — a config half-written by a run that died mid-restore looks like this.
 drive_recovery 'not json at all' 1
-assert_eq "an unreadable config leaves the only surviving backup alone" "$(ls -1 "$CFGDIR" | wc -l)" "2"
+assert_eq "an unreadable config leaves the only surviving backup alone" "$(ls -1 "$CFGDIR" | wc -l | tr -d ' ')" "2"
 assert_eq "  and the silence is not reported as clean" "$(contains "$OUT" "leaving the config AND any backup(s) untouched")" "yes"
 assert_eq "  and the REPORT block says so in its own words, which is a SECOND guard" "$(contains "$OUT" "do NOT read the silence as clean")" "yes"
 assert_eq "  and the config bytes are untouched too — that message claims BOTH halves" "$(cat "$CFGDIR/config.json")" "not json at all"

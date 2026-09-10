@@ -271,11 +271,22 @@ check_source_agreement tests/stack/run.sh tests/stack \
 #   build-pruned-chain.sh
 #   compact-chain.sh
 #   system-info.sh        box-side operator scripts, run by hand on the bench; not harness domains.
+#   live-state-support.sh
+#   live-upgrade-support.sh
+#   live-xvb-support.sh   sourced by live-gates.sh, which run.sh DOES source, so run.sh reaches
+#                         them transitively — the same shape as skip-accounting.sh above. Listed
+#                         by name, not as a `live-*-support.sh` glob, because live-safety-support.sh
+#                         IS sourced by run.sh directly and must stay in the expected set.
+#   live-supervisor.sh    the release-gate launcher — the workflow runs it as
+#                         `live-supervisor.sh -- bash run.sh ...`, so it wraps run.sh, not
+#                         vice versa; the same shape as e2e.sh above.
+#   live-supervised-run.sh  sourced by live-supervisor.sh and selftest-live-gates.sh, not by run.sh.
 # Floor 5 against the 8 expected today — the same "generous, but a collapse to a lone survivor
 # still fires" margin the stack pair carries, sized for a set an order of magnitude smaller.
 check_source_agreement tests/integration/run.sh tests/integration \
     "selftest*.sh e2e.sh restore-proof.sh rig-supply.sh skip-accounting.sh \
-    build-pruned-chain.sh compact-chain.sh system-info.sh" 5
+    build-pruned-chain.sh compact-chain.sh system-info.sh live-state-support.sh \
+    live-upgrade-support.sh live-xvb-support.sh live-supervisor.sh live-supervised-run.sh" 5
 
 # --- emit -----------------------------------------------------------------
 cat <<EOF

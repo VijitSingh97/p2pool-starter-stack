@@ -167,20 +167,22 @@ _classify() { # <shipped line> <rc monero_caught_up returns>
     )
 }
 
-echo "== the shipped call sites, lifted from run.sh and driven over all four rcs =="
+echo "== the shipped call sites, lifted from the harness and driven over all four rcs =="
 for _site in "assert_running_state:monerod reports synced (RPC)" "readiness:Monero is synced (chain reusable by the matrix)"; do
     _name="${_site%%:*}"
     _anchor="${_site#*:}"
+    _source="$HERE/run.sh"
+    [ "$_name" != readiness ] || _source="$HERE/live-gates.sh"
     # DELIBERATELY LOOSE: anchored on the call and the row's own label, NEVER on the comparison
     # under test. An anchor carrying `elif [ $? = 1 ]` would make every mutation of the mapping red
     # this presence row instead of the classification rows below — the guard would mask the
     # measurement, and a battery would read as firing while proving nothing about the mapping.
-    _line="$(grep -F 'monero_caught_up' "$HERE/run.sh" | grep -F "it_pass \"$_anchor\"")"
+    _line="$(grep -F 'monero_caught_up' "$_source" | grep -F "it_pass \"$_anchor\"")"
     if [ -z "$_line" ]; then
-        it_fail "$_name: the call site is present in run.sh" "no monero_caught_up line carrying: $_anchor"
+        it_fail "$_name: the call site is present in the harness" "no monero_caught_up line carrying: $_anchor"
         continue
     fi
-    it_pass "$_name: the call site is present in run.sh"
+    it_pass "$_name: the call site is present in the harness"
 
     case "$(_classify "$_line" 0)" in
     PASS*) it_pass "$_name: rc 0 passes the row" ;;
