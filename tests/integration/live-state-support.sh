@@ -60,7 +60,8 @@ cleanup_restore_replacements() { # <source/replacement/old TSV>
 }
 
 rollback_restored_state() {
-    local source old failed=0 replacement nonce="$$-$(date +%s)"
+    local source old failed=0 replacement nonce
+    nonce="$$-$(date +%s)"
     while IFS=$'\t' read -r source old; do
         [ -z "$old" ] || {
             replacement="$source.pithead-failed-$nonce"

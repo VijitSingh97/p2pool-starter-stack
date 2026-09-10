@@ -133,4 +133,10 @@ args = sys.argv[1:]
 require_current = args[:1] == ["--require-current-schema"]
 if require_current:
     args.pop(0)
-print(snapshot(sqlite3.connect(args[1] if len(args) > 1 else "/data/mining_data.db"), int(args[0]), require_current))
+print(
+    snapshot(
+        sqlite3.connect(args[1] if len(args) > 1 else "/data/mining_data.db"),
+        int(args[0]),
+        require_current,
+    )
+)
