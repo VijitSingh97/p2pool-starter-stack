@@ -278,7 +278,7 @@ vd_interp_names() { # <file...> -> "<basename>|<name>", once per distinct interp
             print f "|" tok
         }
     }
-    ' "$@" | sort -u
+    ' "$@" | LC_ALL=C sort -u
 }
 # Every entry below was read at its call site and is a loop variable over a fixed list, a count
 # derived from the tree, or a value parsed out of a repo file — the same on every run of a given
