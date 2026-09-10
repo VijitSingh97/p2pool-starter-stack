@@ -12,17 +12,13 @@ render_quadlet_units() {
     mkdir -p "$outdir"
 
     _qenv() { env_get_file "$envf" "$1"; }
-    # systemd.exec reads Environment= as a SPACE-separated list of KEY=VALUE, so a decoded value
-    # holding a space ends its assignment and systemd drops the rest as malformed — silently: the
-    # unit still starts, the container just runs without what it was configured with (#2040).
-    # P2POOL_FLAGS is the value that shows it, but the shape is general, so every value that comes
-    # out of the .env is emitted through here rather than by a per-key judgement about which ones
-    # "look token-shaped" — that list is exactly the thing that rots.
-    #
-    # The quotes go around the WHOLE assignment, which is the form systemd unquotes:
-    #   Environment="A=1 2" B=3
-    # `\` and `"` are escaped because systemd honours both inside those quotes. Second argument is
-    # the .env key when it differs from the variable the container reads (TZ <- DASHBOARD_TZ).
+    # systemd.exec reads Environment= as a SPACE-separated list of KEY=VALUE, so a value holding a
+    # space ends its assignment and the rest is dropped as malformed — silently: the unit starts,
+    # the container just runs without it (#2040). Every .env value is emitted through here rather
+    # than by a per-key judgement about which ones "look token-shaped", because that list is the
+    # thing that rots. The quotes wrap the WHOLE assignment (Environment="A=1 2" B=3), and \ and "
+    # are escaped since systemd honours both inside them. $2 is the .env key when it differs from
+    # the variable the container reads (TZ <- DASHBOARD_TZ).
     _qenvq() {
         local v
         v=$(env_get_file "$envf" "${2:-$1}")
